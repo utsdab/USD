@@ -23,7 +23,7 @@
 # language governing permissions and limitations under the Apache License.
 
 import sys, unittest
-from pxr import Sdf,Usd,Tf
+from pxr import Sdf,Pcp,Usd,Tf
 
 allFormats = ['usd' + x for x in 'ac']
 
@@ -39,44 +39,44 @@ class TestUsdReferences(unittest.TestCase):
             s2.GetRootLayer().defaultPrim = 'trg'
 
             # Identifier only.
-            srcPrim.GetReferences().AppendReference(s2.GetRootLayer().identifier)
-            self.assertEqual(srcPrimSpec.referenceList.addedOrExplicitItems[0],
+            srcPrim.GetReferences().AddReference(s2.GetRootLayer().identifier)
+            self.assertEqual(srcPrimSpec.referenceList.GetAddedOrExplicitItems()[0],
                         Sdf.Reference(s2.GetRootLayer().identifier))
             srcPrim.GetReferences().ClearReferences()
 
             # Identifier and layerOffset.
-            srcPrim.GetReferences().AppendReference(s2.GetRootLayer().identifier,
+            srcPrim.GetReferences().AddReference(s2.GetRootLayer().identifier,
                                         Sdf.LayerOffset(1.25, 2.0))
-            self.assertEqual(srcPrimSpec.referenceList.addedOrExplicitItems[0],
+            self.assertEqual(srcPrimSpec.referenceList.GetAddedOrExplicitItems()[0],
                         Sdf.Reference(s2.GetRootLayer().identifier,
                                       layerOffset=Sdf.LayerOffset(1.25, 2.0)))
             srcPrim.GetReferences().ClearReferences()
 
             # Identifier and primPath.
-            srcPrim.GetReferences().AppendReference(s2.GetRootLayer().identifier, '/trg')
-            self.assertEqual(srcPrimSpec.referenceList.addedOrExplicitItems[0],
+            srcPrim.GetReferences().AddReference(s2.GetRootLayer().identifier, '/trg')
+            self.assertEqual(srcPrimSpec.referenceList.GetAddedOrExplicitItems()[0],
                         Sdf.Reference(s2.GetRootLayer().identifier,
                                       primPath='/trg'))
             srcPrim.GetReferences().ClearReferences()
 
             # Identifier and primPath and layerOffset.
-            srcPrim.GetReferences().AppendReference(s2.GetRootLayer().identifier, '/trg',
+            srcPrim.GetReferences().AddReference(s2.GetRootLayer().identifier, '/trg',
                                         Sdf.LayerOffset(1.25, 2.0))
-            self.assertEqual(srcPrimSpec.referenceList.addedOrExplicitItems[0],
+            self.assertEqual(srcPrimSpec.referenceList.GetAddedOrExplicitItems()[0],
                         Sdf.Reference(s2.GetRootLayer().identifier, primPath='/trg',
                                       layerOffset=Sdf.LayerOffset(1.25, 2.0)))
             srcPrim.GetReferences().ClearReferences()
 
             # primPath only.
-            srcPrim.GetReferences().AppendInternalReference('/trg_internal')
-            self.assertEqual(srcPrimSpec.referenceList.addedOrExplicitItems[0],
+            srcPrim.GetReferences().AddInternalReference('/trg_internal')
+            self.assertEqual(srcPrimSpec.referenceList.GetAddedOrExplicitItems()[0],
                         Sdf.Reference('', primPath='/trg_internal'))
             srcPrim.GetReferences().ClearReferences()
 
             # primPath and layer offset.
-            srcPrim.GetReferences().AppendInternalReference(
+            srcPrim.GetReferences().AddInternalReference(
                 '/trg_internal', layerOffset=Sdf.LayerOffset(1.25, 2.0))
-            self.assertEqual(srcPrimSpec.referenceList.addedOrExplicitItems[0],
+            self.assertEqual(srcPrimSpec.referenceList.GetAddedOrExplicitItems()[0],
                         Sdf.Reference('', primPath='/trg_internal',
                                       layerOffset=Sdf.LayerOffset(1.25, 2.0)))
             srcPrim.GetReferences().ClearReferences()
@@ -108,7 +108,7 @@ class TestUsdReferences(unittest.TestCase):
             self.assertTrue(prim)
 
             # author a prim-path-less reference to the targetLyr.
-            prim.GetReferences().AppendReference(targLyr.identifier)
+            prim.GetReferences().AddReference(targLyr.identifier)
 
             # should now pick up 'attr' from across the reference.
             self.assertEqual(prim.GetAttribute('attr').Get(), 1.234)
@@ -174,7 +174,7 @@ class TestUsdReferences(unittest.TestCase):
 
             stage = Usd.Stage.Open(targLyr)
             prim = stage.DefinePrim('/ref1')
-            prim.GetReferences().AppendInternalReference('/target2')
+            prim.GetReferences().AddInternalReference('/target2')
             self.assertTrue(prim)
             self.assertEqual(prim.GetAttribute('attr').Get(), 2.345)
 
@@ -182,9 +182,177 @@ class TestUsdReferences(unittest.TestCase):
             self.assertTrue(prim)
             self.assertFalse(prim.GetAttribute('attr'))
 
-            prim.GetReferences().AppendInternalReference('/target1')
+            prim.GetReferences().AddInternalReference('/target1')
             self.assertTrue(prim)
             self.assertEqual(prim.GetAttribute('attr').Get(), 1.234)
 
+    def test_SubrootReferences(self):
+        for fmt in allFormats:
+            refLayer = Sdf.Layer.CreateAnonymous('SubrootReferences.'+fmt)
+            
+            def makePrim(name, attrDefault):
+                primSpec = Sdf.CreatePrimInLayer(refLayer, name)
+                primSpec.specifier = Sdf.SpecifierDef
+                attr = Sdf.AttributeSpec(
+                    primSpec, 'attr', Sdf.ValueTypeNames.Double)
+                attr.default = attrDefault
+
+            makePrim('/target1/child', 1.234)
+
+            stage = Usd.Stage.CreateInMemory()
+            prim = stage.DefinePrim('/subroot_ref1')
+            prim.GetReferences().AddReference(
+                refLayer.identifier, '/target1/child')
+            self.assertTrue(prim)
+            self.assertEqual(prim.GetAttribute('attr').Get(), 1.234)
+
+            prim = stage.DefinePrim('/subroot_ref2')
+            prim.GetReferences().AddReference(
+                Sdf.Reference(refLayer.identifier, '/target1/child'))
+            self.assertTrue(prim)
+            self.assertEqual(prim.GetAttribute('attr').Get(), 1.234)
+
+            stage = Usd.Stage.Open(refLayer)
+            prim = stage.DefinePrim('/subroot_ref3')
+            prim.GetReferences().AddInternalReference('/target1/child')
+            self.assertTrue(prim)
+            self.assertEqual(prim.GetAttribute('attr').Get(), 1.234)
+
+    def test_PrependVsAppend(self):
+        for fmt in allFormats:
+            layer = Sdf.Layer.CreateAnonymous('PrependVsAppend.'+fmt)
+
+            def makePrim(name, attrDefault):
+                primSpec = Sdf.CreatePrimInLayer(layer, name)
+                primSpec.specifier = Sdf.SpecifierDef
+                attr = Sdf.AttributeSpec(
+                    primSpec, 'attr', Sdf.ValueTypeNames.Double)
+                attr.default = attrDefault
+
+            makePrim('target1', 1.234)
+            makePrim('target2', 2.345)
+            stage = Usd.Stage.Open(layer)
+            prim = stage.DefinePrim('/ref')
+
+            # Prepend target1, and then prepend target2:
+            # target2 ends up stronger.
+            prim.GetReferences().AddInternalReference('/target1',
+                position = Usd.ListPositionFrontOfPrependList)
+            prim.GetReferences().AddInternalReference('/target2',
+                position = Usd.ListPositionFrontOfPrependList)
+            self.assertTrue(prim)
+            self.assertEqual(prim.GetAttribute('attr').Get(), 2.345)
+
+            prim.GetReferences().ClearReferences()
+            self.assertTrue(prim)
+            self.assertFalse(prim.GetAttribute('attr'))
+
+            # Append target1, and then append target2:
+            # target1 ends up stronger.
+            prim.GetReferences().AddInternalReference('/target1',
+                position = Usd.ListPositionBackOfAppendList)
+            prim.GetReferences().AddInternalReference('/target2',
+                position = Usd.ListPositionBackOfAppendList)
+            self.assertTrue(prim)
+            self.assertEqual(prim.GetAttribute('attr').Get(), 1.234)
+
+    def test_InternalReferenceMapping(self):
+        for fmt in allFormats:
+            # Create test scenegraph
+            refLayer = Sdf.Layer.CreateAnonymous('InternalRefMapping_ref.'+fmt)
+            refSpec = Sdf.PrimSpec(refLayer, 'Ref', Sdf.SpecifierDef)
+            subRefSpec = Sdf.PrimSpec(refSpec, 'SubrootRef', Sdf.SpecifierDef)
+            childRefSpec = Sdf.PrimSpec(refSpec, 'Child', Sdf.SpecifierDef)
+            refSpec2 = Sdf.PrimSpec(refLayer, 'Ref2', Sdf.SpecifierDef)
+            childRefSpec2 = Sdf.PrimSpec(refSpec2, 'Child', Sdf.SpecifierDef)
+
+            stage = Usd.Stage.CreateInMemory('InternalRefMapping.'+fmt)
+            prim = stage.DefinePrim('/Root')
+            prim.GetReferences().AddReference(refLayer.identifier, refSpec.path)
+            prim = stage.GetPrimAtPath('/Root')
+
+            # Set the edit target to point to the referenced prim
+            refNode = prim.GetPrimIndex().rootNode.children[0]
+            self.assertEqual(refNode.arcType, Pcp.ArcTypeReference)
+            stage.SetEditTarget(Usd.EditTarget(refLayer, refNode))
+
+            # Add an internal sub-root reference to the child of the
+            # referenced prim. 
+            childPrim = stage.GetPrimAtPath('/Root/Child')
+            childPrim.GetReferences().AddInternalReference(
+                '/Root/SubrootRef', position=Usd.ListPositionFrontOfPrependList)
+
+            expectedRefs = Sdf.ReferenceListOp()
+            expectedRefs.prependedItems = [
+                Sdf.Reference(primPath='/Ref/SubrootRef')
+            ]
+            self.assertEqual(childRefSpec.GetInfo('references'), expectedRefs)
+
+            # Remove the internal sub-root reference.
+            childPrim.GetReferences().RemoveReference(
+                Sdf.Reference(primPath='/Root/SubrootRef'))
+            expectedRefs = Sdf.ReferenceListOp()
+            expectedRefs.deletedItems = [
+                Sdf.Reference(primPath='/Ref/SubrootRef')
+            ]
+            self.assertEqual(childRefSpec.GetInfo('references'), expectedRefs)
+
+            # Add an internal reference.
+            childPrim.GetReferences().AddInternalReference(
+                '/Ref2', position=Usd.ListPositionFrontOfPrependList)
+            expectedRefs = Sdf.ReferenceListOp()
+            expectedRefs.deletedItems = [
+                Sdf.Reference(primPath='/Ref/SubrootRef')
+            ]
+            expectedRefs.prependedItems = [
+                Sdf.Reference(primPath='/Ref2')
+            ]
+            self.assertEqual(childRefSpec.GetInfo('references'), expectedRefs)
+
+            # Remove internal reference.
+            childPrim.GetReferences().RemoveReference(
+                Sdf.Reference(primPath='/Ref2'))
+            expectedRefs = Sdf.ReferenceListOp()
+            expectedRefs.deletedItems = [
+                Sdf.Reference(primPath='/Ref/SubrootRef'),
+                Sdf.Reference(primPath='/Ref2')
+            ]
+            self.assertEqual(childRefSpec.GetInfo('references'), expectedRefs)
+
+            # Try to set an unmappable sub-root reference.
+            with self.assertRaises(Tf.ErrorException):
+                childPrim.GetReferences().AddInternalReference('/Ref2/Child')
+            self.assertEqual(childRefSpec.GetInfo('references'), expectedRefs)
+
+    def test_InternalReferenceMappingVariants(self):
+        for fmt in allFormats:
+            stage = Usd.Stage.CreateInMemory("x."+fmt, sessionLayer=None)
+
+            # Create test scenegraph with variant
+            refPrim = stage.DefinePrim("/Root")
+            vset = refPrim.GetVariantSet("v")
+            vset.AddVariant("x")
+            vset.SetVariantSelection("x")
+            with vset.GetVariantEditContext():
+                stage.DefinePrim("/Root/SubrootRef")
+                stage.DefinePrim("/Root/Child")
+            
+            # Set edit target inside the variant and add a internal sub-root
+            # reference to another prim in the same variant.
+            with vset.GetVariantEditContext():
+                instancePrim = stage.GetPrimAtPath("/Root/Child")
+                instancePrim.GetReferences().AddInternalReference(
+                    "/Root/SubrootRef", position=Usd.ListPositionFrontOfPrependList)
+
+            # Check that authored reference does *not* include variant
+            # selection.
+            childPrimSpec = \
+                stage.GetRootLayer().GetPrimAtPath("/Root{v=x}Child")
+            expectedRefs = Sdf.ReferenceListOp()
+            expectedRefs.prependedItems = [
+                Sdf.Reference(primPath="/Root/SubrootRef")
+            ]
+            self.assertEqual(childPrimSpec.GetInfo('references'), expectedRefs)
+            
 if __name__ == "__main__":
     unittest.main()

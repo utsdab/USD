@@ -28,26 +28,22 @@
 #include <SOP/SOP_Node.h>
 
 #include <pxr/pxr.h>
-#include "gusd/GU_USD.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 class GusdUSD_Traverse;
-class GusdUT_ErrorContext;
 
 
 class GusdSOP_usdimport : public SOP_Node
 {
 public:
-    static OP_Node*         Create(OP_Network* net,
-                                   const char* name,
-                                   OP_Operator* op);
+    static OP_Node*     Create(OP_Network* net,
+                               const char* name,
+                               OP_Operator* op);
 
-    void                    UpdateTraversalParms();
+    void                UpdateTraversalParms();
     
-    GusdGU_USD::BindOptions GetBindOpts(OP_Context& ctx);
-
-    void Reload();
+    void                Reload();
 
 protected:
     GusdSOP_usdimport(OP_Network* net, const char* name, OP_Operator* op);
@@ -64,11 +60,11 @@ protected:
 
     OP_ERROR            _CreateNewPrims(OP_Context& ctx,
                                         const GusdUSD_Traverse* traverse,
-                                        GusdUT_ErrorContext& err);
+                                        UT_ErrorSeverity sev);
 
     OP_ERROR            _ExpandPrims(OP_Context& ctx,
                                      const GusdUSD_Traverse* traverse,
-                                     GusdUT_ErrorContext& err);
+                                     UT_ErrorSeverity sev);
 
 
     /** Add micro nodes of all traversal parms as dependencies

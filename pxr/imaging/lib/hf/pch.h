@@ -25,6 +25,7 @@
 //
 
 #define TF_MAX_ARITY 7
+#include "pxr/pxr.h"
 #include "pxr/base/arch/defines.h"
 #if defined(ARCH_OS_WINDOWS)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -32,6 +33,7 @@
 #endif
 
 #include <boost/preprocessor/variadic/size.hpp>
+#include <boost/vmd/is_empty.hpp>
 #include <boost/vmd/is_tuple.hpp>
 #endif
 #include <algorithm>
@@ -42,7 +44,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <functional>
 #include <inttypes.h>
 #include <iosfwd>
 #include <list>
@@ -64,7 +65,6 @@
 #include <utility>
 #include <vector>
 #include <boost/any.hpp>
-#include <boost/bind.hpp>
 #include <boost/function.hpp>
 #include <boost/functional/hash_fwd.hpp>
 #include <boost/mpl/assert.hpp>
@@ -86,6 +86,7 @@
 #include <boost/preprocessor/control/expr_iif.hpp>
 #include <boost/preprocessor/facilities/expand.hpp>
 #include <boost/preprocessor/punctuation/comma.hpp>
+#include <boost/preprocessor/punctuation/comma_if.hpp>
 #include <boost/preprocessor/punctuation/paren.hpp>
 #include <boost/preprocessor/repetition/repeat.hpp>
 #include <boost/preprocessor/stringize.hpp>
@@ -99,5 +100,4 @@
 #include <boost/type_traits/is_convertible.hpp>
 #include <boost/type_traits/is_enum.hpp>
 #include <boost/type_traits/is_same.hpp>
-#include <boost/unordered_set.hpp>
 #include <boost/utility/enable_if.hpp>

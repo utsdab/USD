@@ -84,45 +84,69 @@ bool MayaCameraWriter::writeCameraAttrs(const UsdTimeCode &usdTime, UsdGeomCamer
     // because we want the xformOps populated by the parent class to survive.
     // Using SetFromCamera() would stomp them with a single "transform" xformOp.
 
-    // Set the type of projection.
     if (camFn.isOrtho()) {
-        primSchema.GetProjectionAttr().Set(UsdGeomTokens->orthographic, usdTime);
+        _SetAttribute(primSchema.GetProjectionAttr(), 
+                      UsdGeomTokens->orthographic, 
+                      usdTime);
+
+        // Contrary to the documentation, Maya actually stores the orthographic
+        // width in centimeters (Maya's internal unit system), not inches.
+        const double orthoWidth = PxrUsdMayaUtil::ConvertCMToMM(camFn.orthoWidth());
+
+        // It doesn't seem to be possible to specify a non-square orthographic
+        // camera in Maya, and aspect ratio, lens squeeze ratio, and film
+        // offset have no effect.
+        _SetAttribute(primSchema.GetHorizontalApertureAttr(), 
+                      static_cast<float>(orthoWidth), usdTime);
+
+        _SetAttribute(primSchema.GetVerticalApertureAttr(), 
+                      static_cast<float>(orthoWidth),
+                      usdTime);
     } else {
-        primSchema.GetProjectionAttr().Set(UsdGeomTokens->perspective, usdTime);
+        _SetAttribute(primSchema.GetProjectionAttr(), 
+                      UsdGeomTokens->perspective, usdTime);
+
+        // Lens squeeze ratio applies horizontally only.
+        const double horizontalAperture = PxrUsdMayaUtil::ConvertInchesToMM(
+            camFn.horizontalFilmAperture() * camFn.lensSqueezeRatio());
+        const double verticalAperture = PxrUsdMayaUtil::ConvertInchesToMM(
+            camFn.verticalFilmAperture());
+
+        const double horizontalApertureOffset = PxrUsdMayaUtil::ConvertInchesToMM(
+            camFn.horizontalFilmOffset());
+        const double verticalApertureOffset = PxrUsdMayaUtil::ConvertInchesToMM(
+            camFn.verticalFilmOffset());
+
+        _SetAttribute(primSchema.GetHorizontalApertureAttr(), 
+                      static_cast<float>(horizontalAperture), usdTime);
+
+        _SetAttribute(primSchema.GetVerticalApertureAttr(), 
+                      static_cast<float>(verticalAperture), usdTime);
+
+        _SetAttribute(primSchema.GetHorizontalApertureOffsetAttr(), 
+                      static_cast<float>(horizontalApertureOffset), usdTime);
+
+        _SetAttribute(primSchema.GetVerticalApertureOffsetAttr(), 
+                      static_cast<float>(verticalApertureOffset), usdTime);
     }
 
-    // Setup the aperture.
-    primSchema.GetHorizontalApertureAttr().Set(
-        float(PxrUsdMayaUtil::ConvertInchesToMM(
-                camFn.horizontalFilmAperture() *
-                camFn.lensSqueezeRatio())),
-        usdTime);
-    primSchema.GetVerticalApertureAttr().Set(
-        float(PxrUsdMayaUtil::ConvertInchesToMM(
-                camFn.verticalFilmAperture() *
-                camFn.lensSqueezeRatio())),
-        usdTime);
-
-    primSchema.GetHorizontalApertureOffsetAttr().Set(
-        float(camFn.horizontalFilmOffset()), usdTime);
-    primSchema.GetVerticalApertureOffsetAttr().Set(
-        float(camFn.verticalFilmOffset()), usdTime);
-
     // Set the lens parameters.
-    primSchema.GetFocalLengthAttr().Set(
-        float(camFn.focalLength()), usdTime);
+    _SetAttribute(primSchema.GetFocalLengthAttr(), 
+                  static_cast<float>(camFn.focalLength()), usdTime);
 
     // Always export focus distance and fStop regardless of what
     // camFn.isDepthOfField() says. Downstream tools can choose to ignore or
     // override them.
-    primSchema.GetFocusDistanceAttr().Set(
-        float(camFn.focusDistance()), usdTime);
-    primSchema.GetFStopAttr().Set(
-        float(camFn.fStop()), usdTime);
+    _SetAttribute(primSchema.GetFocusDistanceAttr(), 
+                  static_cast<float>(camFn.focusDistance()), usdTime);
+
+    _SetAttribute(primSchema.GetFStopAttr(), 
+                  static_cast<float>(camFn.fStop()), usdTime);
 
     // Set the clipping planes.
     GfVec2f clippingRange(camFn.nearClippingPlane(), camFn.farClippingPlane());
-    primSchema.GetClippingRangeAttr().Set(clippingRange, usdTime);
+    _SetAttribute(primSchema.GetClippingRangeAttr(), clippingRange,
+                  usdTime);
 
     return true;
 }

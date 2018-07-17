@@ -153,6 +153,14 @@ void wrapUsdGeomMesh()
         .def("Define", &This::Define, (arg("stage"), arg("path")))
         .staticmethod("Define")
 
+        .def("IsConcrete",
+            static_cast<bool (*)(void)>( [](){ return This::IsConcrete; }))
+        .staticmethod("IsConcrete")
+
+        .def("IsTyped",
+            static_cast<bool (*)(void)>( [](){ return This::IsTyped; } ))
+        .staticmethod("IsTyped")
+
         .def("GetSchemaAttributeNames",
              &This::GetSchemaAttributeNames,
              arg("includeInherited")=true,
@@ -276,12 +284,31 @@ void wrapUsdGeomMesh()
 
 namespace {
 
+
+tuple
+_ValidateTopology(const VtIntArray& faceVertexIndices,
+                  const VtIntArray& faceVertexCounts,
+                  size_t numPoints)
+{
+    std::string reason;
+    bool valid = UsdGeomMesh::ValidateTopology(faceVertexIndices,
+                                               faceVertexCounts,
+                                               numPoints, &reason);
+    return boost::python::make_tuple(valid, reason);
+}
+
+
 WRAP_CUSTOM {
     typedef UsdGeomMesh This;
 
+    _class
+        .def("ValidateTopology", &_ValidateTopology,
+             (arg("faceVertexIndices"),
+              arg("faceVertexCounts"),
+              arg("numPoints")))
+        .staticmethod("ValidateTopology");
+
     _class.attr("SHARPNESS_INFINITE") = UsdGeomMesh::SHARPNESS_INFINITE;
-    _class.def("GetFaceVaryingLinearInterpolation",
-               &This::GetFaceVaryingLinearInterpolation)
     ;
 }
 

@@ -115,15 +115,11 @@ public:
     /// -------------------------------------------------------
     /// Lighting API
 
-    /// Set the lighting state for the scene.
+    /// Set the lighting state for the scene.  HdxTaskController maintains
+    /// a set of light sprims with data set from the lights in "src".
     /// @param src    Lighting state to implement.
-    /// @param bypass Toggle whether we use HdxSimpleLightTask,
-    ///               or HdxSimpleLightBypassTask.  The former stores lighting
-    ///               state in Sprims.
-    /// XXX: remove "bypass"
     HDX_API
-    void SetLightingState(GlfSimpleLightingContextPtr const& src,
-                                  bool bypass);
+    void SetLightingState(GlfSimpleLightingContextPtr const& src);
 
     /// -------------------------------------------------------
     /// Camera API
@@ -173,10 +169,6 @@ public:
     /// -------------------------------------------------------
     /// Progressive Image Generation
     
-    /// Reset the image render to reflect a changed scene.
-    HDX_API
-    void ResetImage();
-
     /// Return whether the image has converged.
     HDX_API
     bool IsConverged() const;
@@ -192,14 +184,14 @@ private:
     SdfPath const _controllerId;
 
     HdTaskSharedPtrVector _tasks;
-    HdxIntersector       *_intersector;
+    std::unique_ptr<HdxIntersector> _intersector;
 
     // Create taskController objects. Since the camera is a parameter
     // to the tasks, _CreateCamera() should be called first.
     void _CreateCamera();
     void _CreateRenderTasks();
     void _CreateSelectionTask();
-    void _CreateLightingTasks();
+    void _CreateLightingTask();
 
     // A private scene delegate member variable backs the tasks this
     // controller generates. To keep _Delegate simple, the containing class
@@ -244,16 +236,10 @@ private:
     // The reason we have two around is so that they can have parallel sets of
     // HdxRenderTaskParams; if there were only one render task, we'd thrash the
     // params switching between id and color render.
-    //
-    // _activeLightTaskId is just an alias, pointing to one of
-    // _simpleLightTaskId or _simpleLightBypassTaskId, depending on which one
-    // was set most recently.
     SdfPath _renderTaskId;
     SdfPath _idRenderTaskId;
     SdfPath _selectionTaskId;
     SdfPath _simpleLightTaskId;
-    SdfPath _simpleLightBypassTaskId;
-    SdfPath _activeLightTaskId;
 
     // Generated cameras
     SdfPath _cameraId;

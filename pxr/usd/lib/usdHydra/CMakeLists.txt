@@ -9,31 +9,19 @@ pxr_library(usdHydra
         usdShade
 
     PUBLIC_CLASSES
-        lookAPI
-        primvar
-        shader
-        texture
-        uvTexture
-        ptexTexture
         tokens
 
     PUBLIC_HEADERS
         api.h
 
-    CPPFILES
+    PYTHON_CPPFILES
         moduleDeps.cpp
 
     PYMODULE_CPPFILES
         module.cpp
-        wrapLookAPI.cpp
-        wrapPrimvar.cpp
-        wrapShader.cpp
-        wrapTexture.cpp
-        wrapUvTexture.cpp
-        wrapPtexTexture.cpp
         wrapTokens.cpp
 
-    PYTHON_FILES
+    PYMODULE_FILES
         __init__.py
 
     RESOURCE_FILES

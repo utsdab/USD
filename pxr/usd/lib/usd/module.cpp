@@ -31,6 +31,7 @@ TF_WRAP_MODULE
     TF_WRAP(UsdCommon);
     TF_WRAP(UsdNotice);
     TF_WRAP(UsdTimeCode);
+    TF_WRAP(UsdTokens);
     TF_WRAP(UsdInterpolationType);
 
     // UsdObject and its subclasses.
@@ -51,8 +52,9 @@ TF_WRAP_MODULE
     TF_WRAP(UsdPrimRange);
     TF_WRAP(UsdVariantSets);
 
-    // SchemaBase and subclasses.
+    // SchemaBase, APISchemaBase and subclasses.
     TF_WRAP(UsdSchemaBase);
+    TF_WRAP(UsdAPISchemaBase);
     TF_WRAP(UsdTyped);
 
     // Stage and Stage Cache
@@ -63,10 +65,12 @@ TF_WRAP_MODULE
 
     // Generated schema.
     TF_WRAP(UsdClipsAPI);
+    TF_WRAP(UsdCollectionAPI);
     TF_WRAP(UsdModelAPI);
 
     // Miscellaenous classes
     TF_WRAP(UsdAttributeQuery);
     TF_WRAP(UsdCrateInfo);
     TF_WRAP(UsdResolveInfo);
+    TF_WRAP(Version);
 }

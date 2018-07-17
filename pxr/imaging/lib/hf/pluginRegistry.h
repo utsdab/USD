@@ -71,17 +71,18 @@ class HfPluginRegistry
 
 public:
     ///
-    /// Returns the id of plugin to use as the default
-    ///
-    HF_API
-    TfToken GetDefaultPluginId();
-
-    ///
     /// Returns an ordered list of all registered plugins.
     /// The plugins are ordered by priority then alphabetically
     ///
     HF_API
     void GetPluginDescs(HfPluginDescVector *plugins);
+
+    ///
+    /// Returns the description for the given plugin id.
+    /// The plugin may not be loaded or been actually created yet.
+    ///
+    HF_API
+    bool GetPluginDesc(const TfToken &pluginId, HfPluginDesc *desc);
 
     ///
     /// Increment the reference count on an existing plugin.

@@ -28,7 +28,7 @@
 
 #include "pxr/pxr.h"
 #include "pxr/usd/usdShade/api.h"
-#include "pxr/usd/usd/schemaBase.h"
+#include "pxr/usd/usd/apiSchemaBase.h"
 #include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/stage.h"
 
@@ -57,10 +57,26 @@ class SdfAssetPath;
 ///
 /// UsdShadeConnectableAPI is an API schema that provides a common
 /// interface for creating outputs and making connections between shading 
-/// parameters and outputs.
+/// parameters and outputs. The interface is common to all UsdShade schemas
+/// that support Inputs and Outputs, which currently includes UsdShadeShader,
+/// UsdShadeNodeGraph, and UsdShadeMaterial .
+/// 
+/// One can construct a UsdShadeConnectableAPI directly from a UsdPrim, or
+/// from objects of any of the schema classes listed above.  If it seems
+/// onerous to need to construct a secondary schema object to interact with
+/// Inputs and Outputs, keep in mind that any function whose purpose is either
+/// to walk material/shader networks via their connections, or to create such
+/// networks, can typically be written entirely in terms of 
+/// UsdShadeConnectableAPI objects, without needing to care what the underlying
+/// prim type is.
+/// 
+/// Additionally, the most common UsdShadeConnectableAPI behaviors
+/// (creating Inputs and Outputs, and making connections) are wrapped as
+/// convenience methods on the prim schema classes (creation) and 
+/// UsdShadeInput and UsdShadeOutput.
 /// 
 ///
-class UsdShadeConnectableAPI : public UsdSchemaBase
+class UsdShadeConnectableAPI : public UsdAPISchemaBase
 {
 public:
     /// Compile-time constant indicating whether or not this class corresponds
@@ -69,12 +85,28 @@ public:
     /// a non-empty typeName.
     static const bool IsConcrete = false;
 
+    /// Compile-time constant indicating whether or not this class inherits from
+    /// UsdTyped. Types which inherit from UsdTyped can impart a typename on a
+    /// UsdPrim.
+    static const bool IsTyped = false;
+
+    /// Compile-time constant indicating whether or not this class represents an 
+    /// applied API schema, i.e. an API schema that has to be applied to a prim
+    /// with a call to auto-generated Apply() method before any schema 
+    /// properties are authored.
+    static const bool IsApplied = false;
+    
+    /// Compile-time constant indicating whether or not this class represents a 
+    /// multiple-apply API schema. Mutiple-apply API schemas can be applied 
+    /// to the same prim multiple times with different instance names. 
+    static const bool IsMultipleApply = false;
+
     /// Construct a UsdShadeConnectableAPI on UsdPrim \p prim .
     /// Equivalent to UsdShadeConnectableAPI::Get(prim.GetStage(), prim.GetPath())
     /// for a \em valid \p prim, but will not immediately throw an error for
     /// an invalid \p prim
     explicit UsdShadeConnectableAPI(const UsdPrim& prim=UsdPrim())
-        : UsdSchemaBase(prim)
+        : UsdAPISchemaBase(prim)
     {
     }
 
@@ -82,7 +114,7 @@ public:
     /// Should be preferred over UsdShadeConnectableAPI(schemaObj.GetPrim()),
     /// as it preserves SchemaBase state.
     explicit UsdShadeConnectableAPI(const UsdSchemaBase& schemaObj)
-        : UsdSchemaBase(schemaObj)
+        : UsdAPISchemaBase(schemaObj)
     {
     }
 
@@ -135,11 +167,11 @@ public:
     // ===================================================================== //
     // --(BEGIN CUSTOM CODE)--
     
-private:
-    // Returns true if the given prim is compatible with this API schema,
-    // i.e. if it is a shader or a node-graph.
+protected:
+    /// Returns true if the given prim is compatible with this API schema,
+    /// i.e. if it is a valid shader or a node-graph.
     USDSHADE_API
-    virtual bool _IsCompatible(const UsdPrim &prim) const;
+    virtual bool _IsCompatible() const override;
     
 public:
 
@@ -578,6 +610,7 @@ public:
     /// 
     /// \note This method exists only for testing equality of the old and new
     /// encoding of shading networks in USD. 
+    USDSHADE_API
     static bool AreBidirectionalInterfaceConnectionsEnabled();
 
     /// @}

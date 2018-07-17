@@ -47,9 +47,13 @@ void
 HdSt_TriangleIndexBuilderComputation::AddBufferSpecs(
     HdBufferSpecVector *specs) const
 {
-    specs->push_back(HdBufferSpec(HdTokens->indices, GL_INT, 3));
+    specs->emplace_back(HdTokens->indices, HdTupleType{HdTypeInt32Vec3, 1});
     // triangles don't support ptex indexing (at least for now).
-    specs->push_back(HdBufferSpec(HdTokens->primitiveParam, GL_INT, 1));
+    specs->emplace_back(HdTokens->primitiveParam,
+                        HdTupleType{HdTypeInt32, 1});
+    // 3 edge indices per triangle
+    specs->emplace_back(HdTokens->edgeIndices,
+                        HdTupleType{HdTypeInt32Vec3, 1});
 }
 
 bool
@@ -61,10 +65,13 @@ HdSt_TriangleIndexBuilderComputation::Resolve()
 
     VtVec3iArray trianglesFaceVertexIndices;
     VtIntArray primitiveParam;
+    VtVec3iArray trianglesEdgeIndices;
+
     HdMeshUtil meshUtil(_topology, _id);
     meshUtil.ComputeTriangleIndices(
             &trianglesFaceVertexIndices,
-            &primitiveParam);
+            &primitiveParam,
+            &trianglesEdgeIndices);
 
     _SetResult(HdBufferSourceSharedPtr(
                    new HdVtBufferSource(
@@ -74,6 +81,10 @@ HdSt_TriangleIndexBuilderComputation::Resolve()
     _primitiveParam.reset(new HdVtBufferSource(
                               HdTokens->primitiveParam,
                               VtValue(primitiveParam)));
+
+    _trianglesEdgeIndices.reset(new HdVtBufferSource(
+                                   HdTokens->edgeIndices,
+                                   VtValue(trianglesEdgeIndices)));
 
     _SetResolved();
     return true;
@@ -85,10 +96,10 @@ HdSt_TriangleIndexBuilderComputation::HasChainedBuffer() const
     return true;
 }
 
-HdBufferSourceSharedPtr
-HdSt_TriangleIndexBuilderComputation::GetChainedBuffer() const
+HdBufferSourceVector
+HdSt_TriangleIndexBuilderComputation::GetChainedBuffers() const
 {
-    return _primitiveParam;
+    return { _primitiveParam, _trianglesEdgeIndices };
 }
 
 bool
@@ -123,7 +134,7 @@ HdSt_TriangulateFaceVaryingComputation::Resolve()
     if(meshUtil.ComputeTriangulatedFaceVaryingPrimvar(
             _source->GetData(),
             _source->GetNumElements(),
-            _source->GetGLElementDataType(),
+            _source->GetTupleType().type,
             &result)) {
         _SetResult(HdBufferSourceSharedPtr(
                     new HdVtBufferSource(

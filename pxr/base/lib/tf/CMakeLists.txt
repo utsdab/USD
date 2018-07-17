@@ -14,7 +14,6 @@ pxr_library(tf
         ${WINLIBS}
         ${PYTHON_LIBRARIES}
         ${Boost_PYTHON_LIBRARY}
-        ${Boost_DATE_TIME_LIBRARY}
         ${TBB_tbb_LIBRARY}
 
     INCLUDE_DIRS
@@ -35,7 +34,6 @@ pxr_library(tf
         diagnosticBase
         diagnosticHelper
         diagnosticMgr
-        diagnosticNotice
         dl
         enum
         envSetting
@@ -43,12 +41,12 @@ pxr_library(tf
         errorMark
         errorTransport
         expiryNotifier
+        fastCompression
         fileUtils
         flyweight
         getenv
         hash
         iterator
-        makePyConstructor
         mallocTag
         move
         notice
@@ -57,7 +55,38 @@ pxr_library(tf
         pathUtils
         patternMatcher
         pointerAndBits
-        poolAllocator
+        pyLock
+        refBase
+        refCount
+        refPtr
+        refPtrTracker
+        regTest
+        registryManager
+        safeOutputFile
+        scoped
+        scopeDescription
+        setenv
+        singleton
+        stackTrace
+        stacked
+        status
+        stl
+        stopwatch
+        stringUtils
+        templateString
+        tf
+        token
+        traits
+        type
+        typeFunctions
+        typeNotice
+        warning
+        weakBase
+        weakPtr
+        weakPtrFacade
+
+    PYTHON_PUBLIC_CLASSES
+        makePyConstructor
         pyAnnotatedBoolResult
         pyArg
         pyCall
@@ -70,7 +99,6 @@ pxr_library(tf
         pyFunction
         pyIdentity
         pyInterpreter
-        pyLock
         pyModule
         pyModuleNotice
         pyNoticeWrapper
@@ -86,35 +114,7 @@ pxr_library(tf
         pyUtils
         pyWeakObject
         pyWrapContext
-        refBase
-        refCount
-        refPtr
-        refPtrTracker
-        regTest
-        registryManager
-        scoped
-        scopeDescription
         scriptModuleLoader
-        setenv
-        singleton
-        stackTrace
-        stacked
-        status
-        stl
-        stopwatch
-        stringUtils
-        templateString
-        tf
-        timeStamp
-        token
-        traits
-        type
-        typeFunctions
-        typeNotice
-        warning
-        weakBase
-        weakPtr
-        weakPtrFacade
         wrapTypeHelpers
 
     PUBLIC_HEADERS
@@ -129,7 +129,6 @@ pxr_library(tf
         instantiateStacked.h
         instantiateType.h
         preprocessorUtils.h
-        pyStaticTokens.h
         preprocessorUtilsLite.h
         safeTypeCompare.h
         staticData.h
@@ -137,12 +136,19 @@ pxr_library(tf
         typeInfoMap.h
         type_Impl.h
 
+    PYTHON_PUBLIC_HEADERS
+        pyStaticTokens.h
+
     PRIVATE_CLASSES
+        atomicRenameUtil
         debugCodes
         noticeRegistry
+
+    PYTHON_PRIVATE_CLASSES
         pyErrorInternal
 
-    PRIVATE_HEADERS 
+    PRIVATE_HEADERS
+        scopeDescriptionPrivate.h
         pxrDoubleConversion/ieee.h
         pxrDoubleConversion/utils.h
         pxrDoubleConversion/double-conversion.h
@@ -153,10 +159,10 @@ pxr_library(tf
         pxrDoubleConversion/fast-dtoa.h
         pxrDoubleConversion/fixed-dtoa.h
         pxrDoubleConversion/strtod.h
+        pxrLZ4/lz4.h
 
     CPPFILES
         initConfig.cpp
-        moduleDeps.cpp
         preprocessorUtils.cpp
         pxrDoubleConversion/double-conversion.cc
         pxrDoubleConversion/bignum-dtoa.cc
@@ -166,6 +172,10 @@ pxr_library(tf
         pxrDoubleConversion/fast-dtoa.cc
         pxrDoubleConversion/fixed-dtoa.cc
         pxrDoubleConversion/strtod.cc
+        pxrLZ4/lz4.cpp
+
+    PYTHON_CPPFILES
+        moduleDeps.cpp
 
     PYMODULE_CPPFILES
         module.cpp
@@ -173,7 +183,7 @@ pxr_library(tf
         wrapCallContext.cpp
         wrapDebug.cpp
         wrapDiagnostic.cpp
-        wrapDiagnosticNotice.cpp
+        wrapDiagnosticBase.cpp
         wrapEnum.cpp
         wrapEnvSetting.cpp
         wrapError.cpp
@@ -183,7 +193,6 @@ pxr_library(tf
         wrapNotice.cpp
         wrapPathUtils.cpp
         wrapPyContainerConversions.cpp
-        wrapPyDateTime.cpp
         wrapPyModuleNotice.cpp
         wrapPyObjWrapper.cpp
         wrapPyOptional.cpp
@@ -198,17 +207,15 @@ pxr_library(tf
         wrapTemplateString.cpp
         wrapTestPyAnnotatedBoolResult.cpp
         wrapTestPyContainerConversions.cpp
-        wrapTestPyDateTime.cpp
         wrapTestPyStaticTokens.cpp
         wrapTestTfPython.cpp
         wrapTestTfPyOptional.cpp
-        wrapTimeStamp.cpp
         wrapToken.cpp
         wrapType.cpp
         wrapWarning.cpp
 
 
-    PYTHON_FILES
+    PYMODULE_FILES 
         __init__.py
         testenv/__init__.py
         testenv/testTfScriptModuleLoader_AAA_RaisesError.py
@@ -220,28 +227,30 @@ pxr_library(tf
         testenv/testTfScriptModuleLoader_Unknown.py
 )
 
-pxr_build_test(testTfPyFunction
-    LIBRARIES
-        tf
-        ${Boost_PYTHON_LIBRARY}
-    CPPFILES
-        testenv/testTfPyFunction.cpp
-) 
+if(PXR_ENABLE_PYTHON_SUPPORT)
+    pxr_build_test(testTfPyFunction
+        LIBRARIES
+            tf
+            ${Boost_PYTHON_LIBRARY}
+        CPPFILES
+            testenv/testTfPyFunction.cpp
+    ) 
 
-pxr_build_test(testTfPyInterpreter
-    LIBRARIES
-        tf
-    CPPFILES
-        testenv/testTfPyInterpreter.cpp
-)
+    pxr_build_test(testTfPyInterpreter
+        LIBRARIES
+            tf
+        CPPFILES
+            testenv/testTfPyInterpreter.cpp
+    )
 
-pxr_build_test(testTfPyLock
-    LIBRARIES
-        tf
-        ${Boost_PYTHON_LIBRARY}
-    CPPFILES
-        testenv/testTfPyLock.cpp
-)
+    pxr_build_test(testTfPyLock
+        LIBRARIES
+            tf
+            ${Boost_PYTHON_LIBRARY}
+        CPPFILES
+            testenv/testTfPyLock.cpp
+    )
+endif()
 
 pxr_build_test(testTfSIGFPE
     LIBRARIES
@@ -285,12 +294,14 @@ pxr_build_test(testTf
         testenv/bitUtils.cpp
         testenv/debug.cpp
         testenv/denseHashMap.cpp
-        testenv/diagnosticNotices.cpp
+        testenv/delegate.cpp
         testenv/dl.cpp
         testenv/enum.cpp
         testenv/error.cpp
         testenv/envSetting.cpp
+        testenv/fastCompression.cpp
         testenv/fileUtils.cpp
+        testenv/flyweight.cpp
         testenv/getenv.cpp
         testenv/hash.cpp
         testenv/iterator.cpp
@@ -304,6 +315,7 @@ pxr_build_test(testTf
         testenv/refPtr.cpp
         testenv/registryManager.cpp
         testenv/registryManagerUnload.cpp
+        testenv/safeOutputFile.cpp
         testenv/scoped.cpp
         testenv/scopeDescription.cpp
         testenv/setenv.cpp
@@ -314,7 +326,6 @@ pxr_build_test(testTf
         testenv/stringUtils.cpp
         testenv/staticTokens.cpp
         testenv/templateString.cpp
-        testenv/timeStamp.cpp
         testenv/token.cpp
         testenv/type.cpp
         testenv/typeMultipleInheritance.cpp
@@ -328,9 +339,7 @@ pxr_test_scripts(
     testenv/testTfNamedTemporaryFile.py
     testenv/testTfPathUtils.py
     testenv/testTfPython.py
-    testenv/testTfPyDateTime.py
     testenv/testTfPyNotice.py
-    testenv/testTfPyDiagnosticNotices.py
     testenv/testTfPyOptional.py
     testenv/testTfPyScopeDescription.py
     testenv/testTfPyStaticTokens.py
@@ -359,16 +368,8 @@ pxr_install_test_dir(
 )
 endif()
 pxr_install_test_dir(
-    SRC testenv/baseline/TfDiagnosticNotice_Fatal
-    DEST TfDiagnosticNotice_Fatal/baseline
-)
-pxr_install_test_dir(
-    SRC testenv/baseline/TfDiagnosticNotices
-    DEST TfDiagnosticNotices/baseline
-)
-pxr_install_test_dir(
-    SRC testenv/baseline/TfDiagnosticNotices_python
-    DEST TfDiagnosticNotices_Python/baseline
+    SRC testenv/baseline/TfDelegate
+    DEST TfDelegate/baseline
 )
 pxr_install_test_dir(
     SRC testenv/baseline/TfEnum
@@ -441,28 +442,17 @@ pxr_register_test(TfDebugTestEnvHelp
 pxr_register_test(TfDenseHashMap
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfDenseHashMap"
 )
+pxr_register_test(TfDelegate
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfDelegateAddRemove"
+    STDOUT_REDIRECT output.txt 
+    DIFF_COMPARE output.txt 
+)
 pxr_register_test(TfError
     ENV TF_FATAL_VERIFY=0
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfError"
 )
 pxr_register_test(TfErrorThreadTransport
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfErrorThreadTransport"
-)
-pxr_register_test(TfDiagnosticNotices
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfDiagnosticNotices"
-    CLEAN_OUTPUT "${PROJECT_SOURCE_DIR}/" 
-    DIFF_COMPARE output.txt
-)
-pxr_register_test(TfDiagnosticNotice_Fatal
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfDiagnosticNotice_Fatal"
-    CLEAN_OUTPUT "${PROJECT_SOURCE_DIR}/"
-    EXPECTED_RETURN_CODE 134
-    DIFF_COMPARE output_fatal.txt
-)
-pxr_register_test(TfDiagnosticNotices_Python
-    PYTHON
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPyDiagnosticNotices"
-    DIFF_COMPARE pyDiagnosticNoticeOutput.txt
 )
 pxr_register_test(TfEnvSetting
     ENV
@@ -484,6 +474,9 @@ pxr_register_test(TfFileUtils_Python
 pxr_register_test(TfStringUtils_Python
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfStringUtils"
+)
+pxr_register_test(TfFlyweight
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfFlyweight"
 )
 pxr_register_test(TfGetenv
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfGetenv"
@@ -555,6 +548,9 @@ pxr_register_test(TfRegTest_TfUndefinedTest
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfUndefinedTest"
     EXPECTED_RETURN_CODE 3
 )
+pxr_register_test(TfSafeOutputFile
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfSafeOutputFile"
+)
 pxr_register_test(TfScopeDescription
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfScopeDescription"
 )
@@ -564,9 +560,11 @@ pxr_register_test(TfScoped
 pxr_register_test(TfScopedVar
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfScopedVar"
 )
+
 pxr_register_test(TfSetenv
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfSetenv"
 )
+
 pxr_register_test(TfStacked
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfStacked"
 )
@@ -592,9 +590,6 @@ pxr_register_test(testTfTemplateString
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfTemplateString"
 )
-pxr_register_test(TfTimeStamp
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfTimeStamp"
-)
 pxr_register_test(TfToken
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfToken"
 )
@@ -613,34 +608,38 @@ pxr_register_test(TfWeakPtr
 pxr_register_test(TfWeakPtrConversion
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfWeakPtrConversion"
 )
-pxr_register_test(testTfPython
-    PYTHON
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPython"
-)
-pxr_register_test(testTfPyFunction
-    REQUIRES_PYTHON_MODULES
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPyFunction"
-)
-pxr_register_test(testTfPyNotice
-    PYTHON
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPyNotice"
-)
-pxr_register_test(testTfPyInterpreter
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPyInterpreter"
-)
-pxr_register_test(testTfPyLock
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPyLock"
-)
-pxr_register_test(testTfPyScopeDescription
-    PYTHON
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPyScopeDescription"
-)
-pxr_register_test(testTfScriptModuleLoader
-    PYTHON
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfScriptModuleLoader"
-    STDOUT_REDIRECT scriptModuleLoader.out
-    DIFF_COMPARE scriptModuleLoader.out
-)
+
+if(PXR_ENABLE_PYTHON_SUPPORT)
+    pxr_register_test(testTfPython
+        PYTHON
+        COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPython"
+    )
+    pxr_register_test(testTfPyFunction
+        REQUIRES_PYTHON_MODULES
+        COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPyFunction"
+    )
+    pxr_register_test(testTfPyNotice
+        PYTHON
+        COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPyNotice"
+    )
+    pxr_register_test(testTfPyInterpreter
+        COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPyInterpreter"
+    )
+    pxr_register_test(testTfPyLock
+        COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPyLock"
+    )
+    pxr_register_test(testTfPyScopeDescription
+        PYTHON
+        COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPyScopeDescription"
+    )
+    pxr_register_test(testTfScriptModuleLoader
+        PYTHON
+        COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfScriptModuleLoader"
+        STDOUT_REDIRECT scriptModuleLoader.out
+        DIFF_COMPARE scriptModuleLoader.out
+    )
+endif()
+
 pxr_register_test(testTfType
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfType"
@@ -660,10 +659,6 @@ pxr_register_test(testTf_PyContainerConversions
 pxr_register_test(testTf_PyOptional
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPyOptional"
-)
-pxr_register_test(testTf_PyDateTime
-    PYTHON
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPyDateTime"
 )
 pxr_register_test(testTf_PyStaticTokens
     PYTHON

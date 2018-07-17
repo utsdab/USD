@@ -13,8 +13,8 @@ pxr_library(usdShade
         connectableAPI
         debugCodes
         input
-        look
         material
+        materialBindingAPI
         output
         shader
         nodeGraph
@@ -24,34 +24,38 @@ pxr_library(usdShade
     PUBLIC_HEADERS
         api.h
 
-    CPPFILES
+    PYTHON_CPPFILES
         moduleDeps.cpp
 
     PYMODULE_CPPFILES
         module.cpp
         wrapConnectableAPI.cpp
         wrapInput.cpp
-        wrapLook.cpp
         wrapMaterial.cpp
+        wrapMaterialBindingAPI.cpp
         wrapOutput.cpp
         wrapShader.cpp
         wrapNodeGraph.cpp
         wrapTokens.cpp
         wrapUtils.cpp
 
-    PYTHON_FILES
+    PYMODULE_FILES
         __init__.py
 
     RESOURCE_FILES
         plugInfo.json
         generatedSchema.usda
+        schema.usda:usdShade/schema.usda
 )
 
 pxr_test_scripts(
     testenv/testUsdShadeBinding.py
     testenv/testUsdShadeConnectability.py
     testenv/testUsdShadeInterfaceInputConsumers.py
+    testenv/testUsdShadeMaterialBinding.py
+    testenv/testUsdShadeMaterialOutputs.py
     testenv/testUsdShadeMaterialFaceSet.py
+    testenv/testUsdShadeMaterialBindFaceSubset.py
     testenv/testUsdShadeMaterialAuthoring.py
     testenv/testUsdShadeMaterialBaseMaterial.py
     testenv/testUsdShadeMaterialSpecializesBaseComposition.py
@@ -64,6 +68,15 @@ pxr_install_test_dir(
     DEST testUsdShadeMaterialFaceSet
 )
 
+pxr_install_test_dir(
+    SRC testenv/testUsdShadeMaterialBinding
+    DEST testUsdShadeMaterialBinding
+)
+
+pxr_install_test_dir(
+    SRC testenv/testUsdShadeMaterialBindFaceSubset
+    DEST testUsdShadeMaterialBindFaceSubset
+)
 pxr_install_test_dir(
     SRC testenv/testUsdShadeMaterialAuthoring
     DEST testUsdShadeMaterialAuthoring
@@ -96,10 +109,29 @@ pxr_register_test(testUsdShadeMaterialAuthoring
     EXPECTED_RETURN_CODE 0
 )
 
+pxr_register_test(testUsdShadeMaterialBinding
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdShadeMaterialBinding"
+    EXPECTED_RETURN_CODE 0
+)
+
+pxr_register_test(testUsdShadeMaterialOutputs
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdShadeMaterialOutputs"
+    EXPECTED_RETURN_CODE 0
+)
+
 pxr_register_test(testUsdShadeMaterialFaceSet
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdShadeMaterialFaceSet"
     DIFF_COMPARE SphereWithFaceSets.usda
+    EXPECTED_RETURN_CODE 0
+)
+
+pxr_register_test(testUsdShadeMaterialBindFaceSubset
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdShadeMaterialBindFaceSubset"
+    DIFF_COMPARE SphereWithMaterialBind.usda
     EXPECTED_RETURN_CODE 0
 )
 
@@ -113,8 +145,6 @@ pxr_register_test(testUsdShadeNodeGraphs
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdShadeNodeGraphs"
     EXPECTED_RETURN_CODE 0
-    ENV
-        USD_SHADE_WRITE_NEW_ENCODING=1
 )
 
 pxr_register_test(testUsdShadeMaterialBaseMaterial_derives
@@ -153,8 +183,6 @@ pxr_register_test(testUsdShadeInterfaceInputConsumers
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdShadeInterfaceInputConsumers"
     EXPECTED_RETURN_CODE 0
-    ENV
-        USD_SHADE_WRITE_NEW_ENCODING=1
 )
 
 pxr_register_test(testUsdShadeConnectability
@@ -162,7 +190,6 @@ pxr_register_test(testUsdShadeConnectability
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdShadeConnectability"
     EXPECTED_RETURN_CODE 0
     ENV
-        USD_SHADE_WRITE_NEW_ENCODING=1
         USD_SHADE_READ_OLD_ENCODING=0
 )
 

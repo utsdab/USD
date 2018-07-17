@@ -24,6 +24,7 @@
 #include "pxr/usdImaging/usdImaging/coneAdapter.h"
 
 #include "pxr/usdImaging/usdImaging/delegate.h"
+#include "pxr/usdImaging/usdImaging/indexProxy.h"
 #include "pxr/usdImaging/usdImaging/tokens.h"
 
 #include "pxr/imaging/hd/mesh.h"
@@ -54,9 +55,9 @@ UsdImagingConeAdapter::~UsdImagingConeAdapter()
 }
 
 bool
-UsdImagingConeAdapter::IsSupported(HdRenderIndex* renderIndex)
+UsdImagingConeAdapter::IsSupported(UsdImagingIndexProxy const* index) const
 {
-    return renderIndex->IsRprimTypeSupported(HdPrimTypeTokens->mesh);
+    return index->IsRprimTypeSupported(HdPrimTypeTokens->mesh);
 }
 
 SdfPath
@@ -64,78 +65,38 @@ UsdImagingConeAdapter::Populate(UsdPrim const& prim,
                             UsdImagingIndexProxy* index,
                             UsdImagingInstancerContext const* instancerContext)
 {
-    index->InsertMesh(prim.GetPath(),
-                      GetShaderBinding(prim),
-                      instancerContext);
-    HD_PERF_COUNTER_INCR(UsdImagingTokens->usdPopulatedPrimCount);
-
-    return prim.GetPath();
-}
-
-void 
-UsdImagingConeAdapter::TrackVariabilityPrep(UsdPrim const& prim,
-                                            SdfPath const& cachePath,
-                                            HdDirtyBits requestedBits,
-                                            UsdImagingInstancerContext const* 
-                                                instancerContext)
-{
-    // Let the base class track what it needs.
-    BaseAdapter::TrackVariabilityPrep(
-        prim, cachePath, requestedBits, instancerContext);
+    return _AddRprim(HdPrimTypeTokens->mesh,
+                     prim, index, GetMaterialId(prim), instancerContext);
 }
 
 void 
 UsdImagingConeAdapter::TrackVariability(UsdPrim const& prim,
                                         SdfPath const& cachePath,
-                                        HdDirtyBits requestedBits,
-                                        HdDirtyBits* dirtyBits,
+                                        HdDirtyBits* timeVaryingBits,
                                         UsdImagingInstancerContext const* 
-                                            instancerContext)
+                                            instancerContext) const
 {
     BaseAdapter::TrackVariability(
-        prim, cachePath, requestedBits, dirtyBits, instancerContext);
+        prim, cachePath, timeVaryingBits, instancerContext);
     // WARNING: This method is executed from multiple threads, the value cache
     // has been carefully pre-populated to avoid mutating the underlying
     // container during update.
     
-    if (requestedBits & HdChangeTracker::DirtyPoints) {
-        UsdGeomCone cone(prim);
+    UsdGeomCone cone(prim);
 
-        if (!_IsVarying(prim, 
-                           UsdGeomTokens->radius,
-                           HdChangeTracker::DirtyPoints,
-                           UsdImagingTokens->usdVaryingPrimVar,
-                           dirtyBits, 
-                           /*isInherited*/false)) {
-            _IsVarying(prim, 
-                       UsdGeomTokens->height,
+    if (!_IsVarying(prim,
+                       UsdGeomTokens->radius,
                        HdChangeTracker::DirtyPoints,
-                       UsdImagingTokens->usdVaryingPrimVar,
-                       dirtyBits,
-                       /*isInherited*/false);
-        }
+                       UsdImagingTokens->usdVaryingPrimvar,
+                       timeVaryingBits,
+                       /*isInherited*/false)) {
+        _IsVarying(prim,
+                   UsdGeomTokens->height,
+                   HdChangeTracker::DirtyPoints,
+                   UsdImagingTokens->usdVaryingPrimvar,
+                   timeVaryingBits,
+                   /*isInherited*/false);
     }
-}
-
-void 
-UsdImagingConeAdapter::UpdateForTimePrep(UsdPrim const& prim,
-                                   SdfPath const& cachePath, 
-                                   UsdTimeCode time,
-                                   HdDirtyBits requestedBits,
-                                   UsdImagingInstancerContext const* 
-                                       instancerContext)
-{
-    BaseAdapter::UpdateForTimePrep(
-        prim, cachePath, time, requestedBits, instancerContext);
-    // This adapter will never mark these as dirty, however the client may
-    // explicitly ask for them, after the initial cached value is gone.
-    
-    UsdImagingValueCache* valueCache = _GetValueCache();
-    if (requestedBits & HdChangeTracker::DirtyTopology)
-        valueCache->GetTopology(cachePath);
-
-    if (requestedBits & HdChangeTracker::DirtyPoints)
-        valueCache->GetPoints(cachePath);
 }
 
 // Thread safe.
@@ -145,12 +106,11 @@ UsdImagingConeAdapter::UpdateForTime(UsdPrim const& prim,
                                SdfPath const& cachePath, 
                                UsdTimeCode time,
                                HdDirtyBits requestedBits,
-                               HdDirtyBits* resultBits,
                                UsdImagingInstancerContext const* 
-                                   instancerContext)
+                                   instancerContext) const
 {
     BaseAdapter::UpdateForTime(
-        prim, cachePath, time, requestedBits, resultBits, instancerContext);
+        prim, cachePath, time, requestedBits, instancerContext);
     UsdImagingValueCache* valueCache = _GetValueCache();
     if (requestedBits & HdChangeTracker::DirtyTopology) {
         valueCache->GetTopology(cachePath) = GetMeshTopology();
@@ -159,10 +119,10 @@ UsdImagingConeAdapter::UpdateForTime(UsdPrim const& prim,
         valueCache->GetPoints(cachePath) = GetMeshPoints(prim, time);
 
         // Expose points as a primvar.
-        UsdImagingValueCache::PrimvarInfo primvar;
-        primvar.name = HdTokens->points;
-        primvar.interpolation = UsdGeomTokens->vertex;
-        _MergePrimvar(primvar, &valueCache->GetPrimvars(cachePath));
+        _MergePrimvar(&valueCache->GetPrimvars(cachePath),
+                      HdTokens->points,
+                      HdInterpolationVertex,
+                      HdPrimvarRoleTokens->point);
     }
 }
 

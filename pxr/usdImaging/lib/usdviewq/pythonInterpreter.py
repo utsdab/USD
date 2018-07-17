@@ -23,7 +23,8 @@
 #
 from pxr import Tf
 
-from PySide import QtGui, QtCore
+from qt import QtCore, QtGui, QtWidgets
+from usdviewApi import UsdviewApi
 
 from code import InteractiveInterpreter
 import os, sys, keyword
@@ -32,9 +33,9 @@ import os, sys, keyword
 def _PrintToErr(line):
     old = sys.stdout
     sys.stdout = sys.__stderr__
-    print line 
+    print line
     sys.stdout = old
-    
+
 def _Redirected(method):
     def new(self, *args, **kw):
         old = sys.stdin, sys.stdout, sys.stderr
@@ -49,10 +50,10 @@ def _Redirected(method):
 class _Completer(object):
     """Taken from rlcompleter, with readline references stripped, and a local
     dictionary to use."""
-    
+
     def __init__(self, locals):
         self.locals = locals
-        
+
     def Complete(self, text, state):
         """Return the next possible completion for 'text'.
         This is called successively with state == 0, 1, 2, ... until it
@@ -70,7 +71,7 @@ class _Completer(object):
 
     def _GlobalMatches(self, text):
         """Compute matches when text is a simple name.
-        
+
         Return a list of all keywords, built-in functions and names
         currently defines in __main__ that match.
         """
@@ -86,13 +87,13 @@ class _Completer(object):
 
     def _AttrMatches(self, text):
         """Compute matches when text contains a dot.
-        
+
         Assuming the text is of the form NAME.NAME....[NAME], and is
         evaluatable in the globals of __main__, it will be evaluated
         and its attributes (as revealed by dir()) are used as possible
         completions.  (For class instances, class members are are also
         considered.)
-        
+
         WARNING: this can still invoke arbitrary C code, if an object
         with a __getattr__ hook is evaluated.
         """
@@ -109,7 +110,7 @@ class _Completer(object):
         index = -1
         for char in splitChars:
             index = max(text.rfind(char), index)
-            
+
         if index >= len(text)-1:
             return []
 
@@ -123,7 +124,7 @@ class _Completer(object):
         if not m:
             return []
         expr, attr = m.group(1, 3)
-    
+
         try:
             myobject = eval(expr, __main__.__dict__, self.locals)
         except (AttributeError, NameError, SyntaxError):
@@ -148,7 +149,7 @@ def _GetClassMembers(cls):
         for base in cls.__bases__:
             ret = ret + _GetClassMembers(base)
     return ret
-  
+
 
 class Interpreter(InteractiveInterpreter):
     def __init__(self, widget, locals = None):
@@ -229,7 +230,7 @@ class Controller(QtCore.QObject):
         # last line + last incomplete lines
         self.lines = []
 
-        # flag: the interpreter needs more input to run the last lines. 
+        # flag: the interpreter needs more input to run the last lines.
         self.more = 0
 
         # history
@@ -251,33 +252,26 @@ class Controller(QtCore.QObject):
             sys.ps2
         except AttributeError:
             sys.ps2 = "... "
-            
+
         self.textEdit = textEdit
-        self.connect(self.textEdit, QtCore.SIGNAL('destroyed()'),
-                     self._TextEditDestroyedSlot)
+        self.textEdit.destroyed.connect(self._TextEditDestroyedSlot)
 
-        self.connect(self.textEdit, QtCore.SIGNAL("returnPressed()"),
-                     self._ReturnPressedSlot)
+        self.textEdit.returnPressed.connect(self._ReturnPressedSlot)
 
-        self.connect(self.textEdit, QtCore.SIGNAL("requestComplete()"),
-                     self._CompleteSlot)
+        self.textEdit.requestComplete.connect(self._CompleteSlot)
 
-        self.connect(self.textEdit, QtCore.SIGNAL("requestNext()"),
-                     self._NextSlot)
+        self.textEdit.requestNext.connect(self._NextSlot)
 
-        self.connect(self.textEdit, QtCore.SIGNAL("requestPrev()"),
-                     self._PrevSlot)
+        self.textEdit.requestPrev.connect(self._PrevSlot)
 
-        appInstance = QtGui.QApplication.instance()
-        self.connect(appInstance,
-                     QtCore.SIGNAL("appControllerQuit()"),
-                     self._QuitSlot)
-        
+        appInstance = QtWidgets.QApplication.instance()
+        appInstance.aboutToQuit.connect(self._QuitSlot)
+
         self.textEdit.setTabChangesFocus(False)
 
         self.textEdit.setWordWrapMode(QtGui.QTextOption.WrapAnywhere)
         self.textEdit.setWindowTitle('Interpreter')
-        
+
         self.textEdit.promptLength = len(sys.ps1)
 
         # Do initial auto-import.
@@ -300,7 +294,7 @@ class Controller(QtCore.QObject):
     def _DoAutoImports(self):
         modules = Tf.ScriptModuleLoader().GetModulesDict()
         for name, mod in modules.items():
-            self.interpreter.runsource('import ' + mod.__name__ + 
+            self.interpreter.runsource('import ' + mod.__name__ +
                                        ' as ' + name + '\n')
 
     @_Redirected
@@ -329,7 +323,7 @@ class Controller(QtCore.QObject):
     def _TextEditDestroyedSlot(self):
         self.readlineEventLoop = None
 
-    def _ReturnPressedSlot(self):   
+    def _ReturnPressedSlot(self):
         if self.readlineEventLoop.isRunning():
             self.readlineEventLoop.Exit()
         else:
@@ -391,7 +385,7 @@ class Controller(QtCore.QObject):
         else:
             self.write('\n')
             return txt
-            
+
     @_Redirected
     def write(self, text):
         'Simulate stdin, stdout, and stderr.'
@@ -457,13 +451,13 @@ class Controller(QtCore.QObject):
             # number of columns in our text table based on the max string width
             # of our completed words XXX TODO - paging based on widget height
             width = contentsRect.right() - contentsRect.left()
-            
+
             maxLength = 0
             for i in completions:
                 maxLength = max(maxLength, self._GetStringLengthInPixels(i))
             # pad it a bit
             maxLength = maxLength + self._GetStringLengthInPixels('  ')
-                
+
             # how many columns can we fit on screen?
             numCols = max(1,width / maxLength)
             # how many rows do we need to fit our data
@@ -473,7 +467,7 @@ class Controller(QtCore.QObject):
                                             maxLength)
 
             tableFormat = QtGui.QTextTableFormat()
-            tableFormat.setAlignment(QtCore.Qt.AlignLeft)          
+            tableFormat.setAlignment(QtCore.Qt.AlignLeft)
             tableFormat.setCellPadding(0)
             tableFormat.setCellSpacing(0)
             tableFormat.setColumnWidthConstraints([columnWidth] * numCols)
@@ -482,7 +476,7 @@ class Controller(QtCore.QObject):
 
             # Make the completion table insertion a single edit block
             cursor.beginEditBlock()
-            cursor.movePosition(QtGui.QTextCursor.End) 
+            cursor.movePosition(QtGui.QTextCursor.End)
             textTable = cursor.insertTable(numRows, numCols, tableFormat)
 
             completions.sort()
@@ -518,7 +512,7 @@ class Controller(QtCore.QObject):
             textToRight = line[i+len(token):]
             line = line[0:i] + cp + textToRight
             self.write(line)
-          
+
             # replace the line and reset the cursor
             cursor = self.textEdit.textCursor()
             cursor.setPosition(self.textEdit.StartOfInput() + len(line) -
@@ -535,7 +529,7 @@ class Controller(QtCore.QObject):
 
             cursor.setPosition(self.textEdit.StartOfInput(),
                                QtGui.QTextCursor.MoveAnchor)
-                            
+
             cursor.movePosition(QtGui.QTextCursor.EndOfBlock,
                                 QtGui.QTextCursor.KeepAnchor)
 
@@ -557,7 +551,7 @@ class Controller(QtCore.QObject):
                 return
             self.historyPointer += 1
             self._Recall()
-            
+
     def _PrevSlot(self):
         if len(self.history):
             # if we have no history pointer, set it to the most recent
@@ -582,18 +576,18 @@ class Controller(QtCore.QObject):
                             QtGui.QTextCursor.KeepAnchor)
         txt = str(cursor.selectedText())
         return txt
-        
+
     def _ClearLine(self):
         cursor = self.textEdit.textCursor()
 
         cursor.setPosition(self.textEdit.StartOfInput(),
                            QtGui.QTextCursor.MoveAnchor)
-                            
+
         cursor.movePosition(QtGui.QTextCursor.EndOfBlock,
                             QtGui.QTextCursor.KeepAnchor)
 
         cursor.removeSelectedText()
-        
+
     @_Redirected
     def _Run(self):
         """
@@ -607,7 +601,7 @@ class Controller(QtCore.QObject):
         inputLine = self._GetInputLine()
         if (inputLine != ""):
             self.history.append(inputLine)
-            
+
         self.lines.append(inputLine)
         source = '\n'.join(self.lines)
         self.write('\n')
@@ -619,7 +613,7 @@ class Controller(QtCore.QObject):
             self.write(sys.ps1)
             self.SetInputStart()
             self.lines = []
-      
+
     def _Recall(self):
         """
         Display the current item from the command history.
@@ -627,7 +621,7 @@ class Controller(QtCore.QObject):
         self._ClearLine()
         self.write(self.history[self.historyPointer])
 
-class View(QtGui.QTextEdit):
+class View(QtWidgets.QTextEdit):
     """View is a QTextEdit which provides some extra
     facilities to help implement an interpreter console.  In particular,
     QTextEdit does not provide for complete control over the buffer being
@@ -635,6 +629,11 @@ class View(QtGui.QTextEdit):
     taken, disallowing controller classes from really controlling the widget.
     This widget fixes that.
     """
+
+    returnPressed = QtCore.Signal()
+    requestPrev = QtCore.Signal()
+    requestNext = QtCore.Signal()
+    requestComplete = QtCore.Signal()
 
     def __init__(self, parent=None):
         super(View, self).__init__(parent)
@@ -646,10 +645,10 @@ class View(QtGui.QTextEdit):
         self.tripleClickTimer = QtCore.QBasicTimer()
         self.tripleClickPoint = QtCore.QPoint()
         self._ignoreKeyPresses = True
-        
+
     def SetStartOfInput(self, position):
         self.__startOfInput = position
-        
+
     def StartOfInput(self):
         return self.__startOfInput
 
@@ -678,7 +677,7 @@ class View(QtGui.QTextEdit):
             anchor = QtGui.QTextCursor.KeepAnchor
 
         cursor.movePosition(QtGui.QTextCursor.End, anchor)
-                    
+
         cursor.setPosition(self.__startOfInput, anchor)
 
         self.setTextCursor(cursor)
@@ -688,20 +687,20 @@ class View(QtGui.QTextEdit):
         anchor = QtGui.QTextCursor.MoveAnchor
         if (select):
             anchor = QtGui.QTextCursor.KeepAnchor
-            
+
         c.movePosition(QtGui.QTextCursor.End, anchor)
         self.setTextCursor(c)
-        
+
     def _WritableCharsToLeftOfCursor(self):
         return (self._PositionInInputArea(self.textCursor().position()) > 0)
 
     def mousePressEvent(self, e):
-        app = QtGui.QApplication.instance()        
+        app = QtWidgets.QApplication.instance()
 
-        # is this a triple click?        
+        # is this a triple click?
         if ((e.button() & QtCore.Qt.LeftButton) and
              self.tripleClickTimer.isActive() and
-             (e.globalPos() - self.tripleClickPoint).manhattanLength() < 
+             (e.globalPos() - self.tripleClickPoint).manhattanLength() <
               app.startDragDistance() ):
 
             # instead of duplicating the triple click code completely, we just
@@ -721,10 +720,10 @@ class View(QtGui.QTextEdit):
                      self.setTextCursor(cursor)
         else:
             super(View, self).mousePressEvent(e)
-        
+
     def mouseDoubleClickEvent(self, e):
         super(View, self).mouseDoubleClickEvent(e)
-        app = QtGui.QApplication.instance()
+        app = QtWidgets.QApplication.instance()
         self.tripleClickTimer.start(app.doubleClickInterval(), self)
         # make a copy here, otherwise tripleClickPoint will always = globalPos
         self.tripleClickPoint = QtCore.QPoint(e.globalPos())
@@ -737,18 +736,18 @@ class View(QtGui.QTextEdit):
 
     def enterEvent(self, e):
         self._ignoreKeyPresses = False
-        
+
     def leaveEvent(self, e):
         self._ignoreKeyPresses = True
 
     def dragEnterEvent(self, e):
         self._ignoreKeyPresses = False
         super(View, self).dragEnterEvent(e)
-        
+
     def dragLeaveEvent(self, e):
         self._ignoreKeyPresses = True
         super(View, self).dragLeaveEvent(e)
-        
+
     def keyPressEvent(self, e):
         """
         Handle user input a key at a time.
@@ -757,7 +756,7 @@ class View(QtGui.QTextEdit):
         if (self._ignoreKeyPresses):
             e.ignore()
             return
-            
+
         text = e.text()
         key = e.key()
 
@@ -793,13 +792,13 @@ class View(QtGui.QTextEdit):
             cursor.movePosition(QtGui.QTextCursor.EndOfBlock)
             self.setTextCursor(cursor)
             # emit returnPressed
-            self.emit(QtCore.SIGNAL("returnPressed()"))
+            self.returnPressed.emit()
 
-        elif (key == QtCore.Qt.Key_Up 
+        elif (key == QtCore.Qt.Key_Up
                 or key == QtCore.Qt.Key_Down
-                # support Ctrl+P and Ctrl+N for history 
+                # support Ctrl+P and Ctrl+N for history
                 # navigation along with arrows
-                or (ctrl and (key == QtCore.Qt.Key_P 
+                or (ctrl and (key == QtCore.Qt.Key_P
                               or key == QtCore.Qt.Key_N))
                 # support Ctrl+E and Ctrl+A for terminal
                 # style nav. to the ends of the line
@@ -807,9 +806,9 @@ class View(QtGui.QTextEdit):
                               or key == QtCore.Qt.Key_E))):
             if cursorInInput:
                 if (key == QtCore.Qt.Key_Up or key == QtCore.Qt.Key_P):
-                    self.emit(QtCore.SIGNAL("requestPrev()"))
+                    self.requestPrev.emit()
                 if (key == QtCore.Qt.Key_Down or key == QtCore.Qt.Key_N):
-                    self.emit(QtCore.SIGNAL("requestNext()"))
+                    self.requestNext.emit()
                 if (key == QtCore.Qt.Key_A):
                     self._MoveCursorToStartOfInput(False)
                 if (key == QtCore.Qt.Key_E):
@@ -820,8 +819,8 @@ class View(QtGui.QTextEdit):
         elif key == QtCore.Qt.Key_Tab:
             self.AutoComplete()
             e.accept()
-        elif (ctrl or alt or 
-              key == QtCore.Qt.Key_Home or 
+        elif (ctrl or alt or
+              key == QtCore.Qt.Key_Home or
               key == QtCore.Qt.Key_End):
             # Ignore built-in QTextEdit hotkeys so we can handle them with
             # our App-level hotkey system.
@@ -840,7 +839,7 @@ class View(QtGui.QTextEdit):
 
     def AutoComplete(self):
         if self._CursorIsInInputArea():
-            self.emit(QtCore.SIGNAL("requestComplete()"))
+            self.requestComplete.emit()
 
     def _MoveCursorToBeginning(self, select=False):
         if self._CursorIsInInputArea():
@@ -866,15 +865,47 @@ class View(QtGui.QTextEdit):
             cursor.movePosition(QtGui.QTextCursor.Up, anchor)
             cursor.movePosition(QtGui.QTextCursor.EndOfLine, anchor)
             self.setTextCursor(cursor)
-            
+
     def MoveCursorToBeginning(self):
         self._MoveCursorToBeginning(False)
-            
+
     def MoveCursorToEnd(self):
         self._MoveCursorToEnd(False)
-        
+
     def SelectToTop(self):
         self._MoveCursorToBeginning(True)
-        
+
     def SelectToBottom(self):
         self._MoveCursorToEnd(True)
+
+
+FREQUENTLY_USED = [
+    "dataModel", "stage", "frame", "prim", "property", "spec", "layer"]
+
+
+INITIAL_PROMPT = """
+Use the `usdviewApi` variable to interact with UsdView.
+Type `help(usdviewApi)` to view available API methods and properties.
+
+Frequently used properties:
+{}\n""".format(
+    "".join("    usdviewApi.{} - {}\n".format(
+        name, getattr(UsdviewApi, name).__doc__)
+    for name in FREQUENTLY_USED))
+
+
+class Myconsole(View):
+
+    def __init__(self, parent, usdviewApi):
+        View.__init__(self, parent)
+        self.setObjectName("Myconsole")
+
+        # Inject the UsdviewApi into the interpreter variables.
+        interpreterLocals = vars()
+        interpreterLocals["usdviewApi"] = usdviewApi
+
+        # Make a Controller.
+        self._controller = Controller(self, INITIAL_PROMPT, interpreterLocals)
+
+    def locals(self):
+        return self._controller.interpreter.locals

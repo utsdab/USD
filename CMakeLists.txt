@@ -6,6 +6,17 @@ else()
     cmake_minimum_required(VERSION 2.8.8)
 endif()
 
+if (NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    if (WIN32)
+        message(FATAL_ERROR "Compiler does not support 64-bit builds. "
+                "If you are using Visual Studio, make sure you are in the "
+                "x64 command prompt and have specified the Win64 cmake "
+                "generator (e.g., -G \"Visual Studio 14 2015 Win64\")")
+    else()
+        message(FATAL_ERROR "Compiler does not support 64-bit builds.")
+    endif()
+endif()
+
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/defaults
                       ${CMAKE_SOURCE_DIR}/cmake/modules
                       ${CMAKE_SOURCE_DIR}/cmake/macros)
@@ -58,7 +69,9 @@ function(_enableThirdPartyPlugin identifier)
 endfunction()
 
 if (${PXR_BUILD_KATANA_PLUGIN})
-    if (NOT ${PXR_BUILD_USD_IMAGING})
+    if(NOT ${PXR_ENABLE_PYTHON_SUPPORT})
+        message(WARNING "Skipping third_party/katana because PXR_ENABLE_PYTHON_SUPPORT=OFF")
+    elseif(NOT ${PXR_BUILD_USD_IMAGING})
         message(WARNING "Skipping third_party/katana because PXR_BUILD_USD_IMAGING=OFF")
     else()
         _enableThirdPartyPlugin("katana")
@@ -66,7 +79,9 @@ if (${PXR_BUILD_KATANA_PLUGIN})
 endif()
 
 if (${PXR_BUILD_MAYA_PLUGIN})
-    if (NOT ${PXR_BUILD_USD_IMAGING})
+    if(NOT ${PXR_ENABLE_PYTHON_SUPPORT})
+        message(WARNING "Skipping third_party/maya because PXR_ENABLE_PYTHON_SUPPORT=OFF")
+    elseif (NOT ${PXR_BUILD_USD_IMAGING})
         message(WARNING "Skipping third_party/maya because PXR_BUILD_USD_IMAGING=OFF")
     else()
         _enableThirdPartyPlugin("maya")
@@ -74,8 +89,12 @@ if (${PXR_BUILD_MAYA_PLUGIN})
 endif()
 
 if (${PXR_BUILD_HOUDINI_PLUGIN})
-    message(STATUS "Enable houdini plugin")
-    _enableThirdPartyPlugin("houdini")
+    if(NOT ${PXR_ENABLE_PYTHON_SUPPORT})
+        message(WARNING "Skipping third_party/houdini because PXR_ENABLE_PYTHON_SUPPORT=OFF")
+    else()
+        message(STATUS "Enable houdini plugin")
+        _enableThirdPartyPlugin("houdini")
+    endif()
 endif()
 
 if (${PXR_BUILD_DOCUMENTATION})                                                  
@@ -101,12 +120,13 @@ if (${PXR_BUILD_DOCUMENTATION})
     
     set(DOCS_DIR "${CMAKE_BINARY_DIR}") 
     set(GEN_SCRIPT "${PROJECT_SOURCE_DIR}/cmake/macros/generateDocs.py")         
-    set(SOURCE_DIR "${CMAKE_SOURCE_DIR}/pxr")
+    set(PXR_SOURCE_DIR "${CMAKE_SOURCE_DIR}/pxr")
+    set(THIRD_PARTY_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party")
                                                                                  
     add_custom_target(                                                           
         documentation                                                            
         ALL                                                                      
-        COMMAND ${PYTHON_EXECUTABLE} ${GEN_SCRIPT} ${SOURCE_DIR} ${CMAKE_BINARY_DIR} ${DOCS_DIR} ${DOXYGEN_EXECUTABLE} ${DOT_EXECUTABLE}
+        COMMAND ${PYTHON_EXECUTABLE} ${GEN_SCRIPT} ${PXR_SOURCE_DIR} ${THIRD_PARTY_SOURCE_DIR} ${CMAKE_BINARY_DIR} ${DOCS_DIR} ${DOXYGEN_EXECUTABLE} ${DOT_EXECUTABLE}
         DEPENDS ${CMAKE_BINARY_DIR}/include/pxr/pxr.h
     ) 
 

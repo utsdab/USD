@@ -38,7 +38,9 @@
 #include "pxr/usd/sdf/vectorListEditor.h"
 
 #include "pxr/base/tf/type.h"
-#include "pxr/base/tracelite/trace.h"
+#include "pxr/base/trace/trace.h"
+
+#include <functional>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -276,7 +278,8 @@ SdfRelationshipSpec::ReplaceTargetPath(
 
     // Update the list op.
     if (targetsListOp.ModifyOperations(
-            boost::bind(_ReplacePath, oldTargetPath, newTargetPath, _1))) {
+            std::bind(_ReplacePath, oldTargetPath, newTargetPath,
+                      std::placeholders::_1))) {
         layer->SetField(relPath, SdfFieldKeys->TargetPaths, targetsListOp);
     }
 }

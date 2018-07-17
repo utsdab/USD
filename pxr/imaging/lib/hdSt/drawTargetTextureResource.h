@@ -25,13 +25,13 @@
 #define HDST_DRAW_TARGET_TEXTURE_RESOURCE_H
 
 #include "pxr/pxr.h"
-#include "pxr/imaging/hd/textureResource.h"
+#include "pxr/imaging/hdSt/textureResource.h"
 #include "pxr/imaging/glf/drawTarget.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 
-class HdSt_DrawTargetTextureResource final : public HdTextureResource {
+class HdSt_DrawTargetTextureResource final : public HdStTextureResource {
 public:
     HdSt_DrawTargetTextureResource();
     virtual ~HdSt_DrawTargetTextureResource();
@@ -44,24 +44,28 @@ public:
     // HdTextureResource API
     //
     virtual bool IsPtex() const override;
+    virtual size_t GetMemoryUsed() override;
 
+    //
+    // HdStTextureResource API
+    //
     virtual GLuint GetTexelsTextureId() override;
     virtual GLuint GetTexelsSamplerId() override;
     virtual uint64_t GetTexelsTextureHandle() override;
-
     virtual GLuint GetLayoutTextureId() override;
     virtual uint64_t GetLayoutTextureHandle() override;
-
-    virtual size_t GetMemoryUsed() override;
 
 private:
     GlfDrawTarget::AttachmentRefPtr  _attachment;
     GLuint                           _sampler;
-
+    GfVec4f                          _borderColor;
+    float                            _maxAnisotropy;
 
     // No copying
-    HdSt_DrawTargetTextureResource(const HdSt_DrawTargetTextureResource &)             = delete;
-    HdSt_DrawTargetTextureResource &operator =(const HdSt_DrawTargetTextureResource &) = delete;
+    HdSt_DrawTargetTextureResource(
+        const HdSt_DrawTargetTextureResource &) = delete;
+    HdSt_DrawTargetTextureResource &operator =(
+        const HdSt_DrawTargetTextureResource &) = delete;
 };
 
 

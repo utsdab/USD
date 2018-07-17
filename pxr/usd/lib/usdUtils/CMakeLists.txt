@@ -16,10 +16,13 @@ pxr_library(usdUtils
 
     PUBLIC_CLASSES
         authoring
+        coalescingDiagnosticDelegate
         dependencies
+        flattenLayerStack
         introspection
         pipeline
         registeredVariantSet
+        sparseValueWriter
         stageCache
         stitch
         stitchClips
@@ -27,33 +30,58 @@ pxr_library(usdUtils
     PUBLIC_HEADERS
         api.h
         
-    CPPFILES
+    PYTHON_CPPFILES
         moduleDeps.cpp
 
     PYMODULE_CPPFILES
         module.cpp
         wrapAuthoring.cpp
+        wrapCoalescingDiagnosticDelegate.cpp
         wrapDependencies.cpp
+        wrapFlattenLayerStack.cpp
         wrapIntrospection.cpp
         wrapPipeline.cpp
         wrapRegisteredVariantSet.cpp
+        wrapSparseValueWriter.cpp
         wrapStageCache.cpp
         wrapStitch.cpp
         wrapStitchClips.cpp
 
-    PYTHON_FILES
+    PYMODULE_FILES
         __init__.py
 )
 
 pxr_test_scripts(
-    testenv/testUsdUtilsAuthoring.py 
+    testenv/testUsdUtilsAuthoring.py
+    testenv/testUsdUtilsSparseValueWriter.py  
+    testenv/testUsdUtilsCoalescingDiagnosticDelegate.py
     testenv/testUsdUtilsDependencyExtractor.py 
+    testenv/testUsdUtilsFlattenLayerStack.py
     testenv/testUsdUtilsIntrospection.py 
     testenv/testUsdUtilsPipeline.py 
     testenv/testUsdUtilsStageCache.py 
     testenv/testUsdUtilsStitchClips.py 
     testenv/testUsdUtilsStitch.py 
     testenv/testUsdUtilsVarSelsSessionLayer.py 
+)
+
+pxr_build_test(testUsdUtilsCoalescingDiagnosticDelegateCpp
+    LIBRARIES
+        tf
+        usd
+        usdUtils
+    CPPFILES
+        testenv/testUsdUtilsCoalescingDiagnosticDelegate.cpp
+)
+
+pxr_build_test(testUsdUtilsStitchCpp
+    LIBRARIES
+        sdf
+        tf
+        usd
+        usdUtils
+    CPPFILES
+        testenv/testUsdUtilsStitch.cpp
 )
 
 pxr_install_test_dir(
@@ -82,6 +110,16 @@ pxr_install_test_dir(
 )
 
 pxr_install_test_dir(
+    SRC testenv/testUsdUtilsFlattenLayerStack
+    DEST testUsdUtilsFlattenLayerStack
+)
+
+pxr_install_test_dir(
+    SRC testenv/testUsdUtilsFlattenLayerStack
+    DEST testUsdUtilsFlattenLayerStack_OldOffsets
+)
+
+pxr_install_test_dir(
     SRC testenv/testUsdUtilsPipeline
     DEST testUsdUtilsPipeline
 )
@@ -101,14 +139,26 @@ pxr_install_test_dir(
     DEST testUsdUtilsStitchClips
 )
 
-pxr_install_test_dir(
-    SRC testenv/testUsdUtilsStitchClips.testenv
-    DEST testUsdUtilsStitchClips_Legacy
-)
-
 pxr_register_test(testUsdUtilsAuthoring
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdUtilsAuthoring"
+    EXPECTED_RETURN_CODE 0
+)
+
+pxr_register_test(testUsdUtilsSparseValueWriter
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdUtilsSparseValueWriter"
+    EXPECTED_RETURN_CODE 0
+)
+
+pxr_register_test(testUsdUtilsCoalescingDiagnosticDelegate
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdUtilsCoalescingDiagnosticDelegate"
+    EXPECTED_RETURN_CODE 0
+)
+
+pxr_register_test(testUsdUtilsCoalescingDiagnosticDelegateCpp
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdUtilsCoalescingDiagnosticDelegateCpp"
     EXPECTED_RETURN_CODE 0
 )
 
@@ -137,6 +187,22 @@ pxr_register_test(testUsdUtilsDependencyExtractor4
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdUtilsDependencyExtractor crate.usd crate-usd.txt"
     DIFF_COMPARE crate-usd.txt 
+    EXPECTED_RETURN_CODE 0
+)
+
+pxr_register_test(testUsdUtilsFlattenLayerStack
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdUtilsFlattenLayerStack"
+    ENV
+        USD_USE_INVERSE_LAYER_OFFSET=0
+    EXPECTED_RETURN_CODE 0
+)
+
+pxr_register_test(testUsdUtilsFlattenLayerStack_OldOffsets
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdUtilsFlattenLayerStack"
+    ENV
+        USD_USE_INVERSE_LAYER_OFFSET=1
     EXPECTED_RETURN_CODE 0
 )
 
@@ -174,14 +240,5 @@ pxr_register_test(testUsdUtilsStitchClips
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdUtilsStitchClips"
     EXPECTED_RETURN_CODE 0
-    ENV
-        USD_AUTHOR_LEGACY_CLIPS=0
 )
 
-pxr_register_test(testUsdUtilsStitchClips_Legacy
-    PYTHON
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdUtilsStitchClips"
-    EXPECTED_RETURN_CODE 0
-    ENV
-        USD_AUTHOR_LEGACY_CLIPS=1
-)

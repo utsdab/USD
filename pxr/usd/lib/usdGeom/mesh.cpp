@@ -353,41 +353,47 @@ PXR_NAMESPACE_CLOSE_SCOPE
 // ===================================================================== //
 // --(BEGIN CUSTOM CODE)--
 
+#include "pxr/base/arch/hints.h"
+#include "pxr/base/tf/stringUtils.h"
+
+#include <numeric>
+
 PXR_NAMESPACE_OPEN_SCOPE
 
-const float UsdGeomMesh::SHARPNESS_INFINITE = 1e38;
-
-#include "pxr/usd/usd/timeCode.h"
-
-TfToken UsdGeomMesh::GetFaceVaryingLinearInterpolation(UsdTimeCode time) const
+bool
+UsdGeomMesh::ValidateTopology(const VtIntArray& faceVertexIndices,
+                              const VtIntArray& faceVertexCounts,
+                              size_t numPoints,
+                              std::string* reason)
 {
-    const auto prim = GetPrim();
-    const auto newFaceVaryingAttr = prim.GetAttribute(
-        UsdGeomTokens->faceVaryingLinearInterpolation);
-    if (newFaceVaryingAttr.HasAuthoredValueOpinion()) {
-        TfToken temp;
-        newFaceVaryingAttr.Get(&temp, time);
-        return temp;
+    // Sum of the vertex counts should be equal to the number of vertex indices.
+    size_t vertCountsSum = std::accumulate(faceVertexCounts.cbegin(),
+                                           faceVertexCounts.cend(), 0);
+    
+    if(vertCountsSum != faceVertexIndices.size()) {
+        if(reason) {
+            *reason = TfStringPrintf("Sum of faceVertexCounts [%zu] != "
+                                     "size of faceVertexIndices [%zu].",
+                                     vertCountsSum, faceVertexIndices.size());
+        }
+        return false;
     }
 
-    const auto oldFaceVaryingAttr = prim.GetAttribute(
-        UsdGeomTokens->faceVaryingInterpolateBoundary);
-    if (oldFaceVaryingAttr.HasAuthoredValueOpinion()) {
-        TfToken temp;
-        oldFaceVaryingAttr.Get(&temp, time);
-
-        if (temp == UsdGeomTokens->bilinear) {
-            return UsdGeomTokens->all;
-        } else if (temp == UsdGeomTokens->edgeAndCorner) {
-            return UsdGeomTokens->cornersPlus1;
-        } else if (temp == UsdGeomTokens->alwaysSharp) {
-            return UsdGeomTokens->boundaries;
-        } else if (temp == UsdGeomTokens->edgeOnly) {
-            return UsdGeomTokens->none;
+    // Make sure all verts are within the range of the point count.
+    for(int vertexIndex : faceVertexIndices) {
+        if(ARCH_UNLIKELY(vertexIndex < 0 || (size_t)vertexIndex >= numPoints)) {
+            if(reason) {
+                *reason = TfStringPrintf("Out of range face vertex index %d: "
+                                         "Vertex must be in the range [0,%zu).",
+                                         vertexIndex, numPoints);
+            }
+            return false;
         }
     }
-
-    return UsdGeomTokens->cornersPlus1;
+    return true;
 }
+
+
+const float UsdGeomMesh::SHARPNESS_INFINITE = 1e38;
 
 PXR_NAMESPACE_CLOSE_SCOPE

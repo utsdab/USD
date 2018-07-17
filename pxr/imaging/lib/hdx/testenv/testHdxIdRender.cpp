@@ -31,6 +31,7 @@
 
 #include "pxr/imaging/hdSt/renderDelegate.h"
 
+#include "pxr/imaging/hdx/intersector.h"
 #include "pxr/imaging/hdx/renderTask.h"
 #include "pxr/imaging/hdx/renderSetupTask.h"
 #include "pxr/imaging/hdx/unitTestGLDrawing.h"
@@ -146,18 +147,18 @@ My_TestGLDrawing::InitTest()
                        /*guide=*/false, /*instancerId=*/SdfPath(),
                        /*scheme=*/PxOsdOpenSubdivTokens->catmark,
                        /*color=*/faceColor,
-                       /*colorInterpolation=*/Hdx_UnitTestDelegate::UNIFORM);
+                       /*colorInterpolation=*/HdInterpolationUniform);
     _delegate->AddCube(SdfPath("/cube1"), _GetTranslate(-5, 0, 5),
                        /*guide=*/false, /*instancerId=*/SdfPath(),
                        /*scheme=*/PxOsdOpenSubdivTokens->catmark,
                        /*color=*/faceColor,
-                       /*colorInterpolation=*/Hdx_UnitTestDelegate::UNIFORM);
+                       /*colorInterpolation=*/HdInterpolationUniform);
     _delegate->AddCube(SdfPath("/cube2"), _GetTranslate(-5, 0,-5));
     _delegate->AddCube(SdfPath("/cube3"), _GetTranslate( 5, 0,-5),
                         /*guide=*/false, /*instancerId=*/SdfPath(),
                        /*scheme=*/PxOsdOpenSubdivTokens->catmark,
                        /*color=*/vertColor,
-                       /*colorInterpolation=*/Hdx_UnitTestDelegate::VERTEX);
+                       /*colorInterpolation=*/HdInterpolationVertex);
 
     {
         _delegate->AddInstancer(SdfPath("/instancerTop"));
@@ -430,13 +431,13 @@ My_TestGLDrawing::PickScene(int pickX, int pickY,
         int idIndex = zMinIndex*4;
 
         result = _delegate->GetRenderIndex().GetRprimPathFromPrimId(
-                HdxRenderSetupTask::DecodeIDRenderColor(&primId[idIndex]));
+                HdxIntersector::DecodeIDRenderColor(&primId[idIndex]));
         if (outInstanceIndex) {
-            *outInstanceIndex = HdxRenderSetupTask::DecodeIDRenderColor(
+            *outInstanceIndex = HdxIntersector::DecodeIDRenderColor(
                     &instanceId[idIndex]);
         }
         if (outElementIndex) {
-            *outElementIndex = HdxRenderSetupTask::DecodeIDRenderColor(
+            *outElementIndex = HdxIntersector::DecodeIDRenderColor(
                     &elementId[idIndex]);
         }
     }

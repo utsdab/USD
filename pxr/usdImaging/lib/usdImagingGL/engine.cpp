@@ -29,7 +29,7 @@
 #include "pxr/imaging/glf/drawTarget.h"
 #include "pxr/imaging/glf/info.h"
 
-#include "pxr/imaging/hdx/renderSetupTask.h"
+#include "pxr/imaging/hdx/intersector.h"
 
 #include "pxr/base/tf/stl.h"
 
@@ -343,13 +343,13 @@ UsdImagingGLEngine::TestIntersection(
             int idIndex = zMinIndex*4;
 
             *outHitPrimPath = GetRprimPathFromPrimId(
-                    HdxRenderSetupTask::DecodeIDRenderColor(&primId[idIndex]));
+                    HdxIntersector::DecodeIDRenderColor(&primId[idIndex]));
             if (outHitInstanceIndex) {
-                *outHitInstanceIndex = HdxRenderSetupTask::DecodeIDRenderColor(
+                *outHitInstanceIndex = HdxIntersector::DecodeIDRenderColor(
                         &instanceId[idIndex]);
             }
             if (outHitElementIndex) {
-                *outHitElementIndex = HdxRenderSetupTask::DecodeIDRenderColor(
+                *outHitElementIndex = HdxIntersector::DecodeIDRenderColor(
                         &elementId[idIndex]);
             }
 
@@ -647,7 +647,7 @@ UsdImagingGLEngine::GetPrimPathFromPrimIdColor(GfVec4i const &primIdColor,
         uint8_t(primIdColor[3])
     };
 
-    int primId = HdxRenderSetupTask::DecodeIDRenderColor(primIdColorBytes);
+    int primId = HdxIntersector::DecodeIDRenderColor(primIdColorBytes);
     SdfPath result = GetRprimPathFromPrimId(primId);
     if (!result.IsEmpty()) {
         if (instanceIndexOut) {
@@ -657,7 +657,7 @@ UsdImagingGLEngine::GetPrimPathFromPrimIdColor(GfVec4i const &primIdColor,
                 uint8_t(instanceIdColor[2]),
                 uint8_t(instanceIdColor[3])
             };
-            *instanceIndexOut = HdxRenderSetupTask::DecodeIDRenderColor(
+            *instanceIndexOut = HdxIntersector::DecodeIDRenderColor(
                     instanceIdColorBytes);
         }
     }
@@ -685,15 +685,22 @@ UsdImagingGLEngine::IsConverged() const
 }
 
 /* virtual */
-std::vector<TfType>
-UsdImagingGLEngine::GetRendererPlugins()
+TfTokenVector
+UsdImagingGLEngine::GetRendererPlugins() const
 {
-    return std::vector<TfType>();
+    return std::vector<TfToken>();
+}
+
+/* virtual */
+std::string
+UsdImagingGLEngine::GetRendererPluginDesc(TfToken const &id) const
+{
+    return std::string();
 }
 
 /* virtual */
 bool
-UsdImagingGLEngine::SetRendererPlugin(TfType const &type)
+UsdImagingGLEngine::SetRendererPlugin(TfToken const &id)
 {
     return false;
 }

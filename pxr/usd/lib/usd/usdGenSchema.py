@@ -41,9 +41,9 @@ from argparse import ArgumentParser
 from collections import namedtuple
 
 from jinja2 import Environment, FileSystemLoader
-from jinja2.exceptions import TemplateSyntaxError
+from jinja2.exceptions import TemplateNotFound, TemplateSyntaxError
 
-from pxr import Sdf, Usd, Tf
+from pxr import Plug, Sdf, Usd, Vt, Tf
 
 #------------------------------------------------------------------------------#
 # Parsed Objects                                                               #
@@ -62,13 +62,8 @@ def _SanitizeDoc(doc, leader):
 
 
 def _ListOpToList(listOp):
-    """Return either the explicitItems or the addedItems if listOp
-    """
-    if not listOp:
-        return [] 
-
-    return listOp.explicitItems if listOp.explicitItems else listOp.addedItems
-
+    """Apply listOp to an empty list, yielding a list."""
+    return listOp.ApplyOperations([]) if listOp else []
 
 def _GetDefiningLayerAndPrim(stage, schemaName):
     """ Searches the stage LayerStack for a prim whose name is equal to
@@ -183,12 +178,26 @@ def _CamelCase(aString):
 Token = namedtuple('Token', ['id', 'value', 'desc'])
 
 class PropInfo(object):
+    class CodeGen:
+        """Specifies how code gen constructs get methods for a property
+        
+        - generated: Auto generate the full Public API
+        - custom: Generate the header only. User responsible for implementation.
+        
+        See documentation on Generating Schemas for more information.
+        """
+        Generated = 'generated'
+        Custom = 'custom'
+        
     def __init__(self, sdfProp):
         # Allow user to specify custom naming through customData metadata.
         self.customData = dict(sdfProp.customData)
 
         self.name       = _CamelCase(sdfProp.name)
         self.apiName    = self.customData.get('apiName', self.name)
+        self.apiGet     = self.customData.get('apiGetImplementation', self.CodeGen.Generated)
+        if self.apiGet not in [self.CodeGen.Generated, self.CodeGen.Custom]:
+            print ("Token '%s' is not valid." % self.apiGet)
         self.rawName    = sdfProp.name
         self.doc        = _SanitizeDoc(sdfProp.documentation, '\n    /// ')
         self.custom     = sdfProp.custom
@@ -212,14 +221,7 @@ class AttrInfo(PropInfo):
         
         self.variability = str(sdfProp.variability).replace('Sdf.', 'Sdf')
         self.fallback = sdfProp.default
-
-        self.cppType = sdfProp.typeName.type.typeName
-        # XXX: not sure why, but std::string maps to string, perhaps a
-        # result of calling this from Python. Remap it to std::string here
-        # manually.
-        if self.cppType == 'string':
-            self.cppType = 'std::string'
-
+        self.cppType = sdfProp.typeName.cppTypeName
         self.usdType = "SdfValueTypeNames->%s" % (
             valueTypeNameToStr[sdfProp.typeName])
         
@@ -242,21 +244,53 @@ def _ExtractNames(sdfPrim, customData):
     return usdPrimTypeName, className, cppClassName, baseFileName
 
 
+# Determines if a prim 'p' inherits from Typed
+def _IsTyped(p):
+    def _FindAllInherits(p):
+        if p.GetMetadata('inheritPaths'):
+            inherits = list(p.GetMetadata('inheritPaths').ApplyOperations([]))
+        else:
+            inherits = []
+        for path in inherits:
+            p2 = p.GetStage().GetPrimAtPath(path)
+            if p2:
+                inherits += _FindAllInherits(p2)
+        return inherits
+
+    return Sdf.Path('/Typed') in set(_FindAllInherits(p))
+
 class ClassInfo(object):
     def __init__(self, usdPrim, sdfPrim):
+        # Error handling
+        errorPrefix = ('Invalid schema definition at ' 
+                       + '<' + str(sdfPrim.path) + '>')
+        errorSuffix = ('See '
+                       'https://graphics.pixar.com/usd/docs/api/'
+                       '_usd__page__generating_schemas.html '
+                       'for more information.\n')
+        errorMsg = lambda s: errorPrefix + '\n' + s + '\n' + errorSuffix
+
         # First validate proper class naming...
         if (sdfPrim.typeName != sdfPrim.path.name and
             sdfPrim.typeName != ''):
-            raise Exception("Code generation requires that every instantiable "
-                            "class's name must match its declared type "
-                            "('%s' and '%s' do not match.)" % 
-                            (sdfPrim.typeName, sdfPrim.path.name))
+            raise Exception(errorMsg("Code generation requires that every instantiable "
+                                     "class's name must match its declared type "
+                                     "('%s' and '%s' do not match.)" % 
+                                     (sdfPrim.typeName, sdfPrim.path.name)))
         
         # NOTE: usdPrim should ONLY be used for querying information regarding
         # the class's parent in order to avoid duplicating class members during
         # code generation.
         inherits = usdPrim.GetMetadata('inheritPaths') 
         inheritsList = _ListOpToList(inherits)
+
+        # We do not allow multiple inheritance 
+        numInherits = len(inheritsList)
+        if numInherits > 1:
+            raise Exception(errorMsg(('Schemas can only inherit from one other schema '
+                                      'at most. This schema inherits from %d (%s).' 
+                                      % (numInherits, 
+                                         ', '.join(map(str, inheritsList))))))
 
         # Allow user to specify custom naming through customData metadata.
         self.customData = dict(sdfPrim.customData)
@@ -274,6 +308,11 @@ class ClassInfo(object):
          self.cppClassName,
          self.baseFileName) = _ExtractNames(sdfPrim, self.customData)
 
+        # We must also hold onto the authored prim name in schema.usda
+        # for cases in which we must differentiate that from the authored
+        # className in customdata. For example, UsdModelAPI vs UsdGeomModelAPI
+        self.primName = sdfPrim.path.name
+
         # Class Parent's Info
         parentClass = inheritsList[0].name if inheritsList else 'SchemaBase'
         (parentLayer,
@@ -285,7 +324,10 @@ class ClassInfo(object):
             (parentUsdName, parentClassName,
              self.parentCppClassName, self.parentBaseFileName) = \
              _ExtractNames(parentPrim, parentCustomData)
-        else:
+        # Only Typed and APISchemaBase are allowed to have no inherits, since 
+        # these are the core base types for all the typed and API schemas 
+        # respectively.
+        elif self.cppClassName in ["UsdTyped", 'UsdAPISchemaBase']:
             self.parentCppClassName = "UsdSchemaBase"
             self.parentBaseFileName = "schemaBase"
 
@@ -296,14 +338,64 @@ class ClassInfo(object):
 
         # Do not to inherit the type name of parent classes.
         if inherits:
-            for path in inherits.addedOrExplicitItems:
+            for path in inherits.GetAddedOrExplicitItems():
                 parentTypeName = parentLayer.GetPrimAtPath(path).typeName
                 if parentTypeName == self.typeName:
                     self.typeName = ''
 
-        self.isConcrete = 'false' if not self.typeName else 'true'
+        self.isConcrete = bool(self.typeName)
+        self.isTyped = _IsTyped(usdPrim)
+        self.isAPISchemaBase = self.cppClassName == 'UsdAPISchemaBase'
 
+        self.isApi = not self.isTyped and not self.isConcrete and \
+                not self.isAPISchemaBase
+        self.apiSchemaType = self.customData.get(Usd.Tokens.apiSchemaType, 
+                Usd.Tokens.singleApply if self.isApi else None)
 
+        if self.isApi and \
+           self.apiSchemaType not in [Usd.Tokens.nonApplied, 
+                                      Usd.Tokens.singleApply,
+                                      Usd.Tokens.multipleApply]:
+            raise Exception(errorMsg("CustomData 'apiSchemaType' is %s. It must"
+                " be one of {'nonApplied', 'singleApply', 'multipleApply'} "
+                "for an API schema."))
+
+        self.isAppliedAPISchema = self.apiSchemaType in [Usd.Tokens.singleApply, 
+                                                      Usd.Tokens.multipleApply]
+        self.isMultipleApply = self.apiSchemaType == Usd.Tokens.multipleApply
+        self.isPrivateApply = self.customData.get(Usd.Tokens.isPrivateApply, 
+                False)
+
+        if self.isConcrete and not self.isTyped:
+            raise Exception(errorMsg('Schema classes must either inherit '
+                                     'Typed(IsA), or neither inherit typed '
+                                     'nor provide a typename(API).'))
+
+        if self.isApi and sdfPrim.path.name != "APISchemaBase" and \
+            not sdfPrim.path.name.endswith('API'):
+            raise Exception(errorMsg('API schemas must be named with an API suffix.'))
+        
+
+        if self.isApi and not self.isAppliedAPISchema and self.isPrivateApply:
+            raise Exception(errorMsg("Non-applied API schema cannot be tagged "
+                "as private-apply"))
+
+        if self.isApi and sdfPrim.path.name != "APISchemaBase" and \
+            (not self.parentCppClassName):
+            raise Exception(errorMsg("API schemas must explicitly inherit from "
+                    "UsdAPISchemaBase."))
+
+        if not self.isApi and self.isAppliedAPISchema:
+            raise Exception(errorMsg('Non API schemas cannot have non-empty '
+                                     'apiSchemaType value.'))
+
+        if (not self.isApi or not self.isAppliedAPISchema) and \
+                self.isPrivateApply:
+            raise Exception(errorMsg('Non API schemas or non-applied API '
+                                     'schemas cannot be marked with '
+                                     'isPrivateApply, only applied API schemas '
+                                     'have an Apply() method generated. '))
+         
     def GetHeaderFile(self):
         return self.baseFileName + '.h'
 
@@ -321,15 +413,50 @@ class ClassInfo(object):
 # USD PARSER                                                                   #
 #------------------------------------------------------------------------------#
 
+def _ValidateFields(spec):
+    disallowedFields = Usd.SchemaRegistry.GetDisallowedFields()
+
+    # The schema registry will ignore these fields if they are discovered 
+    # in a generatedSchema.usda file, but we want to allow them in schema.usda.
+    whitelist = ["inheritPaths", "customData"]
+
+    invalidFields = [key for key in spec.ListInfoKeys()
+                     if key in disallowedFields and key not in whitelist]
+    if not invalidFields:
+        return True
+
+    for key in invalidFields:
+        if key == Sdf.RelationshipSpec.TargetsKey:
+            print ("ERROR: Relationship targets on <%s> cannot be specified "
+                   "in a schema." % spec.path)
+        elif key == Sdf.AttributeSpec.ConnectionPathsKey:
+            print ("ERROR: Attribute connections on <%s> cannot be specified "
+                   "in a schema." % spec.path)
+        else:
+            print ("ERROR: Fallback values for '%s' on <%s> cannot be "
+                   "specified in a schema." % (key, spec.path))
+    return False
+
+def GetClassInfo(classes, cppClassName):
+    for c in classes:
+        if c.cppClassName == cppClassName:
+            return c
+    return None
+
 def ParseUsd(usdFilePath):
     sdfLayer = Sdf.Layer.FindOrOpen(usdFilePath)
     stage = Usd.Stage.Open(sdfLayer)
     classes = []
 
+    hasInvalidFields = False
+
     # PARSE CLASSES
     for sdfPrim in sdfLayer.rootPrims:
         if sdfPrim.name == "Typed" or sdfPrim.specifier != Sdf.SpecifierClass:
             continue
+
+        if not _ValidateFields(sdfPrim):
+            hasInvalidFields = True
 
         usdPrim = stage.GetPrimAtPath(sdfPrim.path)
         classInfo = ClassInfo(usdPrim, sdfPrim)
@@ -339,53 +466,96 @@ def ParseUsd(usdFilePath):
         # want the local properties declared directly on the class, which the
         # "properties" metadata field provides.
         #
-        if sdfPrim.properties:
-            attrApiNames = []
-            relApiNames = []
-            for sdfProp in sdfPrim.properties:
-                
-                # Attribute
-                usdAttr = usdPrim.GetAttribute(sdfProp.name)
-                if usdAttr:
-                    attrInfo = AttrInfo(sdfProp)
+        attrApiNames = []
+        relApiNames = []
+        for sdfProp in sdfPrim.properties:
 
-                    # Assert unique attribute names
-                    if attrInfo.name in classInfo.attrs: 
-                        raise Exception(
-                            'Schema Attribute names must be unique, '
-                            'irrespective of namespacing. '
-                            'Duplicate name encountered: %s.%s' %
-                            (classInfo.usdPrimTypeName, attrInfo.name))
-                    elif attrInfo.apiName in attrApiNames:
-                        raise Exception(
-                            'Schema Attribute API names must be unique. '
-                            'Duplicate apiName encountered: %s.%s' %
-                            (classInfo.usdPrimTypeName, attrInfo.apiName))
-                    else:
-                        attrApiNames.append(attrInfo.apiName)
-                        classInfo.attrs[attrInfo.name] = attrInfo
-                        classInfo.attrOrder.append(attrInfo.name)
-                
-                # Relationship
+            if not _ValidateFields(sdfProp):
+                hasInvalidFields = True
+
+            # Attribute
+            if isinstance(sdfProp, Sdf.AttributeSpec):
+                attrInfo = AttrInfo(sdfProp)
+
+                # Assert unique attribute names
+                if attrInfo.name in classInfo.attrs: 
+                    raise Exception(
+                        'Schema Attribute names must be unique, '
+                        'irrespective of namespacing. '
+                        'Duplicate name encountered: %s.%s' %
+                        (classInfo.usdPrimTypeName, attrInfo.name))
+                elif attrInfo.apiName in attrApiNames:
+                    raise Exception(
+                        'Schema Attribute API names must be unique. '
+                        'Duplicate apiName encountered: %s.%s' %
+                        (classInfo.usdPrimTypeName, attrInfo.apiName))
                 else:
-                    relInfo = RelInfo(sdfProp)
-                    
-                    # Assert unique relationship names
-                    if relInfo.name in classInfo.rels: 
-                        raise Exception(
-                            'Schema Relationship names must be unique, '
-                            'irrespective of namespacing. '
-                            'Duplicate name encountered: %s.%s' %
-                            (classInfo.usdPrimTypeName, relInfo.name))
-                    elif relInfo.apiName in relApiNames:
-                        raise Exception(
-                            'Schema Relationship API names must be unique. '
-                            'Duplicate apiName encountered: %s.%s' %
-                            (classInfo.usdPrimTypeName, relInfo.apiName))
-                    else:
-                        relApiNames.append(relInfo.apiName)
-                        classInfo.rels[relInfo.name] = relInfo
-                        classInfo.relOrder.append(relInfo.name)
+                    attrApiNames.append(attrInfo.apiName)
+                    classInfo.attrs[attrInfo.name] = attrInfo
+                    classInfo.attrOrder.append(attrInfo.name)
+
+            # Relationship
+            else:
+                relInfo = RelInfo(sdfProp)
+
+                # Assert unique relationship names
+                if relInfo.name in classInfo.rels: 
+                    raise Exception(
+                        'Schema Relationship names must be unique, '
+                        'irrespective of namespacing. '
+                        'Duplicate name encountered: %s.%s' %
+                        (classInfo.usdPrimTypeName, relInfo.name))
+                elif relInfo.apiName in relApiNames:
+                    raise Exception(
+                        'Schema Relationship API names must be unique. '
+                        'Duplicate apiName encountered: %s.%s' %
+                        (classInfo.usdPrimTypeName, relInfo.apiName))
+                else:
+                    relApiNames.append(relInfo.apiName)
+                    classInfo.rels[relInfo.name] = relInfo
+                    classInfo.relOrder.append(relInfo.name)
+
+    
+    for classInfo in classes:
+        # If this is an applied API schema that does not inherit from 
+        # UsdAPISchemaBase directly, ensure that the parent class is also 
+        # an applied API Schema.
+        if classInfo.isApi and classInfo.parentCppClassName!='UsdAPISchemaBase':
+            parentClassInfo = GetClassInfo(classes, classInfo.parentCppClassName)
+            if parentClassInfo:
+                if parentClassInfo.isAppliedAPISchema != \
+                        classInfo.isAppliedAPISchema:
+                    raise Exception("API schema '%s' inherits from incompatible "
+                        "base API schema '%s'. Both must be either applied API "
+                        "schemas or non-applied API schemas." %
+                        (classInfo.cppClassName, parentClassInfo.cppClassName))
+                if parentClassInfo.isMultipleApply != \
+                        classInfo.isMultipleApply:
+                    raise Exception("API schema '%s' inherits from incompatible "
+                        "base API schema '%s'. Both must be either single-apply "
+                        "or multiple-apply." % (classInfo.cppClassName,
+                        parentClassInfo.cppClassName))
+            else:
+                parentClassTfType = Tf.Type.FindByName(
+                        classInfo.parentCppClassName)
+                if parentClassTfType and parentClassTfType != Tf.Type.Unknown:
+                    if classInfo.isAppliedAPISchema != \
+                        Usd.SchemaRegistry.IsAppliedAPISchema(parentClassTfType):
+                        raise Exception("API schema '%s' inherits from "
+                            "incompatible base API schema '%s'. Both must be "
+                            "either applied API schemas or non-applied API "
+                            " schemas." % (classInfo.cppClassName,
+                            parentClassInfo.cppClassName))
+                    if classInfo.isMultipleApply != \
+                        Usd.SchemaRegistry.IsMultipleApplyAPISchema(
+                                parentClassTfType):
+                        raise Exception("API schema '%s' inherits from "
+                        "incompatible base API schema '%s'. Both must be either" 
+                        " single-apply or multiple-apply." % 
+                        (classInfo.cppClassName,  parentClassInfo.cppClassName))
+        
+    if hasInvalidFields:
+        raise Exception('Invalid fields specified in schema.')
 
     return (_GetLibName(sdfLayer),
             _GetLibPath(sdfLayer),
@@ -412,6 +582,23 @@ def _WriteFile(filePath, content, validate):
         if existingContent == content:
             print '\tunchanged %s' % filePath
             return
+
+        # In validation mode, we just want to see if the code being generated
+        # would differ from the code that currently exists without writing
+        # anything out. So just generate a diff and bail out immediately.
+        if validate:
+            print 'Diff: '
+            print '\n'.join(difflib.unified_diff(existingContent.split('\n'),
+                                                 content.split('\n')))
+            print ('Error: validation failed, diffs found. '
+                   'Please rerun usdGenSchema.')
+            sys.exit(1)
+    else:
+        if validate:
+            print ('Error: validation failed, file %s does not exist. '
+                   'Please rerun usdGenSchema.' % os.path.basename(filePath))
+            sys.exit(1)
+
     # Otherwise attempt to write to file.
     try:
         with open(filePath, 'w') as curfile:
@@ -419,13 +606,6 @@ def _WriteFile(filePath, content, validate):
             print '\t    wrote %s' % filePath
     except IOError as ioe:
         print '\t', ioe
-        print 'Diff: '
-        print '\n'.join(difflib.unified_diff(existingContent.split('\n'),
-                                             content.split('\n')))
-        if validate:
-            print ('Error: validation failed, diffs found. '
-                   'Please rerun usdGenSchema.')
-            sys.exit(1)
 
 def _ExtractCustomCode(filePath, default=None):
     defaultTxt = default if default else ''
@@ -451,7 +631,8 @@ def _AddToken(tokenDict, tokenId, val, desc):
     # 'interface' is not a reserved word but is a macro on Windows when using
     # COM so we treat it as reserved.
     reserved = set(['class', 'default', 'def', 'case', 'switch', 'break',
-                    'if', 'else', 'struct', 'template', 'interface'])
+                    'if', 'else', 'struct', 'template', 'interface',
+                    'float', 'double', 'int', 'char', 'long', 'short'])
     if tokenId in reserved:
         tokenId = tokenId + '_'
     if tokenId in tokenDict:
@@ -514,13 +695,13 @@ def GatherTokens(classes, libName, libTokens):
     return sorted(tokenDict.values(), key=lambda token: token.id.lower())
 
 
-def GenerateCode(codeGenPath, tokenData, classes, validate,
+def GenerateCode(templatePath, codeGenPath, tokenData, classes, validate,
                  namespaceOpen, namespaceClose, namespaceUsing,
                  useExportAPI, env):
     #
     # Load Templates
     #
-    print 'Loading Templates'
+    print 'Loading Templates from {0}'.format(templatePath)
     try:
         apiTemplate = env.get_template('api.h')
         headerTemplate = env.get_template('schemaClass.h')
@@ -530,11 +711,11 @@ def GenerateCode(codeGenPath, tokenData, classes, validate,
         tokensCppTemplate = env.get_template('tokens.cpp')
         tokensWrapTemplate = env.get_template('wrapTokens.cpp')
         plugInfoTemplate = env.get_template('plugInfo.json')
-    
+    except TemplateNotFound as tnf:
+        raise RuntimeError("Template not found: {0}".format(str(tnf)))
     except TemplateSyntaxError as tse:
-        print '\t', tse,
-        print 'Aborting GenerateCode...'
-        return
+        raise RuntimeError("Syntax error in template {0} at line {1}: {2}"
+                           .format(tse.filename, tse.lineno, tse.message))
 
     if useExportAPI:
         print 'Writing API:'
@@ -549,7 +730,7 @@ def GenerateCode(codeGenPath, tokenData, classes, validate,
                    tokensHTemplate.render(tokens=tokenData), validate)
         # tokens.cpp
         _WriteFile(os.path.join(codeGenPath, 'tokens.cpp'),
-                   tokensCppTemplate.render(), validate)
+                   tokensCppTemplate.render(tokens=tokenData), validate)
         # wrapTokens.cpp
         _WriteFile(os.path.join(codeGenPath, 'wrapTokens.cpp'),
                    tokensWrapTemplate.render(tokens=tokenData), validate)
@@ -582,10 +763,15 @@ def GenerateCode(codeGenPath, tokenData, classes, validate,
         
         # wrap file
         clsWrapFilePath = os.path.join(codeGenPath, cls.GetWrapFile())
-        customCode = _ExtractCustomCode(clsWrapFilePath, default=(
-                                        '\nnamespace {\n'
-                                        '\nWRAP_CUSTOM {\n}\n'
-                                        '\n}'))
+
+        if useExportAPI:
+            customCode = _ExtractCustomCode(clsWrapFilePath, default=(
+                                            '\nnamespace {\n'
+                                            '\nWRAP_CUSTOM {\n}\n'
+                                            '\n}'))
+        else:
+            customCode = _ExtractCustomCode(clsWrapFilePath, default='\nWRAP_CUSTOM {\n}\n')
+
         _WriteFile(clsWrapFilePath,
                    wrapTemplate.render(cls=cls) + customCode, validate)
 
@@ -638,9 +824,11 @@ def GenerateCode(codeGenPath, tokenData, classes, validate,
                 clsDict.update(cls.customData['extraPlugInfo'])
             clsDict.update({'bases': [cls.parentCppClassName],
                             'autoGenerated': True })
-            # add alias for concrete types.
-            if cls.isConcrete == 'true':
+
+            # Write out alias/primdefs for concrete IsA schemas and API schemas
+            if (cls.isConcrete or cls.isApi):
                 clsDict['alias'] = {'UsdSchemaBase': cls.usdPrimTypeName}
+
             types[cls.cppClassName] = clsDict
         # write plugInfo file back out.
         content = ((
@@ -713,7 +901,19 @@ def GenerateRegistry(codeGenPath, filePath, classes, validate, env):
     primsToKeep = set(cls.usdPrimTypeName for cls in classes)
     if not flatStage.RemovePrim('/GLOBAL'):
         print "WARNING: Could not remove GLOBAL prim."
+    allAppliedAPISchemas = []
+    allMultipleApplyAPISchemas = []
     for p in flatStage.GetPseudoRoot().GetAllChildren():
+        # If this is an API schema, check if it's applied and record necessary
+        # information.
+        if p.GetName() in primsToKeep and p.GetName().endswith('API'):
+            apiSchemaType = p.GetCustomDataByKey(Usd.Tokens.apiSchemaType)
+            if apiSchemaType == Usd.Tokens.multipleApply:
+                allMultipleApplyAPISchemas.append(p.GetName())
+                allAppliedAPISchemas.append(p.GetName())
+            elif apiSchemaType in [None, Usd.Tokens.singleApply]:
+                allAppliedAPISchemas.append(p.GetName())
+
         p.ClearCustomData()
         for myproperty in p.GetAuthoredProperties():
             myproperty.ClearCustomData()
@@ -724,6 +924,14 @@ def GenerateRegistry(codeGenPath, filePath, classes, validate, env):
         
     # Set layer's comment to indicate that the file is generated.
     flatLayer.comment = 'WARNING: THIS FILE IS GENERATED.  DO NOT EDIT.'
+
+    # Add the list of all applied and multiple-apply API schemas.
+    if len(allAppliedAPISchemas) > 0 or len(allMultipleApplyAPISchemas) > 0:
+        flatLayer.customLayerData = {
+                'appliedAPISchemas' : Vt.StringArray(allAppliedAPISchemas), 
+                'multipleApplyAPISchemas' : Vt.StringArray(
+                                        allMultipleApplyAPISchemas)
+        }
 
     #
     # Generate Schematics
@@ -740,6 +948,29 @@ def GenerateRegistry(codeGenPath, filePath, classes, validate, env):
 
     _WriteFile(os.path.join(codeGenPath, 'generatedSchema.usda'), layerSource,
                validate)
+
+def InitializeResolver():
+    """Initialize the resolver so that search paths pointing to schema.usda
+    files are resolved to the directories where those files are installed"""
+    
+    from pxr import Ar, Plug
+
+    # Force the use of the ArDefaultResolver so we can take advantage
+    # of its search path functionality.
+    Ar.SetPreferredResolver('ArDefaultResolver')
+
+    # Figure out where all the plugins that provide schemas are located
+    # and add their resource directories to the search path prefix list.
+    resourcePaths = set()
+    pr = Plug.Registry()
+    for t in pr.GetAllDerivedTypes('UsdSchemaBase'):
+        plugin = pr.GetPluginForType(t)
+        if plugin:
+            resourcePaths.add(plugin.resourcePath)
+    
+    # The sorting shouldn't matter here, but we do it for consistency
+    # across runs.
+    Ar.DefaultResolver.SetDefaultSearchPath(sorted(list(resourcePaths)))
 
 if __name__ == '__main__':
     #
@@ -771,20 +1002,32 @@ if __name__ == '__main__':
              'the rightmost argument as the innermost.')
 
     defaultTemplateDir = os.path.join(
-        os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe()))),
+        os.path.dirname(
+            os.path.abspath(inspect.getfile(inspect.currentframe()))),
+        'codegenTemplates')
+
+    instTemplateDir = os.path.join(
+        os.path.abspath(Plug.Registry().GetPluginWithName('usd').resourcePath),
         'codegenTemplates')
 
     parser.add_argument('-t', '--templates',
         dest='templatePath',
         type=str,
-        default=defaultTemplateDir,
-        help='The directory of the schema class templates. '
-        '[Default: %(default)s')
+        help=('Directory containing schema class templates. '
+              '[Default: first directory that exists from this list: {0}]'
+              .format(os.pathsep.join([defaultTemplateDir, instTemplateDir]))))
 
     args = parser.parse_args()
     codeGenPath = os.path.abspath(args.codeGenPath)
     schemaPath = os.path.abspath(args.schemaPath)
-    templatePath = os.path.abspath(args.templatePath)
+
+    if args.templatePath:
+        templatePath = os.path.abspath(args.templatePath)
+    else:
+        if os.path.isdir(defaultTemplateDir):
+            templatePath = defaultTemplateDir
+        else:
+            templatePath = instTemplateDir
 
     if args.namespace:
         namespaceOpen  = ' '.join('namespace %s {' % n for n in args.namespace)
@@ -807,12 +1050,16 @@ if __name__ == '__main__':
         print 'Usage Error: Second positional argument must be a directory to contain generated code.'
         parser.print_help()
         sys.exit(1)
-    if not os.path.isdir(templatePath):
-        print 'Usage Error: templatePath argument must be the path to the codgenTemplates.'
+    if args.templatePath and not os.path.isdir(templatePath):
+        print 'Usage Error: templatePath argument must be the path to the codegenTemplates.'
         parser.print_help()
         sys.exit(1)
 
     try:
+        #
+        # Initialize the asset resolver to resolve search paths
+        #
+        InitializeResolver()
         
         #
         # Gather Schema Class information
@@ -849,11 +1096,12 @@ if __name__ == '__main__':
                               libraryPrefix=libPrefix,
                               tokensPrefix=tokensPrefix,
                               useExportAPI=useExportAPI)
-        GenerateCode(codeGenPath, tokenData, classes, args.validate,
+        GenerateCode(templatePath, codeGenPath, tokenData, classes, 
+                     args.validate,
                      namespaceOpen, namespaceClose, namespaceUsing,
                      useExportAPI, j2_env)
         GenerateRegistry(codeGenPath, schemaPath, classes, args.validate, j2_env)
     
     except Exception as e:
-        print "ERROR: ", str(e)
+        print "ERROR:", str(e)
         sys.exit(1)

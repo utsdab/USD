@@ -55,15 +55,16 @@ def _findEditorTools(usdFileName, readOnly):
         sys.exit("Error: Couldn't find 'usdcat'. Expected it to be in PATH.")
 
     # Ensure we have a suitable editor available
-    editorCmd = (os.getenv("EDITOR") or 
+    editorCmd = (os.getenv("USD_EDITOR") or
+                 os.getenv("EDITOR") or 
                  _findExe("emacs") or
                  _findExe("vim") or
                  _findExe("notepad"))
     
     if not editorCmd:
         sys.exit("Error: Couldn't find a suitable text editor to use. Expected " 
-                 "either $EDITOR to be set, or emacs/vim/notepad to be installed.")
-
+                 "$USD_EDITOR or $EDITOR to be set, or emacs/vim/notepad to "
+                 "be installed and available in PATH.")
 
     # special handling for emacs users
     if 'emacs' in editorCmd:
@@ -74,9 +75,11 @@ def _findEditorTools(usdFileName, readOnly):
     return (usdcatCmd, editorCmd)
 
 # this generates a temporary usd file which the user will edit.
-def _generateTemporaryFile(usdcatCmd, usdFileName, readOnly):
+def _generateTemporaryFile(usdcatCmd, usdFileName, readOnly, prefix):
+    fullPrefix = prefix or "tmp"
     import tempfile
-    (usdaFile, usdaFileName) = tempfile.mkstemp(suffix='.usda', dir=os.getcwd())
+    (usdaFile, usdaFileName) = tempfile.mkstemp(
+        prefix=fullPrefix, suffix='.usda', dir=os.getcwd())
  
     os.system(usdcatCmd + ' ' + usdFileName + '> ' + usdaFileName)
 
@@ -131,21 +134,31 @@ def main():
                'original file, unless you supply the "-n" (--noeffect) flag, \n'
                'in which case no changes will be saved back to the original '
                'file. \n'
-               'The editor to use will be queried from the EDITOR environment '
-               'variable.\n\n')
+               'The editor to use will be looked up as follows: \n'
+               '    - USD_EDITOR environment variable \n'
+               '    - EDITOR environment variable \n'
+               '    - emacs in PATH \n'
+               '    - vim in PATH \n'
+               '    - notepad in PATH \n'
+               '\n\n')
     parser.add_argument('-n', '--noeffect',
                         dest='readOnly', action='store_true',
                         help='Do not edit the file.')
     parser.add_argument('-f', '--forcewrite', 
                         dest='forceWrite', action='store_true',
                         help='Override file permissions to allow writing.')
+    parser.add_argument('-p', '--prefix', 
+                        dest='prefix', action='store', type=str, default=None,
+                        help='Provide a prefix for the temporary file name.')
     parser.add_argument('usdFileName', help='The usd file to edit.')
     results = parser.parse_args()
 
     # pull args from result map so we don't need to write result. for each
-    readOnly, forceWrite, usdFileName = (results.readOnly, 
-                                         results.forceWrite,
-                                         results.usdFileName)
+    readOnly, forceWrite, usdFileName, prefix = (
+        results.readOnly,
+        results.forceWrite,
+        results.usdFileName,
+        results.prefix)
     
     # verify our usd file exists, and permissions args are sane
     if readOnly and forceWrite:
@@ -164,7 +177,7 @@ def main():
     
     # generate our temporary file with proper permissions and edit.
     usdaFile, usdaFileName = _generateTemporaryFile(usdcatCmd, usdFileName,
-                                                    readOnly) 
+                                                    readOnly, prefix)
     tempFileChanged = _editTemporaryFile(editorCmd, usdaFileName)
     
 

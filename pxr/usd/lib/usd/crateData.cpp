@@ -30,9 +30,10 @@
 #include "pxr/base/tf/mallocTag.h"
 #include "pxr/base/tf/ostreamMethods.h"
 #include "pxr/base/tf/pathUtils.h"
+#include "pxr/base/tf/scopeDescription.h"
 #include "pxr/base/tf/stringUtils.h"
 #include "pxr/base/tf/typeInfoMap.h"
-#include "pxr/base/tracelite/trace.h"
+#include "pxr/base/trace/trace.h"
 
 #include "pxr/base/work/arenaDispatcher.h"
 #include "pxr/base/work/utils.h"
@@ -124,22 +125,60 @@ public:
 
     bool Save(string const &fileName) {
         TfAutoMallocTag tag("Usd_CrateDataImpl::Save");
+
+        TF_DESCRIBE_SCOPE("Saving usd binary file @%s@", fileName.c_str());
         
         auto dataFileName = _crateFile->GetFileName();
         if (!TF_VERIFY(fileName == dataFileName || dataFileName.empty()))
             return false;
 
+        // Sort by path for better namespace-grouped data layout.
+        vector<SdfPath> sortedPaths;
+        sortedPaths.reserve(_hashData ? _hashData->size() : _flatData.size());
+        if (_hashData) {
+            for (auto const &p: *_hashData) {
+                sortedPaths.push_back(p.first);
+            }
+        } else {
+            for (auto const &p: _flatData) {
+                sortedPaths.push_back(p.first);
+            }
+        }
+        tbb::parallel_sort(
+            sortedPaths.begin(), sortedPaths.end(),
+            [](SdfPath const &p1, SdfPath const &p2) {
+                // Prim paths before property paths, then property paths grouped
+                // by property name.
+                bool p1IsProperty = p1.IsPropertyPath();
+                bool p2IsProperty = p2.IsPropertyPath();
+                switch ((int)p1IsProperty + (int)p2IsProperty) {
+                case 1:
+                    return !p1IsProperty;
+                case 2:
+                    if (p1.GetName() != p2.GetName()) {
+                        return p1.GetName() < p2.GetName();
+                    }
+                // Intentional fall-through
+                default:
+                case 0:
+                    return p1 < p2;
+                }
+            });
+
+        // Now pack all the specs.
         if (CrateFile::Packer packer = _crateFile->StartPacking(fileName)) {
             if (_hashData) {
-                for (auto const &p: *_hashData) {
+                for (auto const &p: sortedPaths) {
+                    auto iter = _hashData->find(p);
                     packer.PackSpec(
-                        p.first, p.second.specType, p.second.fields.Get());
+                        p, iter->second.specType, iter->second.fields.Get());
                 }
             } else {
-                for (size_t i = 0; i != _flatData.size(); ++i) {
-                    auto const &p = _flatData.begin()[i];
+                for (auto const &p: sortedPaths) {
+                    auto iter = _flatData.find(p);
                     packer.PackSpec(
-                        p.first, _flatTypes[i].type, p.second.fields.Get());
+                        p, _flatTypes[iter-_flatData.begin()].type,
+                        iter->second.fields.Get());
                 }
             }
             if (packer.Close()) {
@@ -153,6 +192,8 @@ public:
     bool Open(string const &fileName) {
         TfAutoMallocTag tag("Usd_CrateDataImpl::Open");
 
+        TF_DESCRIBE_SCOPE("Opening usd binary file @%s@", fileName.c_str());
+        
         if (auto newData = CrateFile::Open(fileName)) {
             _crateFile = std::move(newData);
             return _PopulateFromCrateFile();
@@ -160,27 +201,45 @@ public:
         return false;
     }
 
-    inline bool _HasTargetSpec(SdfPath const &path) const {
+    inline bool _GetTargetOrConnectionListOp(
+        SdfPath const &path, SdfPathListOp *listOp) const {
+        if (path.IsPrimPropertyPath()) {
+            VtValue targetPaths;
+            SdfAbstractDataSpecId specId(&path);
+            if ((Has(specId, SdfFieldKeys->TargetPaths, &targetPaths) ||
+                 Has(specId, SdfFieldKeys->ConnectionPaths, &targetPaths)) &&
+                targetPaths.IsHolding<SdfPathListOp>()) {
+                targetPaths.UncheckedSwap(*listOp);
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    inline bool _HasTargetOrConnectionSpec(SdfPath const &path) const {
         // We don't store target specs to save space, since in Usd we don't have
         // any fields that may be set on them.  Their presence is determined by
         // whether or not they appear in their owning relationship's Added or
         // Explicit items.
+        using std::find;
         SdfPath parentPath = path.GetParentPath();
-        if (parentPath.IsPrimPropertyPath()) {
-            VtValue targetPaths;
-            if (Has(SdfAbstractDataSpecId(&parentPath),
-                    SdfFieldKeys->TargetPaths, &targetPaths) &&
-                targetPaths.IsHolding<SdfPathListOp>()) {
-                auto const &listOp = targetPaths.UncheckedGet<SdfPathListOp>();
-                if (listOp.IsExplicit()) {
-                    auto const &items = listOp.GetExplicitItems();
-                    return std::find(
-                        items.begin(), items.end(), path) != items.end();
-                } else {
-                    auto const &items = listOp.GetAddedItems();
-                    return std::find(
-                        items.begin(), items.end(), path) != items.end();
-                }
+        SdfPath targetPath = path.GetTargetPath();
+        SdfPathListOp listOp;
+        if (_GetTargetOrConnectionListOp(parentPath, &listOp)) {
+            if (listOp.IsExplicit()) {
+                auto const &items = listOp.GetExplicitItems();
+                return find(
+                    items.begin(), items.end(), targetPath) != items.end();
+            } else {
+                auto const &added = listOp.GetAddedItems();
+                auto const &prepended = listOp.GetPrependedItems();
+                auto const &appended = listOp.GetAppendedItems();
+                return find(added.begin(),
+                            added.end(), targetPath) != added.end() ||
+                    find(prepended.begin(),
+                         prepended.end(), targetPath) != prepended.end() ||
+                    find(appended.begin(),
+                         appended.end(), targetPath) != appended.end();
             }
         }
         return false;
@@ -189,7 +248,7 @@ public:
     inline bool HasSpec(const SdfAbstractDataSpecId &id) const {
         const SdfPath &path = id.GetFullSpecPath();
         if (ARCH_UNLIKELY(path.IsTargetPath())) {
-            return _HasTargetSpec(path);
+            return _HasTargetOrConnectionSpec(path);
         }
         return _hashData ?
             _hashData->find(path) != _hashData->end() :
@@ -264,8 +323,18 @@ public:
             return SdfSpecTypePseudoRoot;
         }
         if (path.IsTargetPath()) {
-            return _HasTargetSpec(path) ?
-                SdfSpecTypeRelationshipTarget : SdfSpecTypeUnknown;
+            if (_HasTargetOrConnectionSpec(path)) {
+                SdfPath parentPath = path.GetParentPath();
+                SdfSpecType parentSpecType = 
+                    GetSpecType(SdfAbstractDataSpecId(&parentPath));
+                if (parentSpecType == SdfSpecTypeRelationship) {
+                    return SdfSpecTypeRelationshipTarget;
+                }
+                else if (parentSpecType == SdfSpecTypeAttribute) {
+                    return SdfSpecTypeConnection;
+                }
+            }
+            return SdfSpecTypeUnknown;
         }
         if (_hashData) {
             auto i = _hashData->find(path);
@@ -306,21 +375,70 @@ public:
         }
     }
 
+
+
     inline void _VisitSpecs(SdfAbstractData const &data,
                             SdfAbstractDataSpecVisitor* visitor) const {
-        // XXX: Is it important to present relationship target specs here?
+
+        // A helper function for spoofing target & connection spec existence --
+        // we don't actually store those specs since we don't support fields on
+        // them.
+        auto doTargetAndConnectionSpecs =
+            [this, &data, visitor](SdfPath const &path, SdfSpecType specType) {
+            // Spoof existence of target & connection specs.
+            if (specType == SdfSpecTypeAttribute ||
+                specType == SdfSpecTypeRelationship) {
+                SdfPathListOp listOp;
+                SdfPathVector specs;
+                if (_GetTargetOrConnectionListOp(path, &listOp)) {
+                    if (listOp.IsExplicit()) {
+                        specs = listOp.GetExplicitItems();
+                    }
+                    else {
+                        auto const &added = listOp.GetAddedItems();
+                        auto const &prepended = listOp.GetPrependedItems();
+                        auto const &appended = listOp.GetAppendedItems();
+                        specs.resize(
+                            added.size() + prepended.size() + appended.size());
+                        using std::copy;
+                        copy(appended.begin(), appended.end(),
+                             copy(prepended.begin(), prepended.end(),
+                                  copy(added.begin(), added.end(),
+                                       specs.begin())));
+                        std::sort(specs.begin(), specs.end());
+                        specs.erase(std::unique(specs.begin(), specs.end()),
+                                    specs.end());
+                    }
+                    for (auto const &p: specs) {
+                        SdfPath tp = path.AppendTarget(p);
+                        if (!visitor->VisitSpec(
+                                data, SdfAbstractDataSpecId(&tp))) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            return true;
+        };
+        
         if (_hashData) {
             for (auto const &p: *_hashData) {
-                if (!visitor->VisitSpec(
-                        data, SdfAbstractDataSpecId(&p.first))) {
-                    break;
+                SdfAbstractDataSpecId specId(&p.first);
+                if (!visitor->VisitSpec(data, specId) ||
+                    !doTargetAndConnectionSpecs(p.first, p.second.specType)) {
+                    return;
                 }
             }
         } else {
+            size_t index = 0;
             for (auto const &p: _flatData) {
-                if (!visitor->VisitSpec(
-                        data, SdfAbstractDataSpecId(&p.first))) {
-                    break;
+                SdfAbstractDataSpecId specId(&p.first);
+                if (!visitor->VisitSpec(data, specId)) {
+                    return;
+                }
+                SdfSpecType specType = _flatTypes[index++].type;
+                if (!doTargetAndConnectionSpecs(p.first, specType)) {
+                    return;
                 }
             }
         }
@@ -347,6 +465,8 @@ public:
     inline bool Has(const SdfAbstractDataSpecId& id,
                     const TfToken & field,
                     VtValue *value) const {
+        TF_DESCRIBE_SCOPE(GetFileName().c_str());
+        TfScopeDescription desc2(field.GetText());
         if (VtValue const *fieldValue = _GetFieldValue(id, field)) {
             if (value) {
                 *value = _DetachValue(*fieldValue);
@@ -438,7 +558,8 @@ public:
             return;
         }
         if (id.GetFullSpecPath().IsTargetPath()) {
-            TF_CODING_ERROR("Cannot set fields on relationship target specs: "
+            TF_CODING_ERROR("Cannot set fields on relationship target or "
+                            "attribute connection specs: "
                             "<%s>:%s = %s", id.GetFullSpecPath().GetText(),
                             fieldName.GetText(), TfStringify(value).c_str());
             return;
@@ -513,6 +634,7 @@ public:
 
     inline bool QueryTimeSample(const SdfAbstractDataSpecId& id, double time,
                                 VtValue *value) const {
+        TF_DESCRIBE_SCOPE(GetFileName().c_str());
         if (VtValue const *fieldValue =
             _GetFieldValue(id, SdfDataTokens->TimeSamples)) {
             if (fieldValue->IsHolding<TimeSamples>()) {
@@ -768,6 +890,7 @@ private:
 
     inline std::vector<double> const &
     _ListTimeSamplesForPath(const SdfAbstractDataSpecId &id) const {
+        TF_DESCRIBE_SCOPE(GetFileName().c_str());
         if (const VtValue* fieldValue =
             _GetFieldValue(id, SdfDataTokens->TimeSamples)) {
             if (fieldValue->IsHolding<TimeSamples>()) {

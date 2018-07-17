@@ -191,20 +191,6 @@ function(_install_python LIBRARY_NAME)
 endfunction() #_install_python
 
 function(_install_resource_files NAME pluginInstallPrefix pluginToLibraryPath)
-    set(resourceFiles "")
-    foreach(resourceFile ${ARGN})
-        # plugInfo.json go through an initial template substitution step files
-        # install it from the binary (gen) directory specified by the full
-        # path. Otherwise, use the original relative path which is relative to
-        # the source directory.
-        if (${resourceFile} STREQUAL "plugInfo.json")
-            _plugInfo_subst(${NAME} "${pluginToLibraryPath}" ${resourceFile})
-            list(APPEND resourceFiles "${CMAKE_CURRENT_BINARY_DIR}/${resourceFile}")
-        else()
-            list(APPEND resourceFiles ${resourceFile})
-        endif()
-    endforeach()
-
     # Resource files install into a structure that looks like:
     # share/
     #     usd/
@@ -217,18 +203,39 @@ function(_install_resource_files NAME pluginInstallPrefix pluginToLibraryPath)
     #                 ...
     #
     _get_resources_dir(${pluginInstallPrefix} ${NAME} resourcesPath)
-    foreach(f ${resourceFiles})
-        # Don't install subdirs for absolute paths, there's no way to tell
-        # what the intended subdir structure is. In practice, any absolute paths
-        # should only come from the plugInfo.json processing above, which 
-        # install at the top-level anyway.
-        if (NOT IS_ABSOLUTE ${f})
-            get_filename_component(dirPath ${f} PATH)
+
+    foreach(resourceFile ${ARGN})
+        # A resource file may be specified like <src file>:<dst file> to 
+        # indicate that it should be installed to a different location in
+        # the resources area. Check if this is the case.
+        string(REPLACE ":" ";" resourceFile "${resourceFile}")
+        list(LENGTH resourceFile n)
+        if (n EQUAL 1)
+           set(resourceDestFile ${resourceFile})
+        elseif (n EQUAL 2)
+           list(GET resourceFile 1 resourceDestFile)
+           list(GET resourceFile 0 resourceFile)
+        else()
+           message(FATAL_ERROR
+               "Failed to parse resource path ${resourceFile}")
         endif()
 
+        # plugInfo.json go through an initial template substitution step files
+        # install it from the binary (gen) directory specified by the full
+        # path. Otherwise, use the original relative path which is relative to
+        # the source directory.
+        if (${resourceFile} STREQUAL "plugInfo.json")
+            _plugInfo_subst(${NAME} "${pluginToLibraryPath}" ${resourceFile})
+            set(resourceFile "${CMAKE_CURRENT_BINARY_DIR}/${resourceFile}")
+        endif()
+
+        get_filename_component(dirPath ${resourceDestFile} PATH)
+        get_filename_component(destFileName ${resourceDestFile} NAME)
+
         install(
-            FILES ${f}
+            FILES ${resourceFile}
             DESTINATION ${resourcesPath}/${dirPath}
+            RENAME ${destFileName}
         )
     endforeach()
 endfunction() # _install_resource_files
@@ -1167,14 +1174,12 @@ function(_pxr_library NAME)
     endif()
 
     # Names and paths passed to the compile via macros.  Paths should be
-    # relative to facilitate relocating the build.  installLocation is
-    # absolute but the client can override with any path, including a
-    # relative one.
+    # relative to facilitate relocating the build.
     _get_python_module_name(${NAME} pythonModuleName)
     string(TOUPPER ${NAME} uppercaseName)
-    set(installLocation "${CMAKE_INSTALL_PREFIX}/share/usd/plugins")
     if(PXR_INSTALL_LOCATION)
-        file(TO_CMAKE_PATH "${PXR_INSTALL_LOCATION}" installLocation)
+        file(TO_CMAKE_PATH "${PXR_INSTALL_LOCATION}" pxrInstallLocation)
+        set(pxrInstallLocation "PXR_INSTALL_LOCATION=${pxrInstallLocation}")
     endif()
 
     # API macros.
@@ -1259,9 +1264,9 @@ function(_pxr_library NAME)
             MFB_PACKAGE_NAME=${PXR_PACKAGE}
             MFB_ALT_PACKAGE_NAME=${PXR_PACKAGE}
             MFB_PACKAGE_MODULE=${pythonModuleName}
-            "PXR_BUILD_LOCATION=../share/usd/plugins"
-            "PXR_PLUGIN_BUILD_LOCATION=../plugin/usd"
-            "PXR_INSTALL_LOCATION=${installLocation}"
+            PXR_BUILD_LOCATION=../share/usd/plugins
+            PXR_PLUGIN_BUILD_LOCATION=../plugin/usd
+            ${pxrInstallLocation}
             ${pythonModulesEnabled}
             ${apiPrivate}
     )
@@ -1298,7 +1303,15 @@ function(_pxr_library NAME)
     # Set up the install.
     #
 
-    if(NOT isObject)
+    if(isObject)
+        get_target_property(install_headers ${NAME} PUBLIC_HEADER)
+        if (install_headers)
+            install(
+                FILES ${install_headers}
+                DESTINATION ${headerInstallPrefix}
+            )
+        endif()
+    else()
         if(BUILD_SHARED_LIBS AND NOT PXR_BUILD_MONOLITHIC)
             install(
                 TARGETS ${NAME}

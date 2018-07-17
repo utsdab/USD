@@ -1,6 +1,10 @@
 #usda 1.0
 (
     "WARNING: THIS FILE IS GENERATED.  DO NOT EDIT."
+    customLayerData = {
+        string[] appliedAPISchemas = ["ParamsAPI"]
+        string[] multipleApplyAPISchemas = []
+    }
 )
 
 class "SimplePrim" (
@@ -11,7 +15,7 @@ class "SimplePrim" (
     int intAttr = 0 (
         doc = "An integer attribute with fallback value of 0."
     )
-    rel target = None (
+    rel target (
         doc = """A relationship called target that could point to another prim
         or a property"""
     )
@@ -25,7 +29,7 @@ class ComplexPrim "ComplexPrim" (
     int intAttr = 0 (
         doc = "An integer attribute with fallback value of 0."
     )
-    rel target = None (
+    rel target (
         doc = """A relationship called target that could point to another prim
         or a property"""
     )

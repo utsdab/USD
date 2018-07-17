@@ -23,11 +23,7 @@
 //
 #include "pxr/imaging/hd/drawItem.h"
 #include "pxr/imaging/hd/bufferArrayRange.h"
-#include "pxr/imaging/hd/geometricShader.h"
-#include "pxr/imaging/hd/shaderCode.h"
-#include "pxr/imaging/hd/surfaceShader.h"
 
-#include "pxr/imaging/garch/gl.h"
 #include "pxr/base/gf/frustum.h"
 
 #include <boost/functional/hash.hpp>
@@ -47,20 +43,6 @@ HdDrawItem::~HdDrawItem()
     /*NOTHING*/
 }
 
-GLenum
-HdDrawItem::GetPrimitiveMode() const
-{
-    return _geometricShader
-        ? _geometricShader->GetPrimitiveMode()
-        : GL_POINTS;
-}
-
-HdShaderCodeSharedPtr
-HdDrawItem::GetSurfaceShader() const
-{
-    return _sharedData->surfaceShader;
-}
-
 size_t
 HdDrawItem::GetBufferArraysHash() const
 {
@@ -69,19 +51,19 @@ HdDrawItem::GetBufferArraysHash() const
                         GetTopologyRange() ?
                         GetTopologyRange()->GetVersion() : 0);
     boost::hash_combine(hash,
-                        GetConstantPrimVarRange() ?
-                        GetConstantPrimVarRange()->GetVersion() : 0);
+                        GetConstantPrimvarRange() ?
+                        GetConstantPrimvarRange()->GetVersion() : 0);
     boost::hash_combine(hash,
-                        GetVertexPrimVarRange() ?
-                        GetVertexPrimVarRange()->GetVersion() : 0);
+                        GetVertexPrimvarRange() ?
+                        GetVertexPrimvarRange()->GetVersion() : 0);
     boost::hash_combine(hash,
-                        GetElementPrimVarRange() ?
-                        GetElementPrimVarRange()->GetVersion() : 0);
-    int instancerNumLevels = GetInstancePrimVarNumLevels();
+                        GetElementPrimvarRange() ?
+                        GetElementPrimvarRange()->GetVersion() : 0);
+    int instancerNumLevels = GetInstancePrimvarNumLevels();
     for (int i = 0; i < instancerNumLevels; ++i) {
         boost::hash_combine(hash,
-                            GetInstancePrimVarRange(i) ?
-                            GetInstancePrimVarRange(i)->GetVersion(): 0);
+                            GetInstancePrimvarRange(i) ?
+                            GetInstancePrimvarRange(i)->GetVersion(): 0);
     }
     boost::hash_combine(hash,
                         GetInstanceIndexRange() ?
@@ -106,26 +88,24 @@ std::ostream &operator <<(std::ostream &out,
     out << "Draw Item:\n";
     out << "    Bound: "    << self._sharedData->bounds << "\n";
     out << "    Visible: "  << self._sharedData->visible << "\n";
-    out << "    GeometricShader:\n";
-    // TODO: add debugging output into Hd_GeometricShader and GlfGLSLFX.
     if (self.GetTopologyRange()) {
         out << "    Topology:\n";
         out << "        numElements=" << self.GetTopologyRange()->GetNumElements() << "\n";
         out << *self.GetTopologyRange();
     }
-    if (self.GetConstantPrimVarRange()) {
-        out << "    Constant PrimVars:\n";
-        out << *self.GetConstantPrimVarRange();
+    if (self.GetConstantPrimvarRange()) {
+        out << "    Constant Primvars:\n";
+        out << *self.GetConstantPrimvarRange();
     }
-    if (self.GetElementPrimVarRange()) {
-        out << "    Element PrimVars:\n";
-        out << "        numElements=" << self.GetElementPrimVarRange()->GetNumElements() << "\n";
-        out << *self.GetElementPrimVarRange();
+    if (self.GetElementPrimvarRange()) {
+        out << "    Element Primvars:\n";
+        out << "        numElements=" << self.GetElementPrimvarRange()->GetNumElements() << "\n";
+        out << *self.GetElementPrimvarRange();
     }
-    if (self.GetVertexPrimVarRange()) {
-        out << "    Vertex PrimVars:\n";
-        out << "        numElements=" << self.GetVertexPrimVarRange()->GetNumElements() << "\n";
-        out << *self.GetVertexPrimVarRange();
+    if (self.GetVertexPrimvarRange()) {
+        out << "    Vertex Primvars:\n";
+        out << "        numElements=" << self.GetVertexPrimvarRange()->GetNumElements() << "\n";
+        out << *self.GetVertexPrimvarRange();
     }
     return out;
 }

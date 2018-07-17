@@ -24,6 +24,7 @@
 #include "pxr/usd/usd/clipsAPI.h"
 #include "pxr/usd/usd/schemaRegistry.h"
 #include "pxr/usd/usd/typed.h"
+#include "pxr/usd/usd/tokens.h"
 
 #include "pxr/usd/sdf/types.h"
 #include "pxr/usd/sdf/assetPath.h"
@@ -34,9 +35,14 @@ PXR_NAMESPACE_OPEN_SCOPE
 TF_REGISTRY_FUNCTION(TfType)
 {
     TfType::Define<UsdClipsAPI,
-        TfType::Bases< UsdSchemaBase > >();
+        TfType::Bases< UsdAPISchemaBase > >();
     
 }
+
+TF_DEFINE_PRIVATE_TOKENS(
+    _schemaTokens,
+    (ClipsAPI)
+);
 
 /* virtual */
 UsdClipsAPI::~UsdClipsAPI()
@@ -84,7 +90,7 @@ UsdClipsAPI::GetSchemaAttributeNames(bool includeInherited)
 {
     static TfTokenVector localNames;
     static TfTokenVector allNames =
-        UsdSchemaBase::GetSchemaAttributeNames(true);
+        UsdAPISchemaBase::GetSchemaAttributeNames(true);
 
     if (includeInherited)
         return allNames;
@@ -112,7 +118,7 @@ TF_DEFINE_PUBLIC_TOKENS(UsdClipsAPIInfoKeys, USDCLIPS_INFO_KEYS);
 TF_DEFINE_PUBLIC_TOKENS(UsdClipsAPISetNames, USDCLIPS_SET_NAMES);
 
 TF_DEFINE_ENV_SETTING(
-    USD_AUTHOR_LEGACY_CLIPS, true,
+    USD_AUTHOR_LEGACY_CLIPS, false,
     "If on, clip info will be stored in separate metadata fields "
     "instead of in the clips dictionary when using API that does "
     "not specify a clip set.");
@@ -429,8 +435,11 @@ UsdClipsAPI::GetClipTemplateStride(double* clipTemplateStride,
 bool 
 UsdClipsAPI::SetClipTemplateStride(const double clipTemplateStride)
 {
-    if (clipTemplateStride == 0) {
-        TF_CODING_ERROR("clipTemplateStride can not be set to 0.");
+    if (clipTemplateStride <= 0) {
+        TF_CODING_ERROR("Invalid clipTemplateStride %f for prim <%s>. "
+                        "clipTemplateStride must be greater than 0.",
+                        clipTemplateStride, 
+                        GetPrim().GetPath().GetText());
         return false;
     }
 
@@ -442,13 +451,48 @@ bool
 UsdClipsAPI::SetClipTemplateStride(const double clipTemplateStride, 
                                    const std::string& clipSet)
 {
-    if (clipTemplateStride == 0) {
-        TF_CODING_ERROR("clipTemplateStride can not be set to 0.");
+    if (clipTemplateStride <= 0) {
+        TF_CODING_ERROR("Invalid clipTemplateStride %f for prim <%s>. "
+                        "clipTemplateStride must be greater than 0.",
+                        clipTemplateStride, 
+                        GetPrim().GetPath().GetText());
         return false;
     }
 
     USD_CLIPS_API_CLIPSET_SETTER(SetClipTemplateStride,
         clipTemplateStride, clipSet, UsdClipsAPIInfoKeys->templateStride);
+}
+
+bool 
+UsdClipsAPI::GetClipTemplateActiveOffset(double* clipTemplateActiveOffset) const
+{
+    return GetClipTemplateActiveOffset(clipTemplateActiveOffset,
+                                       UsdClipsAPISetNames->default_.GetString());
+}
+
+bool 
+UsdClipsAPI::GetClipTemplateActiveOffset(double* clipTemplateActiveOffset,
+                                         const std::string& clipSet) const
+{
+    USD_CLIPS_API_CLIPSET_GETTER(GetClipTemplateActiveOffset,
+        clipTemplateActiveOffset, clipSet, 
+        UsdClipsAPIInfoKeys->templateActiveOffset);
+}
+
+bool
+UsdClipsAPI::SetClipTemplateActiveOffset(const double clipTemplateActiveOffset)
+{
+    return SetClipTemplateActiveOffset(clipTemplateActiveOffset,
+                                       UsdClipsAPISetNames->default_.GetString());
+}
+
+bool
+UsdClipsAPI::SetClipTemplateActiveOffset(const double clipTemplateActiveOffset,
+                                         const std::string& clipSet)
+{
+    USD_CLIPS_API_CLIPSET_SETTER(SetClipTemplateActiveOffset,
+        clipTemplateActiveOffset, clipSet, 
+        UsdClipsAPIInfoKeys->templateActiveOffset);
 }
 
 bool 

@@ -19,10 +19,11 @@ pxr_library(glf
         arch
         garch
         gf
+        hf
         js
         plug
         tf
-        tracelite
+        trace
         sdf
         ${Boost_PYTHON_LIBRARY}
         ${Boost_SYSTEM_LIBRARY}
@@ -46,6 +47,7 @@ pxr_library(glf
         baseTexture
         baseTextureData
         bindingMap
+        contextCaps
         diagnostic
         drawTarget
         glew
@@ -85,8 +87,10 @@ pxr_library(glf
 
     CPPFILES
         dictionary.cpp
-        moduleDeps.cpp
         oiioImage.cpp
+
+    PYTHON_CPPFILES
+        moduleDeps.cpp
 
     PYMODULE_CPPFILES
         module.cpp
@@ -101,7 +105,7 @@ pxr_library(glf
         wrapUVTexture.cpp
         wrapUVTextureStorage.cpp
 
-    PYTHON_FILES
+    PYMODULE_FILES
         __init__.py
 
     RESOURCE_FILES

@@ -24,6 +24,7 @@
 #include "usdKatana/lookAPI.h"
 #include "pxr/usd/usd/schemaRegistry.h"
 #include "pxr/usd/usd/typed.h"
+#include "pxr/usd/usd/tokens.h"
 
 #include "pxr/usd/sdf/types.h"
 #include "pxr/usd/sdf/assetPath.h"
@@ -34,15 +35,14 @@ PXR_NAMESPACE_OPEN_SCOPE
 TF_REGISTRY_FUNCTION(TfType)
 {
     TfType::Define<UsdKatanaLookAPI,
-        TfType::Bases< UsdSchemaBase > >();
+        TfType::Bases< UsdAPISchemaBase > >();
     
-    // Register the usd prim typename as an alias under UsdSchemaBase. This
-    // enables one to call
-    // TfType::Find<UsdSchemaBase>().FindDerivedByName("LookAPI")
-    // to find TfType<UsdKatanaLookAPI>, which is how IsA queries are
-    // answered.
-    TfType::AddAlias<UsdSchemaBase, UsdKatanaLookAPI>("LookAPI");
 }
+
+TF_DEFINE_PRIVATE_TOKENS(
+    _schemaTokens,
+    (LookAPI)
+);
 
 /* virtual */
 UsdKatanaLookAPI::~UsdKatanaLookAPI()
@@ -60,18 +60,19 @@ UsdKatanaLookAPI::Get(const UsdStagePtr &stage, const SdfPath &path)
     return UsdKatanaLookAPI(stage->GetPrimAtPath(path));
 }
 
+/*virtual*/
+bool 
+UsdKatanaLookAPI::_IsAppliedAPISchema() const 
+{
+    return true;
+}
+
 /* static */
 UsdKatanaLookAPI
-UsdKatanaLookAPI::Define(
-    const UsdStagePtr &stage, const SdfPath &path)
+UsdKatanaLookAPI::Apply(const UsdPrim &prim)
 {
-    static TfToken usdPrimTypeName("LookAPI");
-    if (!stage) {
-        TF_CODING_ERROR("Invalid stage");
-        return UsdKatanaLookAPI();
-    }
-    return UsdKatanaLookAPI(
-        stage->DefinePrim(path, usdPrimTypeName));
+    return UsdAPISchemaBase::_ApplyAPISchema<UsdKatanaLookAPI>(
+            prim, _schemaTokens->LookAPI);
 }
 
 /* static */
@@ -135,7 +136,7 @@ UsdKatanaLookAPI::GetSchemaAttributeNames(bool includeInherited)
     };
     static TfTokenVector allNames =
         _ConcatenateAttributeNames(
-            UsdSchemaBase::GetSchemaAttributeNames(true),
+            UsdAPISchemaBase::GetSchemaAttributeNames(true),
             localNames);
 
     if (includeInherited)

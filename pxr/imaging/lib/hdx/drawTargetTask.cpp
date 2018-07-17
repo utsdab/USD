@@ -31,11 +31,10 @@
 #include "pxr/imaging/hdx/tokens.h"
 #include "pxr/imaging/hdx/debugCodes.h"
 
-#include "pxr/imaging/hdSt/camera.h"
+#include "pxr/imaging/hdSt/glConversions.h"
+#include "pxr/imaging/hd/camera.h"
 #include "pxr/imaging/hdSt/drawTarget.h"
-
-#include "pxr/imaging/hd/renderPassState.h"
-
+#include "pxr/imaging/hdSt/renderPassState.h"
 #include "pxr/imaging/glf/drawTarget.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -130,8 +129,8 @@ HdxDrawTargetTask::_Sync(HdTaskContext* ctx)
                     pass->SetDrawTarget(drawTarget->GetGlfDrawTarget());
                     pass->SetRenderPassState(drawTarget->GetRenderPassState());
 
-                    HdRenderPassStateSharedPtr renderPassState(
-                        new HdRenderPassState());
+                    HdStRenderPassStateSharedPtr renderPassState(
+                        new HdStRenderPassState());
                     HdxSimpleLightingShaderSharedPtr simpleLightingShader(
                         new HdxSimpleLightingShader());
 
@@ -185,14 +184,14 @@ HdxDrawTargetTask::_Sync(HdTaskContext* ctx)
 
         RenderPassInfo &renderPassInfo =  _renderPassesInfo[renderPassIdx];
         HdxDrawTargetRenderPass *renderPass = _renderPasses[renderPassIdx].get();
-        HdRenderPassStateSharedPtr &renderPassState = renderPassInfo.renderPassState;
+        HdStRenderPassStateSharedPtr &renderPassState = renderPassInfo.renderPassState;
         const HdStDrawTarget *drawTarget = renderPassInfo.target;
 
         const SdfPath &cameraId = drawTarget->GetRenderPassState()->GetCamera();
 
         // XXX: Need to detect when camera changes and only update if
         // needed
-        const HdStCamera *camera = static_cast<const HdStCamera *>(
+        const HdCamera *camera = static_cast<const HdCamera *>(
                                   renderIndex.GetSprim(HdPrimTypeTokens->camera,
                                                        cameraId));
 
@@ -205,8 +204,8 @@ HdxDrawTargetTask::_Sync(HdTaskContext* ctx)
 
         GfVec2i const &resolution = drawTarget->GetGlfDrawTarget()->GetSize();
 
-        VtValue viewMatrixVt  = camera->Get(HdStCameraTokens->worldToViewMatrix);
-        VtValue projMatrixVt  = camera->Get(HdStCameraTokens->projectionMatrix);
+        VtValue viewMatrixVt  = camera->Get(HdCameraTokens->worldToViewMatrix);
+        VtValue projMatrixVt  = camera->Get(HdCameraTokens->projectionMatrix);
         GfMatrix4d viewMatrix = viewMatrixVt.Get<GfMatrix4d>();
 
         // XXX : If you need to change the following code that generates a 
@@ -218,7 +217,7 @@ HdxDrawTargetTask::_Sync(HdTaskContext* ctx)
             resolution[1] != 0.0 ? resolution[0] / resolution[1] : 1.0);
         projectionMatrix = projectionMatrix * yflip;
 
-        const VtValue &vClipPlanes = camera->Get(HdStCameraTokens->clipPlanes);
+        const VtValue &vClipPlanes = camera->Get(HdCameraTokens->clipPlanes);
         const HdRenderPassState::ClipPlanesVector &clipPlanes =
                         vClipPlanes.Get<HdRenderPassState::ClipPlanesVector>();
 
@@ -280,7 +279,7 @@ HdxDrawTargetTask::_Execute(HdTaskContext* ctx)
     }
     // XXX: Move conversion to sync once header is made private
     // to the library
-    glDepthFunc(HdConversions::GetGlDepthFunc(_depthFunc));
+    glDepthFunc(HdStGLConversions::GetGlDepthFunc(_depthFunc));
 
     // XXX: Long-term Alpha to Coverage will be a render style on the
     // task.  However, as there isn't a fallback we current force it
@@ -312,7 +311,7 @@ HdxDrawTargetTask::_Execute(HdTaskContext* ctx)
 
         HdxDrawTargetRenderPass *renderPass = 
             _renderPasses[renderPassIdx].get();
-        HdRenderPassStateSharedPtr renderPassState =
+        HdStRenderPassStateSharedPtr renderPassState =
             _renderPassesInfo[renderPassIdx].renderPassState;
         renderPassState->Bind();
         renderPass->Execute(renderPassState);

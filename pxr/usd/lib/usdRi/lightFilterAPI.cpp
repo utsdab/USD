@@ -24,6 +24,7 @@
 #include "pxr/usd/usdRi/lightFilterAPI.h"
 #include "pxr/usd/usd/schemaRegistry.h"
 #include "pxr/usd/usd/typed.h"
+#include "pxr/usd/usd/tokens.h"
 
 #include "pxr/usd/sdf/types.h"
 #include "pxr/usd/sdf/assetPath.h"
@@ -34,9 +35,14 @@ PXR_NAMESPACE_OPEN_SCOPE
 TF_REGISTRY_FUNCTION(TfType)
 {
     TfType::Define<UsdRiLightFilterAPI,
-        TfType::Bases< UsdSchemaBase > >();
+        TfType::Bases< UsdAPISchemaBase > >();
     
 }
+
+TF_DEFINE_PRIVATE_TOKENS(
+    _schemaTokens,
+    (RiLightFilterAPI)
+);
 
 /* virtual */
 UsdRiLightFilterAPI::~UsdRiLightFilterAPI()
@@ -54,6 +60,20 @@ UsdRiLightFilterAPI::Get(const UsdStagePtr &stage, const SdfPath &path)
     return UsdRiLightFilterAPI(stage->GetPrimAtPath(path));
 }
 
+/*virtual*/
+bool 
+UsdRiLightFilterAPI::_IsAppliedAPISchema() const 
+{
+    return true;
+}
+
+/* static */
+UsdRiLightFilterAPI
+UsdRiLightFilterAPI::Apply(const UsdPrim &prim)
+{
+    return UsdAPISchemaBase::_ApplyAPISchema<UsdRiLightFilterAPI>(
+            prim, _schemaTokens->RiLightFilterAPI);
+}
 
 /* static */
 const TfType &
@@ -224,7 +244,7 @@ UsdRiLightFilterAPI::GetSchemaAttributeNames(bool includeInherited)
     };
     static TfTokenVector allNames =
         _ConcatenateAttributeNames(
-            UsdSchemaBase::GetSchemaAttributeNames(true),
+            UsdAPISchemaBase::GetSchemaAttributeNames(true),
             localNames);
 
     if (includeInherited)

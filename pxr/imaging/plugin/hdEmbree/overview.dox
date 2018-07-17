@@ -49,7 +49,7 @@ Together, these classes insert mesh objects and mesh instances into the
 embree scene, so that drawing code can raycast against them.
 
 In order to support the standard hydra render task, HdxRenderTask, the scene
-delegate also supports a basic camera type, HdStCamera.
+delegate also supports a basic camera type, HdCamera.
 
 ## Commit Resources
 
@@ -103,7 +103,7 @@ variable, through the HdEmbreeConfig class.
 ## Unit Test
 
 testHdEmbree provides an example of how to write a minimal hydra application.
-It uses Hd_UnitTestGLDrawing to create a window and provide a GL framebuffer,
+It uses HdSt_UnitTestGLDrawing to create a window and provide a GL framebuffer,
 and Hd_UnitTestDelegate to provide a simple scene graph/data source. The scene
 is then rendered by running HdxRenderTask via HdEngine::Execute().
 */

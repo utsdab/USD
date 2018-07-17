@@ -58,7 +58,7 @@ public:
     HD_API
     virtual ~HdSprim();
 
-    /// Returns the identifer by which this state is known. This
+    /// Returns the identifier by which this state is known. This
     /// identifier is a common associative key used by the SceneDelegate,
     /// RenderIndex, and for binding to the state (e.g. camera, light)
     SdfPath const& GetID() const { return _id; }
@@ -73,6 +73,12 @@ public:
     virtual void Sync(HdSceneDelegate *sceneDelegate,
                       HdRenderParam   *renderParam,
                       HdDirtyBits     *dirtyBits) = 0;
+
+    /// Finalizes object resources. This function might not delete resources,
+    /// but it should deal with resource ownership so that the sprim is
+    /// deletable.
+    HD_API
+    virtual void Finalize(HdRenderParam *renderParam);
 
     /// Accessor for tasks to get the parameter cached in this sprim object.
     /// Don't communicate back to scene delegate within this function.

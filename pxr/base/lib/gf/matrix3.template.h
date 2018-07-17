@@ -28,10 +28,9 @@
 {% extends "matrix.template.h" %}
 
 {% block forwardDeclarations %}
-{% if SCL == 'double' -%}
 class GfRotation;
 class GfQuaternion;
-{% endif %}
+class GfQuat{{ SCL[0] }};
 {% endblock %}
 
 {% block classDocs %}
@@ -65,12 +64,14 @@ class GfQuaternion;
 {% endblock customDiagonalConstructors %}
 
 {% block customConstructors %}
-{% if SCL == 'double' %}
     /// Constructor. Initialize matrix from rotation.
     GF_API
     {{ MAT }}(const GfRotation& rot);
 
-{% endif %}
+    /// Constructor. Initialize matrix from a quaternion.
+    GF_API
+    explicit {{ MAT }}(const GfQuat{{ SCL[0] }}& rot);
+
 {% endblock customConstructors %}
 
 {% block customFunctions %}
@@ -112,10 +113,13 @@ class GfQuaternion;
     /// Sets matrix to specify a uniform scaling by \e scaleFactor.
     GF_API
     {{ MAT }}& SetScale({{ SCL }} scaleFactor);
-{% if SCL == 'double' %}
 
     /// \name 3D Transformation Utilities
     /// @{
+
+    /// Sets the matrix to specify a rotation equivalent to \e rot.
+    GF_API
+    {{ MAT }}& SetRotate(const GfQuat{{ SCL[0] }} &rot);
 
     /// Sets the matrix to specify a rotation equivalent to \e rot.
     GF_API
@@ -124,7 +128,7 @@ class GfQuaternion;
     /// Sets the matrix to specify a nonuniform scaling in x, y, and z by
     /// the factors in vector \e scaleFactors.
     GF_API
-    {{ MAT }}& SetScale(const GfVec3d &scaleFactors);
+    {{ MAT }}& SetScale(const GfVec3{{ SCL[0] }} &scaleFactors);
 
     /// Returns the rotation corresponding to this matrix. This works
     /// well only if the matrix represents a rotation.
@@ -141,9 +145,9 @@ class GfQuaternion;
     /// This is a convenience method that is equivalent to calling
     /// ExtractRotation().Decompose().
     GF_API
-    GfVec3d DecomposeRotation(const GfVec3d &axis0,
-                              const GfVec3d &axis1,
-                              const GfVec3d &axis2 ) const;
+    GfVec3{{ SCL[0] }} DecomposeRotation(const GfVec3{{ SCL[0] }} &axis0,
+                              const GfVec3{{ SCL[0] }} &axis1,
+                              const GfVec3{{ SCL[0] }} &axis2 ) const;
 
     /// Returns the quaternion corresponding to this matrix. This works
     /// well only if the matrix represents a rotation.
@@ -154,7 +158,12 @@ class GfQuaternion;
     GfQuaternion ExtractRotationQuaternion() const;
 
     /// @}
-{% endif %}
+
+private:
+    /// Set the matrix to the rotation given by a quaternion,
+    /// defined by the real component \p r and imaginary components \p i.
+    void _SetRotateFromQuat({{ SCL }} r, const GfVec3{{ SCL[0] }}& i);
+
 {% endblock customXformFunctions %}
 
 /* #endif */

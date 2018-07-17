@@ -24,14 +24,30 @@
 #
 
 import os
-# Force Ar to fall back to the default resolver implementation.
-os.environ['PXR_AR_DISABLE_PLUGIN_RESOLVER'] = '1'
 from pxr import Ar
 
 import unittest
 import shutil
 
 class TestArDefaultResolver(unittest.TestCase):
+    def assertPathsEqual(self, path1, path2):
+        # Flip backslashes to forward slashes to accommodate platform
+        # differences. We don't use os.path.normpath since that might
+        # fix up other differences we'd want to catch in these tests.
+        self.assertEqual(path1.replace("\\", "/"), path2.replace("\\", "/"))
+
+    @classmethod
+    def setUpClass(cls):
+        # Force Ar to use the default resolver implementation.
+        Ar.SetPreferredResolver('ArDefaultResolver')
+
+        # Set up default search path for test_ResolveSearchPaths below. This
+        # must be done before any calls to Ar.GetResolver()
+        Ar.DefaultResolver.SetDefaultSearchPath([
+            os.path.abspath('test1'),
+            os.path.abspath('test1/test2')
+        ])
+
     def test_AnchorRelativePath(self):
         r = Ar.GetResolver()
 
@@ -42,6 +58,9 @@ class TestArDefaultResolver(unittest.TestCase):
             r.AnchorRelativePath('RelAnchor', 'RelPath'))
         self.assertEqual('/AbsolutePath',
             r.AnchorRelativePath('/AbsoluteAnchor', '/AbsolutePath'))
+        self.assertEqual('/AbsolutePath/Subdir/FileRel.txt',
+            r.AnchorRelativePath('/AbsolutePath/ParentFile.txt', 
+                'Subdir/FileRel.txt'))
         self.assertEqual('/AbsoluteAnchor/Subdir/FileRel.txt',
             r.AnchorRelativePath('/AbsoluteAnchor/ParentFile.txt',
                 './Subdir/FileRel.txt'))
@@ -59,13 +78,78 @@ class TestArDefaultResolver(unittest.TestCase):
 
         # The resolved path should be absolute.
         self.assertTrue(os.path.isabs(resolvedPath))
+        self.assertPathsEqual(testFilePath, resolvedPath)
 
-        # The resolved path should match the path we constructed.  The
-        # os.path.abspath() would appear to be unnecessary because we
-        # just checked that it's absolute but it also canonicalizes
-        # the path which, on Windows, means the forward slashes
-        # returned by the resolver become backslashes.
-        self.assertEqual(testFilePath, os.path.abspath(resolvedPath))
+    def test_ResolveSearchPaths(self):
+        testDir = os.path.abspath('test1/test2')
+        if os.path.isdir(testDir):
+            shutil.rmtree(testDir)
+        os.makedirs(testDir)
+
+        testFileName = 'test_ResolveWithContext.txt'
+        testFilePath = os.path.join(testDir, testFileName) 
+        with open(testFilePath, 'w') as ofp:
+            print >>ofp, 'Garbage'
+        
+        resolver = Ar.GetResolver()
+
+        self.assertPathsEqual(
+            os.path.abspath('test1/test2/test_ResolveWithContext.txt'),
+            resolver.Resolve('test2/test_ResolveWithContext.txt'))
+
+        self.assertPathsEqual(
+            os.path.abspath('test1/test2/test_ResolveWithContext.txt'),
+            resolver.Resolve('test_ResolveWithContext.txt'))
+
+    def test_ResolveWithContext(self):
+        testDir = os.path.abspath('test3/test4')
+        if os.path.isdir(testDir):
+            shutil.rmtree(testDir)
+        os.makedirs(testDir)
+        
+        testFileName = 'test_ResolveWithContext.txt'
+        testFilePath = os.path.join(testDir, testFileName) 
+        with open(testFilePath, 'w') as ofp:
+            print >>ofp, 'Garbage'
+        
+        resolver = Ar.GetResolver()
+        context = Ar.DefaultResolverContext([
+            os.path.abspath('test3'),
+            os.path.abspath('test3/test4')
+        ])
+
+        self.assertPathsEqual(
+            '', 
+            resolver.Resolve('test4/test_ResolveWithContext.txt'))
+
+        with Ar.ResolverContextBinder(context):
+            self.assertPathsEqual(
+                os.path.abspath('test3/test4/test_ResolveWithContext.txt'),
+                resolver.Resolve('test4/test_ResolveWithContext.txt'))
+            self.assertPathsEqual(
+                os.path.abspath('test3/test4/test_ResolveWithContext.txt'),
+                resolver.Resolve('test_ResolveWithContext.txt'))
+
+        self.assertPathsEqual(
+            '', 
+            resolver.Resolve('test4/test_ResolveWithContext.txt'))
+
+    def test_ResolverContext(self):
+        emptyContext = Ar.DefaultResolverContext()
+        self.assertEqual(emptyContext.GetSearchPath(), [])
+        self.assertEqual(emptyContext, Ar.DefaultResolverContext())
+        self.assertEqual(eval(repr(emptyContext)), emptyContext)
+
+        context = Ar.DefaultResolverContext(["/test/path/1", "/test/path/2"])
+        self.assertEqual(context.GetSearchPath(),
+                         [os.path.abspath("/test/path/1"), 
+                          os.path.abspath("/test/path/2")])
+        self.assertEqual(context,
+                         Ar.DefaultResolverContext(["/test/path/1", 
+                                                    "/test/path/2"]))
+        self.assertEqual(eval(repr(context)), context)
+
+        self.assertNotEqual(emptyContext, context);
 
 if __name__ == '__main__':
     unittest.main()

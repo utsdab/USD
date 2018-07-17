@@ -35,7 +35,6 @@
 #include "pxr/imaging/glf/simpleMaterial.h"
 
 #include "pxr/base/tf/declarePtrs.h"
-#include "pxr/base/tf/type.h"
 #include "pxr/usd/sdf/path.h"
 #include "pxr/usd/usd/timeCode.h"
 
@@ -111,6 +110,8 @@ public:
         float alphaThreshold; // threshold < 0 implies automatic
         ClipPlanesVector clipPlanes;
         bool enableHardwareShading;
+        // Respect USD's model:drawMode attribute...
+        bool enableUsdDrawModes;
 
         RenderParams() : 
             frame(UsdTimeCode::Default()),
@@ -132,7 +133,8 @@ public:
             wireframeColor(.0f, .0f, .0f, .0f),
             alphaThreshold(-1),
             clipPlanes(),
-            enableHardwareShading(true)
+            enableHardwareShading(true),
+            enableUsdDrawModes(true)
         {
         }
 
@@ -156,7 +158,8 @@ public:
                 && wireframeColor              == other.wireframeColor
                 && alphaThreshold              == other.alphaThreshold
                 && clipPlanes                  == other.clipPlanes
-                && enableHardwareShading       == other.enableHardwareShading;
+                && enableHardwareShading       == other.enableHardwareShading
+                && enableUsdDrawModes          == other.enableUsdDrawModes;
         }
         bool operator!=(const RenderParams &other) const {
             return !(*this == other);
@@ -200,6 +203,9 @@ public:
     virtual void SetLightingState(GlfSimpleLightingContextPtr const &src);
 
     /// Set lighting state
+    /// Derived classes should ensure that passing an empty lights
+    /// vector disables lighting.
+    /// \param lights is the set of lights to use, or empty to disable lighting.
     USDIMAGINGGL_API
     virtual void SetLightingState(GlfSimpleLightVector const &lights,
                                   GlfSimpleMaterial const &material,
@@ -236,14 +242,14 @@ public:
     USDIMAGINGGL_API
     virtual void SetSelectionColor(GfVec4f const& color);
 
-    /// Finds closest point of interesection with a frustum by rendering.
+    /// Finds closest point of intersection with a frustum by rendering.
     ///	
     /// This method uses a PickRender and a customized depth buffer to find an
     /// approximate point of intersection by rendering. This is less accurate
     /// than implicit methods or rendering with GL_SELECT, but leverages any data
     /// already cached in the renderer.
     ///
-    /// Returns whether a hit occured and if so, \p outHitPoint will contain the
+    /// Returns whether a hit occurred and if so, \p outHitPoint will contain the
     /// intersection point in world space (i.e. \p projectionMatrix and
     /// \p viewMatrix factored back out of the result).
     ///
@@ -264,7 +270,7 @@ public:
     /// See the documentation for TestIntersectionBatch() below for more detail.
     typedef std::function< SdfPath(const SdfPath&, const SdfPath&, const int) > PathTranslatorCallback;
 
-    /// Finds closest point of interesection with a frustum by rendering a batch.
+    /// Finds closest point of intersection with a frustum by rendering a batch.
     ///
     /// This method uses a PickRender and a customized depth buffer to find an
     /// approximate point of intersection by rendering. This is less accurate
@@ -357,14 +363,18 @@ public:
     USDIMAGINGGL_API
     virtual bool IsConverged() const;
 
-    /// Return the typevector of available render-graph delegate plugins.
+    /// Return the vector of available render-graph delegate plugins.
     USDIMAGINGGL_API
-    virtual std::vector<TfType> GetRendererPlugins();
+    virtual TfTokenVector GetRendererPlugins() const;
 
-    /// Set the current render-graph delegate to \p type.
-    /// the plugin for the type will be loaded if not yet.
+    /// Return the user-friendly description of a renderer plugin.
     USDIMAGINGGL_API
-    virtual bool SetRendererPlugin(TfType const &type);
+    virtual std::string GetRendererPluginDesc(TfToken const &id) const;
+
+    /// Set the current render-graph delegate to \p id.
+    /// the plugin will be loaded if it's not yet.
+    USDIMAGINGGL_API
+    virtual bool SetRendererPlugin(TfToken const &id);
 
     /// Returns GPU resource allocation info
     USDIMAGINGGL_API

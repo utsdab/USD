@@ -24,6 +24,8 @@
 #ifndef USDIMAGING_INSTANCER_CONTEXT_H
 #define USDIMAGING_INSTANCER_CONTEXT_H
 
+/// \file usdImaging/instancerContext.h
+
 #include "pxr/pxr.h"
 #include "pxr/usdImaging/usdImaging/api.h"
 #include "pxr/usd/sdf/path.h"
@@ -49,12 +51,15 @@ public:
     /// The name of the child prim, typically used for prototypes.
     TfToken childName;
 
-    /// The surface shader path bound to the instance prim
+    /// The path to the material bound to the instance prim
     /// being processed.
-    SdfPath instanceSurfaceShaderPath;
+    SdfPath instanceMaterialId;
+
+    /// The draw mode bound to the instance prim being processed.
+    TfToken instanceDrawMode;
 
     /// The instancer's prim Adapter. Useful when an adapter is needed, but the
-    /// default adapter may be overriden for the sake of instancing.
+    /// default adapter may be overridden for the sake of instancing.
     UsdImagingPrimAdapterSharedPtr instancerAdapter;
 };
 

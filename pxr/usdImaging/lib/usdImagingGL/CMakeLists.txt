@@ -7,7 +7,7 @@ pxr_library(usdImagingGL
         gf
         tf
         plug
-        tracelite
+        trace
         vt
         work
         garch
@@ -18,8 +18,8 @@ pxr_library(usdImagingGL
         sdf
         usd
         usdGeom
-        usdShade
         usdHydra
+        usdShade
         usdImaging
         ar
         ${Boost_PYTHON_LIBRARY}
@@ -37,27 +37,37 @@ pxr_library(usdImagingGL
         ${TBB_INCLUDE_DIRS}
 
     PUBLIC_CLASSES
+        drawModeAdapter
         engine
         gl
         hdEngine
+        hydraMaterialAdapter
+        package
         refEngine
 
     PUBLIC_HEADERS
         api.h
         version.h
 
+    PRIVATE_CLASSES
+        textureUtils
+
     PRIVATE_HEADERS
         unitTestGLDrawing.h
 
-    CPPFILES
+    PYTHON_CPPFILES
         moduleDeps.cpp
 
     PYMODULE_CPPFILES
         module.cpp
         wrapGL.cpp
 
-    PYTHON_FILES
+    PYMODULE_FILES
         __init__.py
+
+    RESOURCE_FILES
+        plugInfo.json
+        shaders/drawMode.glslfx
 )
 
 if (X11_FOUND OR APPLE)

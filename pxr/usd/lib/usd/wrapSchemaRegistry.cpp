@@ -28,6 +28,8 @@
 #include "pxr/usd/sdf/propertySpec.h"
 #include "pxr/usd/sdf/relationshipSpec.h"
 
+#include "pxr/base/tf/pyResultConversions.h"
+
 #include <boost/python.hpp>
 
 using std::string;
@@ -35,6 +37,19 @@ using std::string;
 using namespace boost::python;
 
 PXR_NAMESPACE_USING_DIRECTIVE
+
+static bool
+_WrapIsAppliedAPISchema(const TfType &schemaType)
+{
+    return UsdSchemaRegistry::GetInstance().IsAppliedAPISchema(schemaType);
+}
+
+static bool
+_WrapIsMultipleApplyAPISchema(const TfType &schemaType)
+{
+    return UsdSchemaRegistry::GetInstance().IsMultipleApplyAPISchema(
+            schemaType);
+}
 
 void wrapUsdSchemaRegistry()
 {
@@ -65,6 +80,29 @@ void wrapUsdSchemaRegistry()
              &UsdSchemaRegistry::GetRelationshipDefinition,
              (arg("primType"), arg("relName")))
         .staticmethod("GetRelationshipDefinition")
+
+        .def("GetDisallowedFields",
+             &UsdSchemaRegistry::GetDisallowedFields,
+             return_value_policy<TfPySequenceToList>())
+        .staticmethod("GetDisallowedFields")
+
+        .def("IsTyped",
+             &UsdSchemaRegistry::IsTyped,
+             (arg("primType")))
+        .staticmethod("IsTyped")
+
+        .def("IsConcrete",
+             &UsdSchemaRegistry::IsConcrete,
+             (arg("primType")))
+        .staticmethod("IsConcrete")
+
+        .def("IsAppliedAPISchema", &_WrapIsAppliedAPISchema,
+             (arg("apiSchemaType")))
+        .staticmethod("IsAppliedAPISchema")
+
+        .def("IsMultipleApplyAPISchema", &_WrapIsMultipleApplyAPISchema,
+             (arg("apiSchemaType")))
+        .staticmethod("IsMultipleApplyAPISchema")
 
         ;
 }

@@ -31,8 +31,6 @@
 
 #include <opensubdiv/far/topologyRefinerFactory.h>
 
-#include <boost/bind.hpp>
-
 PXR_NAMESPACE_OPEN_SCOPE
 
 
@@ -70,7 +68,7 @@ Converter::GetType() const {
         int numFaces = topology.GetFaceVertexCounts().size();
         int const * numVertsPtr = topology.GetFaceVertexCounts().cdata();
         if (std::find_if(numVertsPtr, numVertsPtr + numFaces,
-                         boost::bind(std::not_equal_to<int>(), _1, 3))
+                         [](int x) { return x != 3; })
             == numVertsPtr + numFaces) {
         } else {
             TF_WARN("Can't apply loop subdivision on prim %s, since "
@@ -163,7 +161,7 @@ Converter::GetOptions() const {
         } else if (creaseMethod==PxOsdOpenSubdivTokens->chaikin) {
             options.SetCreasingMethod(Options::CREASE_CHAIKIN);
         } else {
-            TF_WARN("Unkown creasing method (%s) (%s)",
+            TF_WARN("Unknown creasing method (%s) (%s)",
                 creaseMethod.GetText(), name.GetText());
         }
     }
@@ -305,24 +303,46 @@ TopologyRefinerFactory<PXR_NS::Converter>::assignComponentTags(
     }
     for (size_t i=0, cindex=0, sindex=0; i < numCreaseSets; ++i) {
 
-        int numSegments = creaseLengths[i] - 1;
+        size_t numSegments = std::max(int(creaseLengths[i]) - 1, 0);
 
-        for (int j = 0; j < numSegments; ++j) {
-            int v0 = creaseIndices[cindex+j],
-                v1 = creaseIndices[cindex+j+1];
+        OpenSubdiv::Far::TopologyLevel const & level = refiner.GetLevel(0);
+        for (size_t j = 0; j < numSegments; ++j) {
+            const int v0 = creaseIndices[cindex+j];
+            const int v1 = creaseIndices[cindex+j+1];
 
-            OpenSubdiv::Vtr::Index edge = refiner.GetLevel(0).FindEdge(v0, v1);
-            if (edge==OpenSubdiv::Vtr::INDEX_INVALID) {
-                TF_WARN("Set edge sharpness cannot find edge (%d-%d) (%s)",
-                        v0, v1, converter.name.GetText());
-            } else {
-                setBaseEdgeSharpness(refiner,
-                    edge, std::max(0.0f, creaseWeights[sindex]));
+            // FindEdge is not bounds checking, and crease data could
+            // be referencing outside the bounds.
+            // The asset may need fixing if any of the warnings fire off.
+            bool validIndices = true;
+            if (v0 < 0 || v0 >= level.GetNumVertices()) {
+                TF_WARN("creaseIndices[%d] (%d) is out of bounds on %s",
+                        int(cindex + j), v0, converter.name.GetText());
+                validIndices = false;
+            }
+            if (v1 < 0 || v1 >= level.GetNumVertices()) {
+                TF_WARN("creaseIndices[%d] (%d) is out of bounds on %s",
+                        int(cindex + j + 1), v1, converter.name.GetText());
+                validIndices = false;
+            }
+           
+            if (validIndices) {
+                OpenSubdiv::Vtr::Index edge = level.FindEdge(v0, v1);
+                if (edge==OpenSubdiv::Vtr::INDEX_INVALID) {
+                    TF_WARN("Set edge sharpness cannot find edge (%d-%d) (%s)",
+                            v0, v1, converter.name.GetText());
+                } else {
+                    setBaseEdgeSharpness(refiner,
+                            edge, std::max(0.0f, creaseWeights[sindex]));
+                }
             }
 
-            if (perEdgeCrease) ++sindex;
+            if (perEdgeCrease) {
+                ++sindex;
+            }
         }
-        if (!perEdgeCrease) ++sindex;
+        if (!perEdgeCrease) {
+            ++sindex;
+        }
         cindex += creaseLengths[i];
     }
 
@@ -383,13 +403,13 @@ TopologyRefinerFactory<PXR_NS::Converter>::assignFaceVaryingTopology(
 
     if (converter.fvarTopologies.empty()) return true;
 
-    TF_FOR_ALL (it, converter.fvarTopologies) {
-        VtIntArray const &fvIndices = *it;
+    for (size_t i = 0; i < converter.fvarTopologies.size(); ++i) {
+        VtIntArray const &fvIndices = converter.fvarTopologies[i];
 
         // find fvardata size
         int maxIndex = -1;
-        for (size_t i = 0; i < fvIndices.size(); ++i) {
-            maxIndex = std::max(maxIndex, fvIndices[i]);
+        for (size_t j = 0; j < fvIndices.size(); ++j) {
+            maxIndex = std::max(maxIndex, fvIndices[j]);
         }
 
         size_t nfaces = getNumBaseFaces(refiner);
@@ -398,8 +418,8 @@ TopologyRefinerFactory<PXR_NS::Converter>::assignFaceVaryingTopology(
         bool flip = (converter.topology.GetOrientation() !=
                      PxOsdOpenSubdivTokens->rightHanded);
 
-        for (size_t i=0, ofs=0; i < nfaces; ++i) {
-            Far::IndexArray faceIndices = getBaseFaceFVarValues(refiner, i, channel);
+        for (size_t j=0, ofs=0; j < nfaces; ++j) {
+            Far::IndexArray faceIndices = getBaseFaceFVarValues(refiner, j, channel);
             size_t numVerts = faceIndices.size();
 
             if (!TF_VERIFY(ofs + numVerts <= fvIndices.size())) {
@@ -408,12 +428,12 @@ TopologyRefinerFactory<PXR_NS::Converter>::assignFaceVaryingTopology(
 
             if (flip) {
                 faceIndices[0] = fvIndices[ofs++];
-                for (int j = numVerts-1; j > 0; --j) {
-                    faceIndices[j] = fvIndices[ofs++];
+                for (int k = numVerts-1; k > 0; --k) {
+                    faceIndices[k] = fvIndices[ofs++];
                 }
             } else {
-                for (size_t j = 0; j < numVerts; ++j) {
-                    faceIndices[j] = fvIndices[ofs++];
+                for (size_t k = 0; k < numVerts; ++k) {
+                    faceIndices[k] = fvIndices[ofs++];
                 }
             }
         }

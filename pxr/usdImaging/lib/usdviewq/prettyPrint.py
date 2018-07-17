@@ -25,10 +25,10 @@
 Hopefully we can deprecate this since most of the array stuff is handled by the
 arrayAttributeView
 '''
-from PySide import QtGui
+from qt import QtWidgets
 
 def progressDialog(title, value):
-    dialog = QtGui.QProgressDialog(title, "Cancel", 0, value)
+    dialog = QtWidgets.QProgressDialog(title, "Cancel", 0, value)
     dialog.setModal(True)
     dialog.setMinimumDuration(500)
     return dialog
@@ -39,7 +39,7 @@ def prettyPrint(v):
 
     # Pretty-print a dictionary
     if isinstance(v, dict):
-        result = "Dictionary contents:\n" 
+        result = "Dictionary contents:\n"
         for pair in v.items():
             keystring = str(pair[0])
             valstring = prettyPrint(pair[1])

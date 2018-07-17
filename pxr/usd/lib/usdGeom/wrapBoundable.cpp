@@ -73,6 +73,13 @@ void wrapUsdGeomBoundable()
         .def("Get", &This::Get, (arg("stage"), arg("path")))
         .staticmethod("Get")
 
+        .def("IsConcrete",
+            static_cast<bool (*)(void)>( [](){ return This::IsConcrete; }))
+        .staticmethod("IsConcrete")
+
+        .def("IsTyped",
+            static_cast<bool (*)(void)>( [](){ return This::IsTyped; } ))
+        .staticmethod("IsTyped")
 
         .def("GetSchemaAttributeNames",
              &This::GetSchemaAttributeNames,
@@ -126,7 +133,25 @@ _ComputeExtentFromPlugins(
     const UsdTimeCode &time)
 {
     VtVec3fArray extent;
-    if (!UsdGeomBoundable::ComputeExtentFromPlugins(boundable, time, &extent)) {
+    if (!UsdGeomBoundable::ComputeExtentFromPlugins(boundable,
+                                                    time,
+                                                    &extent)) {
+        return object();
+    }
+    return object(extent);
+}
+
+static object
+_ComputeExtentFromPluginsWithTransform(
+    const UsdGeomBoundable &boundable,
+    const UsdTimeCode &time,
+    const GfMatrix4d &transform)
+{
+    VtVec3fArray extent;
+    if (!UsdGeomBoundable::ComputeExtentFromPlugins(boundable,
+                                                    time,
+                                                    transform,
+                                                    &extent)) {
         return object();
     }
     return object(extent);
@@ -136,6 +161,8 @@ WRAP_CUSTOM {
     _class
         .def("ComputeExtentFromPlugins", &_ComputeExtentFromPlugins,
              (arg("boundable"), arg("time")))
+        .def("ComputeExtentFromPlugins", &_ComputeExtentFromPluginsWithTransform,
+             (arg("boundable"), arg("time"), arg("transform")))
         .staticmethod("ComputeExtentFromPlugins")
     ;
 }

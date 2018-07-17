@@ -71,7 +71,7 @@ class TestUsdPrim(unittest.TestCase):
             stage = Usd.Stage.Open(strong.identifier)
 
             p = stage.OverridePrim("/Mesh")
-            p.GetReferences().AppendReference(Sdf.Reference(weak.identifier, "/Mesh"))
+            p.GetReferences().AddReference(Sdf.Reference(weak.identifier, "/Mesh"))
             p = stage.GetPrimAtPath("/Mesh/Child")
             assert p
             assert p.SetMetadata(
@@ -99,7 +99,7 @@ class TestUsdPrim(unittest.TestCase):
 
         stage = Usd.Stage.Open(payload)
         over = stage.OverridePrim(primPath)
-        over.GetReferences().AppendReference(Sdf.Reference(basicOver.identifier, primPath))
+        over.GetReferences().AddReference(Sdf.Reference(basicOver.identifier, primPath))
 
         stage = Usd.Stage.Open(base)
         prim = stage.DefinePrim(primPath)
@@ -416,7 +416,7 @@ class TestUsdPrim(unittest.TestCase):
             s1.DefinePrim("/Foo", "Mesh")
             s1.DefinePrim("/Bar", "Mesh")
             baz = s1.DefinePrim("/Foo/Baz", "Mesh")
-            assert baz.GetReferences().AppendReference(s1.GetRootLayer().identifier, "/Bar")
+            assert baz.GetReferences().AddReference(s1.GetRootLayer().identifier, "/Bar")
 
             s2 = Usd.Stage.CreateInMemory('HasAuthoredReferences.'+fmt)
             foo = s2.OverridePrim("/Foo")
@@ -424,8 +424,8 @@ class TestUsdPrim(unittest.TestCase):
 
             assert not baz
             assert not foo.HasAuthoredReferences()
-            assert foo.GetReferences().AppendReference(s1.GetRootLayer().identifier, "/Foo")
-            items = foo.GetMetadata("references").addedItems
+            assert foo.GetReferences().AddReference(s1.GetRootLayer().identifier, "/Foo")
+            items = foo.GetMetadata("references").ApplyOperations([])
             assert foo.HasAuthoredReferences()
 
             # Make sure references are detected across composition arcs.
@@ -448,14 +448,13 @@ class TestUsdPrim(unittest.TestCase):
 
     def test_GoodAndBadReferences(self):
         for fmt in allFormats:
-            # Sub-root references not allowed
-            s1 = Usd.Stage.CreateInMemory('GoodAndBadReferences.'+fmt)
+            # Sub-root references are allowed
+            s1 = Usd.Stage.CreateInMemory('References.'+fmt)
             s1.DefinePrim("/Foo", "Mesh")
             s1.DefinePrim("/Bar/Bazzle", "Mesh")
             baz = s1.DefinePrim("/Foo/Baz", "Mesh")
             bazRefs = baz.GetReferences()
-            with self.assertRaises(Tf.ErrorException):
-                bazRefs.AppendReference(s1.GetRootLayer().identifier, "/Bar/Bazzle")
+            bazRefs.AddReference(s1.GetRootLayer().identifier, "/Bar/Bazzle")
 
             # Test that both in-memory identifiers, relative paths, and absolute
             # paths all resolve properly
@@ -476,11 +475,11 @@ class TestUsdPrim(unittest.TestCase):
             assert s1.ResolveIdentifierToEditTarget("./refTest2."+fmt) == "" 
 
             # A good reference generates no errors or exceptions
-            assert bazRefs.AppendReference(s2.GetRootLayer().identifier, "/Sphere")
+            assert bazRefs.AddReference(s2.GetRootLayer().identifier, "/Sphere")
 
             # A bad reference succeeds, but generates warnings from compose errors.
             assert not sphere.HasAuthoredReferences()
-            assert sphereRefs.AppendReference("./refTest2."+fmt, "/noSuchPrim")
+            assert sphereRefs.AddReference("./refTest2."+fmt, "/noSuchPrim")
             assert sphere.HasAuthoredReferences()
 
     def test_PropertyOrder(self):
@@ -511,13 +510,23 @@ class TestUsdPrim(unittest.TestCase):
             return list(x for x in chars)
 
         for fmt in allFormats:
-            s = Usd.Stage.CreateInMemory('PropertyReorder.'+fmt)
+            sl = Sdf.Layer.CreateAnonymous(fmt)
+            s = Usd.Stage.CreateInMemory('PropertyReorder.'+fmt, sl)
             f = s.OverridePrim('/foo')
 
-            for name in reversed(l('abcdefg')):
+            s.SetEditTarget(s.GetRootLayer())
+            for name in reversed(l('abcd')):
+                f.CreateAttribute(name, Sdf.ValueTypeNames.Int)
+
+            s.SetEditTarget(s.GetSessionLayer())
+            for name in reversed(l('defg')):
                 f.CreateAttribute(name, Sdf.ValueTypeNames.Int)
 
             self.assertEqual(f.GetPropertyNames(), l('abcdefg'))
+
+            pred = lambda tok : tok in ['a', 'd', 'f']
+            self.assertEqual(f.GetPropertyNames(predicate=pred),
+                             l('adf'))
 
             f.SetPropertyOrder(l('edc'))
             self.assertEqual(f.GetPropertyNames(), l('edcabfg'))
@@ -533,6 +542,9 @@ class TestUsdPrim(unittest.TestCase):
 
             f.SetPropertyOrder(l('d'))
             self.assertEqual(f.GetPropertyNames(), l('dabcefg'))
+
+            self.assertEqual(f.GetPropertyNames(predicate=pred),
+                             l('daf'))
 
             f.SetPropertyOrder(l('xyz'))
             self.assertEqual(f.GetPropertyNames(), l('abcdefg'))
@@ -688,8 +700,8 @@ class TestUsdPrim(unittest.TestCase):
             s.DefinePrim('/Ref/Child')
 
             p = s.DefinePrim('/Instance')
-            p.GetInherits().AppendInherit('/Class')
-            p.GetReferences().AppendInternalReference('/Ref')
+            p.GetInherits().AddInherit('/Class')
+            p.GetReferences().AddInternalReference('/Ref')
             p.SetInstanceable(True)
             return s
 
@@ -721,6 +733,107 @@ class TestUsdPrim(unittest.TestCase):
             # Note this prim index may change from run to run depending on
             # which is selected as the source for the master.
             _ValidatePrimIndexes(master.GetChild('Child'))
+            
+    def test_PseudoRoot(self):
+        for fmt in allFormats:
+            s = Usd.Stage.CreateInMemory('PseudoRoot.%s' % fmt)
+            w = s.DefinePrim('/World')
+            p = s.GetPrimAtPath('/')
+            self.assertTrue(p.IsPseudoRoot())
+            self.assertFalse(Usd.Prim().IsPseudoRoot())
+            self.assertFalse(w.IsPseudoRoot())
+            self.assertTrue(w.GetParent().IsPseudoRoot())
+            self.assertFalse(p.GetParent().IsPseudoRoot())
+
+    def test_Deactivation(self):
+        for fmt in allFormats:
+            s = Usd.Stage.CreateInMemory('Deactivation.%s' % fmt)
+            child = s.DefinePrim('/Root/Group/Child')
+
+            group = s.GetPrimAtPath('/Root/Group')
+            self.assertEqual(group.GetAllChildren(), [child])
+            self.assertTrue(s._GetPcpCache().FindPrimIndex('/Root/Group/Child'))
+
+            group.SetActive(False)
+
+            # Deactivating a prim removes all of its children from the stage.
+            # Note that the deactivated prim itself still exists on the stage;
+            # this allows users to reactivate it.
+            self.assertEqual(group.GetAllChildren(), [])
+
+            # Deactivating a prim should also cause the underlying prim 
+            # indexes for its children to be removed.
+            self.assertFalse(
+                s._GetPcpCache().FindPrimIndex('/Root/Group/Child'))
+
+    def test_AppliedSchemas(self):
+        self.assertTrue(Usd.ModelAPI.IsAPISchema())
+        self.assertTrue(Usd.ClipsAPI.IsAPISchema())
+        self.assertTrue(Usd.CollectionAPI.IsAPISchema())
+
+        self.assertFalse(Usd.ModelAPI.IsApplied())
+        self.assertFalse(Usd.ClipsAPI.IsApplied())
+        self.assertTrue(Usd.CollectionAPI.IsApplied())
+
+        self.assertTrue(Usd.CollectionAPI.IsMultipleApply())
+
+        for fmt in allFormats:
+            sessionLayer = Sdf.Layer.CreateNew("SessionLayer.%s" % fmt)
+            s = Usd.Stage.CreateInMemory('AppliedSchemas.%s' % fmt, sessionLayer)
+
+            s.SetEditTarget(Usd.EditTarget(s.GetRootLayer()))
+
+            world= s.OverridePrim('/world')
+            self.assertEqual([], world.GetAppliedSchemas())
+
+            rootCollAPI = Usd.CollectionAPI.ApplyCollection(world, "root")
+            self.assertTrue(rootCollAPI)
+
+            world = rootCollAPI.GetPrim()
+            self.assertTrue(world)
+
+            self.assertTrue(world.HasAPI(Usd.CollectionAPI))
+
+            # The schemaType that's passed into HasAPI must derive from 
+            # UsdAPISchemaBase and must not be UsdAPISchemaBase.
+            with self.assertRaises(RuntimeError):
+                world.HasAPI(Usd.Typed)
+            with self.assertRaises(RuntimeError):
+                world.HasAPI(Usd.APISchemaBase)
+            with self.assertRaises(RuntimeError):
+                world.HasAPI(Usd.ModelAPI)
+
+            # Try calling HasAPI a random TfType that isn't a derivative of 
+            # SchemaBase.
+            with self.assertRaises(RuntimeError):
+                world.HasAPI(Sdf.ListOpType)
+
+            self.assertEqual(['CollectionAPI:root'], world.GetAppliedSchemas())
+
+            # Switch the edit target to the session layer and test bug 156929
+            s.SetEditTarget(Usd.EditTarget(s.GetSessionLayer()))
+            sessionCollAPI = Usd.CollectionAPI.ApplyCollection(world, "session")
+            self.assertTrue(sessionCollAPI)
+            self.assertEqual(['CollectionAPI:session', 'CollectionAPI:root'],
+                             world.GetAppliedSchemas())
+
+            self.assertTrue(world.HasAPI(Usd.CollectionAPI))
+
+            # Ensure duplicates aren't picked up
+            anotherSessionCollAPI = Usd.CollectionAPI.ApplyCollection(world, 
+                                                                       "session")
+            self.assertTrue(anotherSessionCollAPI)
+            self.assertEqual(['CollectionAPI:session', 'CollectionAPI:root'],
+                             world.GetAppliedSchemas())
+
+            # Add a duplicate in the root layer and ensure that there are no 
+            # duplicates in the composed result.
+            s.SetEditTarget(Usd.EditTarget(s.GetRootLayer()))
+            rootLayerSessionCollAPI = Usd.CollectionAPI.ApplyCollection(world,
+                    "session")
+            self.assertTrue(rootLayerSessionCollAPI)
+            self.assertEqual(['CollectionAPI:session', 'CollectionAPI:root'],
+                             world.GetAppliedSchemas())
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,15 +35,17 @@ pxr_library(usdRi
         rmanUtilities
         rslShader
         splineAPI
-        statements
+        statementsAPI
         textureAPI
         tokens
 
     PUBLIC_HEADERS
         api.h
 
-    CPPFILES
+    PYTHON_CPPFILES
         moduleDeps.cpp
+
+    CPPFILES
         typeUtils
 
     PYMODULE_CPPFILES
@@ -67,16 +69,17 @@ pxr_library(usdRi
         wrapRmanUtilities.cpp
         wrapRslShader.cpp
         wrapSplineAPI.cpp
-        wrapStatements.cpp
+        wrapStatementsAPI.cpp
         wrapTextureAPI.cpp
         wrapTokens.cpp
 
-    PYTHON_FILES
+    PYMODULE_FILES
         __init__.py
 
     RESOURCE_FILES
         plugInfo.json
         generatedSchema.usda
+        schema.usda:usdRi/schema.usda
 )
 
 pxr_test_scripts(
@@ -89,6 +92,8 @@ pxr_register_test(testUsdRiSchemata
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdRiSchemata"  
     EXPECTED_RETURN_CODE 0
+    ENV
+        USD_RI_WRITE_BXDF_OUTPUT=0
 )
 
 pxr_register_test(testUsdRiSplineAPI

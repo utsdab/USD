@@ -21,24 +21,47 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#ifndef PXRUSDMAYA_PROXYSHAPE_H
-#define PXRUSDMAYA_PROXYSHAPE_H
+#ifndef PXRUSDMAYA_PROXY_SHAPE_H
+#define PXRUSDMAYA_PROXY_SHAPE_H
+
+/// \file proxyShape.h
 
 #include "pxr/pxr.h"
 #include "usdMaya/api.h"
 #include "usdMaya/usdPrimProvider.h"
 
-#include <maya/MPxSurfaceShape.h>
-#include <maya/MSceneMessage.h>
-#include <maya/MBoundingBox.h>
-#include <maya/MDataBlock.h>
-
-#include "pxr/base/tf/envSetting.h"
-
-#include "pxr/usd/usd/stage.h"
+#include "pxr/base/gf/vec4f.h"
+#include "pxr/base/tf/staticTokens.h"
 #include "pxr/usd/sdf/path.h"
+#include "pxr/usd/usd/prim.h"
+#include "pxr/usd/usd/timeCode.h"
+
+#include <maya/MBoundingBox.h>
+#include <maya/MDagPath.h>
+#include <maya/MDataBlock.h>
+#include <maya/MDataHandle.h>
+#include <maya/MDGContext.h>
+#include <maya/MObject.h>
+#include <maya/MPlug.h>
+#include <maya/MPlugArray.h>
+#include <maya/MPxSurfaceShape.h>
+#include <maya/MSelectionMask.h>
+#include <maya/MStatus.h>
+#include <maya/MString.h>
+#include <maya/MTypeId.h>
+
+#include <map>
+
 
 PXR_NAMESPACE_OPEN_SCOPE
+
+
+#define PXRUSDMAYA_PROXY_SHAPE_TOKENS \
+    ((MayaTypeName, "pxrUsdProxyShape"))
+
+TF_DECLARE_PUBLIC_TOKENS(PxrUsdMayaProxyShapeTokens,
+                         PXRUSDMAYA_API,
+                         PXRUSDMAYA_PROXY_SHAPE_TOKENS);
 
 
 /// Returns the PIXMAYA_ENABLE_BOUNDING_BOX_MODE env setting.
@@ -47,17 +70,17 @@ bool UsdMayaIsBoundingBoxModeEnabled();
 
 
 class UsdMayaProxyShape : public MPxSurfaceShape,
-    public PxrUsdMayaUsdPrimProvider
+                          public PxrUsdMayaUsdPrimProvider
 {
     public:
         /// \brief Helper struct to hold MObjects for this class.
         ///
         /// These would normally be static members but since we have this class
         /// registered in multiple plugins, we have the actual data stored
-        /// statically in the plugin.cpp.  
+        /// statically in the plugin.cpp.
         ///
         /// A reference to this is setup by creator().
-        /// 
+        ///
         /// \sa PxrUsdMayaPluginStaticData
         struct PluginStaticData
         {
@@ -94,21 +117,35 @@ class UsdMayaProxyShape : public MPxSurfaceShape,
             { }
         };
 
-        PXRUSDMAYA_API
-        static void* creator(
-                const PluginStaticData& psData);
+        /// Delegate function for computing the closest point on the proxy
+        /// shape to a given ray.
+        /// Both the input ray and the output point should be in the proxy
+        /// shape's local space.
+        /// Should return true if a point was found, and false otherwise.
+        /// (You could just treat this as a ray intersection and return true
+        /// if intersected, false if missed.)
+        typedef std::function<bool(const UsdMayaProxyShape&, const GfRay&,
+                GfVec3d*)> ClosestPointDelegate;
 
         PXRUSDMAYA_API
-        static MStatus initialize(
-                PluginStaticData* psData);
+        static void* creator(const PluginStaticData& psData);
+
+        PXRUSDMAYA_API
+        static MStatus initialize(PluginStaticData* psData);
+
+        PXRUSDMAYA_API
+        static UsdMayaProxyShape* GetShapeAtDagPath(const MDagPath& dagPath);
+
+        PXRUSDMAYA_API
+        static void SetClosestPointDelegate(ClosestPointDelegate delegate);
 
         // Virtual function overrides
         PXRUSDMAYA_API
         virtual void postConstructor() override;
         PXRUSDMAYA_API
         virtual MStatus compute(
-            const MPlug& plug,
-            MDataBlock& dataBlock) override;
+                const MPlug& plug,
+                MDataBlock& dataBlock) override;
         PXRUSDMAYA_API
         virtual bool isBounded() const override;
         PXRUSDMAYA_API
@@ -116,11 +153,19 @@ class UsdMayaProxyShape : public MPxSurfaceShape,
         PXRUSDMAYA_API
         virtual MSelectionMask getShapeSelectionMask() const override;
 
-        // PxrUsdMayaUsdPrimProvider overrides:
         PXRUSDMAYA_API
-        UsdPrim usdPrim() const override;
+        bool closestPoint(
+                const MPoint& raySource,
+                const MVector& rayDirection,
+                MPoint& theClosestPoint,
+                MVector& theClosestNormal,
+                bool findClosestOnMiss,
+                double tolerance) override;
 
-        // Public functions
+        PXRUSDMAYA_API
+        bool canMakeLive() const override;
+
+        // PxrUsdMayaUsdPrimProvider overrides:
         /**
          * accessor to get the usdprim
          *
@@ -128,6 +173,10 @@ class UsdMayaProxyShape : public MPxSurfaceShape,
          * the dependencies necessary to do so. It should be called instead of
          * pulling on the data directly.
          */
+        PXRUSDMAYA_API
+        UsdPrim usdPrim() const override;
+
+        // Public functions
         PXRUSDMAYA_API
         SdfPathVector getExcludePrimPaths() const;
 
@@ -137,35 +186,40 @@ class UsdMayaProxyShape : public MPxSurfaceShape,
         UsdTimeCode getTime() const;
 
         PXRUSDMAYA_API
-	bool displayGuides() const;
+        bool displayGuides() const;
         PXRUSDMAYA_API
-	bool displayRenderGuides() const;
-        
+        bool displayRenderGuides() const;
+
         PXRUSDMAYA_API
-	bool getTint(GfVec4f *outTintColor) const;
-        
+        bool getTint(GfVec4f* outTintColor) const;
+
         PXRUSDMAYA_API
         bool GetAllRenderAttributes(
-            UsdPrim* usdPrimOut,
-            SdfPathVector* excludePrimPathsOut,
-            int* complexityOut,
-            UsdTimeCode* timeOut,
-            bool* guidesOut,
-            bool* renderGuidesOut,
-            bool* tint,
-            GfVec4f* tintColor );
+                UsdPrim* usdPrimOut,
+                SdfPathVector* excludePrimPathsOut,
+                int* complexityOut,
+                UsdTimeCode* timeOut,
+                bool* guidesOut,
+                bool* renderGuidesOut,
+                bool* tint,
+                GfVec4f* tintColor);
+
+        PXRUSDMAYA_API
+        virtual MStatus setDependentsDirty(
+                const MPlug& plug,
+                MPlugArray& plugArray) override;
 
         PXRUSDMAYA_API
         virtual bool setInternalValueInContext(
-            const MPlug& plug,
-            const MDataHandle& dataHandle,
-            MDGContext& ctx);
-        
+                const MPlug& plug,
+                const MDataHandle& dataHandle,
+                MDGContext& ctx) override;
+
         PXRUSDMAYA_API
         virtual bool getInternalValueInContext(
-            const MPlug& plug,
-            MDataHandle& dataHandle,
-            MDGContext& ctx);
+                const MPlug& plug,
+                MDataHandle& dataHandle,
+                MDGContext& ctx) override;
 
     protected:
         PXRUSDMAYA_API
@@ -177,27 +231,31 @@ class UsdMayaProxyShape : public MPxSurfaceShape,
         UsdMayaProxyShape(const PluginStaticData& psData);
 
         UsdMayaProxyShape(const UsdMayaProxyShape&);
-        ~UsdMayaProxyShape();
+        virtual ~UsdMayaProxyShape();
         UsdMayaProxyShape& operator=(const UsdMayaProxyShape&);
-    
+
         MStatus computeInStageDataCached(MDataBlock& dataBlock);
         MStatus computeOutStageData(MDataBlock& dataBlock);
 
-        UsdPrim _GetUsdPrim( MDataBlock dataBlock ) const;
-        SdfPathVector _GetExcludePrimPaths( MDataBlock dataBlock ) const;
-        int _GetComplexity( MDataBlock dataBlock ) const;
-        UsdTimeCode _GetTime( MDataBlock dataBlock ) const;
-	bool _GetDisplayGuides( MDataBlock dataBlock ) const;
-	bool _GetDisplayRenderGuides( MDataBlock dataBlock ) const;
-        bool _GetTint( MDataBlock dataBlock, GfVec4f *outTintColor ) const;
+        UsdPrim _GetUsdPrim(MDataBlock dataBlock) const;
+        SdfPathVector _GetExcludePrimPaths(MDataBlock dataBlock) const;
+        int _GetComplexity(MDataBlock dataBlock) const;
+        UsdTimeCode _GetTime(MDataBlock dataBlock) const;
+        bool _GetDisplayGuides(MDataBlock dataBlock) const;
+        bool _GetDisplayRenderGuides(MDataBlock dataBlock) const;
+        bool _GetTint(MDataBlock dataBlock, GfVec4f* outTintColor) const;
 
         bool _CanBeSoftSelected() const;
 
         std::map<UsdTimeCode, MBoundingBox> _boundingBoxCache;
-        
-	bool _useFastPlayback;
+
+        bool _useFastPlayback;
+
+        static ClosestPointDelegate _sharedClosestPointDelegate;
 };
+
 
 PXR_NAMESPACE_CLOSE_SCOPE
 
-#endif // PXRUSDMAYA_PROXYSHAPE_H
+
+#endif // PXRUSDMAYA_PROXY_SHAPE_H

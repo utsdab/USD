@@ -47,7 +47,6 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 TF_DEFINE_PRIVATE_TOKENS(
     _tokens,
-    (zUp)
 
     (UsdUtilsPipeline)
         (RegisteredVariantSets)
@@ -58,42 +57,6 @@ TF_DEFINE_PRIVATE_TOKENS(
                 (always)
 );
 
-
-bool UsdUtilsGetCamerasAreZup(UsdStageWeakPtr const &stage)
-{
-    if (!stage){
-        return false;
-    }
-    
-    SdfLayerHandle const &rootLayer = stage->GetRootLayer();
-    
-    bool hasZupCamera = false;
-
-    TF_FOR_ALL(prim, stage->GetPseudoRoot().
-                            GetFilteredChildren(UsdPrimIsDefined &&
-                                                !UsdPrimIsAbstract)){
-        VtValue isZup = prim->GetCustomDataByKey(_tokens->zUp);
-        if (isZup.IsEmpty()){
-            continue;
-        }
-        else if (isZup.IsHolding<bool>()){
-            if (isZup.Get<bool>()) {
-                hasZupCamera = true;
-            } else {
-                // If any prim is y-Up, that trumps everything.
-                return false;
-            }
-        }
-        else {
-            TF_WARN("Found non-boolean 'zUp' customData in UsdStage "
-                    "root at layer '%s'."
-                    "for isZup.", rootLayer->GetIdentifier().c_str());
-        }
-    }
-
-    // If there's no customData, it will be Y-up.
-    return hasZupCamera;
-}
 
 TfToken UsdUtilsGetAlphaAttributeNameForColor(TfToken const &colorAttrName)
 {
@@ -116,8 +79,10 @@ UsdUtilsGetModelNameFromRootLayer(
     std::string baseName = TfGetBaseName(filePath);
     modelName = TfToken(baseName.substr(0, baseName.find('.')));
 
-    if (!modelName.IsEmpty() && rootLayer->GetPrimAtPath(
-            SdfPath::AbsoluteRootPath().AppendChild(modelName))) {
+    if (!modelName.IsEmpty() &&
+            SdfPath::IsValidIdentifier(modelName) && 
+            rootLayer->GetPrimAtPath(
+                SdfPath::AbsoluteRootPath().AppendChild(modelName))) {
         return modelName;
     }
 
@@ -252,6 +217,10 @@ UsdUtilsUninstancePrimAtPath(const UsdStagePtr &stage,
 
         if (prim.IsInstance()) {
             prim.SetInstanceable(false);
+            // When we uninstance the prim, there may be unloaded payloads 
+            // beneath it in namespace due to bug 155392. Load them here as a 
+            // temporary workaround.
+            stage->Load(prefixPath);
         }
     }
 

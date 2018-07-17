@@ -4,7 +4,7 @@ set(PXR_PACKAGE work)
 pxr_library(work
     LIBRARIES
         tf
-        tracelite
+        trace
         ${TBB_tbb_LIBRARY}
 
     INCLUDE_DIRS
@@ -22,14 +22,14 @@ pxr_library(work
     PUBLIC_HEADERS
         api.h
         
-    CPPFILES
+    PYTHON_CPPFILES
         moduleDeps.cpp
 
     PYMODULE_CPPFILES
         module.cpp
         wrapThreadLimits.cpp
 
-    PYTHON_FILES
+    PYMODULE_FILES
         __init__.py
 )
 
@@ -69,9 +69,11 @@ pxr_register_test(testWorkThreadLimits3
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testWorkThreadLimits"
 )
 pxr_register_test(testWorkThreadLimitsRawTBBMax
+    RUN_SERIAL
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testWorkThreadLimits --rawtbb"
 )
 pxr_register_test(testWorkThreadLimitsRawTBB2
+    RUN_SERIAL
     ENV PXR_WORK_THREAD_LIMIT=2
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testWorkThreadLimits --rawtbb"
 )

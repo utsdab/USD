@@ -24,6 +24,8 @@
 #ifndef USDIMAGING_BASIS_CURVES_ADAPTER_H
 #define USDIMAGING_BASIS_CURVES_ADAPTER_H
 
+/// \file usdImaging/basisCurvesAdapter.h
+
 #include "pxr/pxr.h"
 #include "pxr/usdImaging/usdImaging/api.h"
 #include "pxr/usdImaging/usdImaging/primAdapter.h"
@@ -52,35 +54,19 @@ public:
                      UsdImagingInstancerContext const* instancerContext = NULL);
 
     USDIMAGING_API
-    virtual bool IsSupported(HdRenderIndex* renderIndex);
+    virtual bool IsSupported(UsdImagingIndexProxy const* index) const;
 
     // ---------------------------------------------------------------------- //
     /// \name Parallel Setup and Resolve
     // ---------------------------------------------------------------------- //
-    
-    USDIMAGING_API
-    virtual void TrackVariabilityPrep(UsdPrim const& prim,
-                                      SdfPath const& cachePath,
-                                      HdDirtyBits requestedBits,
-                                      UsdImagingInstancerContext const* 
-                                          instancerContext = NULL);
 
     /// Thread Safe.
     USDIMAGING_API
     virtual void TrackVariability(UsdPrim const& prim,
                                   SdfPath const& cachePath,
-                                  HdDirtyBits requestedBits,
-                                  HdDirtyBits* dirtyBits,
+                                  HdDirtyBits* timeVaryingBits,
                                   UsdImagingInstancerContext const* 
-                                      instancerContext = NULL);
-
-    USDIMAGING_API
-    virtual void UpdateForTimePrep(UsdPrim const& prim,
-                                   SdfPath const& cachePath, 
-                                   UsdTimeCode time,
-                                   HdDirtyBits requestedBits,
-                                   UsdImagingInstancerContext const* 
-                                       instancerContext = NULL);
+                                      instancerContext = NULL) const;
 
     /// Thread Safe.
     USDIMAGING_API
@@ -88,15 +74,14 @@ public:
                                SdfPath const& cachePath, 
                                UsdTimeCode time,
                                HdDirtyBits requestedBits,
-                               HdDirtyBits* dirtyBits,
                                UsdImagingInstancerContext const* 
-                                   instancerContext = NULL);
+                                   instancerContext = NULL) const;
 
 private:
-    void _GetPoints(UsdPrim const&, VtValue* value, UsdTimeCode time);
+    void _GetPoints(UsdPrim const&, VtValue* value, UsdTimeCode time) const;
     void _GetBasisCurvesTopology(UsdPrim const& prim, 
                                  VtValue* topoHolder, 
-                                 UsdTimeCode time);
+                                 UsdTimeCode time) const;
 };
 
 

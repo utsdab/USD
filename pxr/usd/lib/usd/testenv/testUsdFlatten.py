@@ -254,5 +254,80 @@ class TestUsdFlatten(unittest.TestCase):
         assert basAttr
         self.assertEqual(basAttr.GetConnections(), [Sdf.Path('/bar.bas')])
 
+    def test_FlattenTimeSamplesAndDefaults(self):
+        testFile = "time_samples/root.usda"
+        resultFile = "time_samples/result.usda"
+
+        stage = Usd.Stage.Open(testFile)
+        resultLayer = stage.Flatten()
+
+        # The flattened result for /StrongerDefault should only
+        # have a default value, since a default value in a stronger
+        # layer will override all time samples in a weaker layer.
+        resultAttrSpec = \
+            resultLayer.GetAttributeAtPath("/StrongerDefault.attr")
+        self.assertEqual(resultAttrSpec.default, 1.0)
+        self.assertEqual(
+            resultLayer.ListTimeSamplesForPath(resultAttrSpec.path), [])
+
+        # The flattened result for /StrongerTimeSamples should have
+        # both time samples and a default value even though the default
+        # is set in a weaker sublayer, since value resolution uses that
+        # when requesting the value at the default time.
+        resultAttrSpec = \
+            resultLayer.GetAttributeAtPath("/StrongerTimeSamples.attr")
+        self.assertEqual(resultAttrSpec.default, 1.0)
+        self.assertEqual(
+            resultLayer.ListTimeSamplesForPath(resultAttrSpec.path), [0.0, 1.0])
+        self.assertEqual(
+            resultLayer.QueryTimeSample(resultAttrSpec.path, 0.0), 100.0)
+        self.assertEqual(
+            resultLayer.QueryTimeSample(resultAttrSpec.path, 1.0), 101.0)
+
+    def test_FlattenAssetPaths(self):
+        testFile = "assetPaths/root.usda"
+
+        stage = Usd.Stage.Open(testFile)
+        resultLayer = stage.Flatten()
+
+        # All asset paths in the flattened result should be anchored,
+        # even though the asset being referred to does not exist.
+        attr = resultLayer.GetAttributeAtPath("/AssetPathTest.assetPath")
+        
+        timeSamples = attr.GetInfo("timeSamples")
+        self.assertEqual(os.path.normpath(timeSamples[0].path),
+                         os.path.abspath("assetPaths/asset.usda"))
+        self.assertEqual(os.path.normpath(timeSamples[1].path),
+                         os.path.abspath("assetPaths/asset.usda"))
+        
+        self.assertEqual(
+            os.path.normpath(attr.GetInfo("default").path), 
+            os.path.abspath("assetPaths/asset.usda"))
+        
+        attr = resultLayer.GetAttributeAtPath("/AssetPathTest.assetPathArray")
+        self.assertEqual(
+            list([os.path.normpath(p.path) for p in attr.GetInfo("default")]),
+            [os.path.abspath("assetPaths/asset.usda")])
+
+        prim = resultLayer.GetPrimAtPath("/AssetPathTest")
+        metadataDict = prim.GetInfo("customData")
+        self.assertEqual(
+            os.path.normpath(metadataDict["assetPath"].path),
+            os.path.abspath("assetPaths/asset.usda"))
+        self.assertEqual(
+            list([os.path.normpath(p.path) 
+                  for p in metadataDict["assetPathArray"]]),
+            [os.path.abspath("assetPaths/asset.usda")])
+            
+        metadataDict = metadataDict["subDict"]
+        self.assertEqual(
+            os.path.normpath(metadataDict["assetPath"].path),
+            os.path.abspath("assetPaths/asset.usda"))
+        self.assertEqual(
+            list([os.path.normpath(p.path) 
+                  for p in metadataDict["assetPathArray"]]),
+            [os.path.abspath("assetPaths/asset.usda")])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -46,8 +46,6 @@ import tempfile
 
 def _parseArgs():
     parser = argparse.ArgumentParser(description='USD test wrapper')
-    parser.add_argument('--requires-display', action='store_true',
-            help='This test requires a display to run.')
     parser.add_argument('--stdout-redirect', type=str,
             help='File to redirect stdout to')
     parser.add_argument('--stderr-redirect', type=str,
@@ -80,7 +78,10 @@ def _parseArgs():
     parser.add_argument('--expected-return-code', type=int, default=0,
             help='Expected return code of this test.')
     parser.add_argument('--env-var', dest='envVars', default=[], type=str, 
-            action='append', help='Variable to set in the test environment.')
+            action='append',
+            help=('Variable to set in the test environment, in KEY=VALUE form. '
+                  'If "<PXR_TEST_DIR>" is in the value, it is replaced with the '
+                  'absolute path of the temp directory the tests are run in'))
     parser.add_argument('--pre-path', dest='prePaths', default=[], type=str, 
             action='append', help='Path to prepend to the PATH env var.')
     parser.add_argument('--post-path', dest='postPaths', default=[], type=str, 
@@ -182,14 +183,6 @@ def _convertRetCode(retcode):
 def _getRedirects(out_redir, err_redir):
     return (open(out_redir, 'w') if out_redir else None,
             open(err_redir, 'w') if err_redir else None)
-
-def _hasDisplay():
-    if platform.system() == 'Linux':
-        linuxDisplayVar = 'DISPLAY'
-        if (linuxDisplayVar not in os.environ or
-            os.environ[linuxDisplayVar] == ''):
-            return False 
-    return True
     
 def _runCommand(raw_command, stdout_redir, stderr_redir, env,
                 expected_return_code):
@@ -229,10 +222,6 @@ if __name__ == '__main__':
                          "--clean-output-paths.")
         sys.exit(1)
 
-    if args.requires_display and not _hasDisplay():
-        sys.stderr.write("Info: test will not be run, no display detected.")
-        sys.exit(0)
-
     testDir = tempfile.mkdtemp()
     os.chdir(testDir)
     if args.verbose:
@@ -257,6 +246,7 @@ if __name__ == '__main__':
             sys.exit(1)
         try:
             k, v = varStr.split('=', 1)
+            v = v.replace('<PXR_TEST_DIR>', testDir)
             env[k] = v
         except IndexError:
             sys.stderr.write("Error: envvar '{0}' not of the form "

@@ -30,7 +30,7 @@
 #include "pxr/usd/sdf/fileIO_Common.h"
 #include "pxr/usd/sdf/layer.h"
 
-#include "pxr/base/tracelite/trace.h"
+#include "pxr/base/trace/trace.h"
 #include "pxr/base/tf/atomicOfstreamWrapper.h"
 #include "pxr/base/tf/fileUtils.h"
 #include "pxr/base/tf/registryManager.h"
@@ -105,20 +105,20 @@ SdfTextFileFormat::CanRead(const string& filePath) const
     TRACE_FUNCTION();
 
     bool canRead = false;
-
-    const string& cookie = GetFileCookie();
     if (FILE *f = ArchOpenFile(filePath.c_str(), "rb")) {
-        char aLine[512];
-
-        if (fgets(aLine, sizeof(aLine), f)) {
-            if (TfStringStartsWith(aLine, cookie))
-                canRead = true;
-        }
-
+        canRead = _CanReadImpl(f);
         fclose(f);
     }
 
     return canRead;
+}
+
+bool
+SdfTextFileFormat::_CanReadImpl(FILE *fp) const
+{
+    const string &cookie = GetFileCookie();
+    char aLine[512];
+    return fgets(aLine, sizeof(aLine), fp) && TfStringStartsWith(aLine, cookie);
 }
 
 class Sdf_ScopedFilePointer : boost::noncopyable
@@ -158,6 +158,16 @@ SdfTextFileFormat::Read(
         return false;
     }
 
+    // Quick check to see if the file has the magic cookie before spinning up
+    // the parser.
+    if (!_CanReadImpl(*fp)) {
+        TF_RUNTIME_ERROR("File <%s> is not a valid %s file",
+                         resolvedPath.c_str(),
+                         GetFormatId().GetText());
+        return false;
+    }
+    fseek(*fp, 0, SEEK_SET);
+
     SdfAbstractDataRefPtr data = InitData(layerBase->GetFileFormatArguments());
     if (!Sdf_ParseMenva(resolvedPath, *fp, 
                            GetFormatId(),
@@ -167,16 +177,7 @@ SdfTextFileFormat::Read(
         return false;
     }
 
-    if (_LayerIsLoadingAsNew(layer)) {
-        // New layer, so we don't need undo inverses or notification.
-        // Just swap out the data.
-        _SwapLayerData(layer, data);
-    } else {
-        // Layer has pre-existing data.  Use _SetData() to provide
-        // fine-grained inverses and undo registration.
-        _SetLayerData(layer, data);
-    }
-
+    _SetLayerData(layer, data);
     return true;
 }
 
@@ -346,16 +347,7 @@ SdfTextFileFormat::ReadFromString(
         return false;
     }
 
-    if (_LayerIsLoadingAsNew(layer)) {
-        // New layer, so we don't need undo inverses or notification.
-        // Just swap out the data.
-        _SwapLayerData(layer, data);
-    } else {
-        // Layer has pre-existing data.  Use _SetData() to provide
-        // fine-grained inverses and undo registration.
-        _SetLayerData(layer, data);
-    }
-
+    _SetLayerData(layer, data);
     return true;
 }
 

@@ -55,7 +55,7 @@ void wrapUsdShadeConnectableAPI()
 {
     typedef UsdShadeConnectableAPI This;
 
-    class_<This, bases<UsdSchemaBase> >
+    class_<This, bases<UsdAPISchemaBase> >
         cls("ConnectableAPI");
 
     cls
@@ -66,6 +66,17 @@ void wrapUsdShadeConnectableAPI()
         .def("Get", &This::Get, (arg("stage"), arg("path")))
         .staticmethod("Get")
 
+        .def("IsConcrete",
+            static_cast<bool (*)(void)>( [](){ return This::IsConcrete; }))
+        .staticmethod("IsConcrete")
+
+        .def("IsTyped",
+            static_cast<bool (*)(void)>( [](){ return This::IsTyped; } ))
+        .staticmethod("IsTyped")
+
+        .def("IsApplied", 
+            static_cast<bool (*)(void)>( [](){ return This::IsApplied; } ))
+        .staticmethod("IsApplied")
 
         .def("GetSchemaAttributeNames",
              &This::GetSchemaAttributeNames,

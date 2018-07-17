@@ -34,17 +34,15 @@ TF_WRAP_MODULE {
     TF_WRAP( Enum );
     // Diagnostic depends on Enum so must come after it.
     TF_WRAP( Diagnostic );
+    TF_WRAP( DiagnosticBase );
     TF_WRAP( EnvSetting );
     TF_WRAP( Error );
     TF_WRAP( FileUtils );
     TF_WRAP( Function );
     TF_WRAP( MallocTag );
     TF_WRAP( Notice );
-    // DiagnosticNotice depends on Notice so must come after it.
-    TF_WRAP( DiagnosticNotice );
     TF_WRAP( PathUtils );
     TF_WRAP( PyContainerConversions );
-    TF_WRAP( PyDateTime );
     TF_WRAP( PyModuleNotice );
     TF_WRAP( PyObjWrapper );
     TF_WRAP( PyOptional );
@@ -57,12 +55,10 @@ TF_WRAP_MODULE {
     TF_WRAP( Stopwatch );
     TF_WRAP( StringUtils );
     TF_WRAP( TemplateString );
-    TF_WRAP( TimeStamp );
     TF_WRAP( Token );
     TF_WRAP( Type );
     TF_WRAP( Tf_TestPyAnnotatedBoolResult );
     TF_WRAP( Tf_TestPyContainerConversions );
-    TF_WRAP( Tf_TestPyDateTime );
     TF_WRAP( Tf_TestPyStaticTokens );
     TF_WRAP( Tf_TestTfPython );
     TF_WRAP( Tf_TestTfPyOptional );

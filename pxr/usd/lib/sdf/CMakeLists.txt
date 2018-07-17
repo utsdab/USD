@@ -6,7 +6,7 @@ pxr_library(sdf
         arch
         tf
         gf
-        tracelite
+        trace
         vt
         work
         ar
@@ -29,6 +29,7 @@ pxr_library(sdf
         childrenUtils
         childrenView
         cleanupEnabler
+        copyUtils
         data
         declareHandles
         fileFormat
@@ -58,15 +59,6 @@ pxr_library(sdf
         proxyPolicies
         proxyTypes
         pseudoRootSpec
-        pyChildrenProxy
-        pyChildrenView
-        pyListEditorProxy
-        pyListOp
-        pyListProxy
-        pyMapEditProxy
-        pyMarkerProxy
-        pySpec
-        pyUtils
         reference
         relationshipSpec
         schema
@@ -83,9 +75,19 @@ pxr_library(sdf
         variantSpec
 
         # Flex/Bison generated code
-        layerIdentifier.tab
         path.tab
         textFileFormat.tab
+   
+    PYTHON_PUBLIC_CLASSES
+        pyChildrenProxy
+        pyChildrenView
+        pyListEditorProxy
+        pyListOp
+        pyListProxy
+        pyMapEditProxy
+        pyMarkerProxy
+        pySpec
+        pyUtils
 
     PUBLIC_HEADERS
         api.h
@@ -117,11 +119,12 @@ pxr_library(sdf
         valueTypePrivate.h
 
     CPPFILES
-        moduleDeps.cpp
         # Flex/Bison generated code
-        layerIdentifier.lex.cpp
         path.lex.cpp
         textFileFormat.lex.cpp
+
+    PYTHON_CPPFILES
+        moduleDeps.cpp
 
     PYMODULE_CPPFILES
         module.cpp
@@ -130,6 +133,7 @@ pxr_library(sdf
         wrapAttributeSpec.cpp
         wrapChangeBlock.cpp
         wrapCleanupEnabler.cpp
+        wrapCopyUtils.cpp
         wrapFileFormat.cpp
         wrapLayer.cpp
         wrapLayerBase.cpp
@@ -153,7 +157,7 @@ pxr_library(sdf
         wrapVariantSpec.cpp
         wrapVariantSetSpec.cpp
 
-    PYTHON_FILES
+    PYMODULE_FILES 
         __init__.py
 
     RESOURCE_FILES
@@ -178,7 +182,7 @@ else()
             --srcDir ${CMAKE_CURRENT_SOURCE_DIR}
             --bison ${BISON_EXECUTABLE}
             --flex ${FLEX_EXECUTABLE}
-            --bases textFileFormat path layerIdentifier
+            --bases textFileFormat path 
             --validate
     )
 endif()
@@ -186,7 +190,11 @@ endif()
 pxr_test_scripts(
     testenv/testSdfAttributeBlocking.py
     testenv/testSdfBatchNamespaceEdit.py
+    testenv/testSdfCopyUtils.py
     testenv/testSdfCustomLayerData.py
+    testenv/testSdfLayer.py
+    testenv/testSdfLayerMuting.py
+    testenv/testSdfListOp.py
     testenv/testSdfParsing.py
     testenv/testSdfPath.py
     testenv/testSdfPath2.py
@@ -252,6 +260,11 @@ pxr_install_test_dir(
 )
 
 pxr_install_test_dir(
+    SRC testenv/testSdfLayerMuting.testenv
+    DEST testSdfLayerMuting/testSdfLayerMuting.testenv
+)
+
+pxr_install_test_dir(
     SRC testenv/testSdfMetaDataPlugInfo.testenv
     DEST testSdfMetaDataPlugInfo/testSdfMetaDataPlugInfo.testenv
 )
@@ -290,6 +303,11 @@ pxr_register_test(testSdfBatchNamespaceEdit
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testSdfBatchNamespaceEdit"
 )
 
+pxr_register_test(testSdfCopyUtils
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testSdfCopyUtils"
+)
+
 pxr_register_test(testSdfCustomLayerData
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testSdfCustomLayerData"
@@ -304,6 +322,21 @@ pxr_register_test(testSdfTextReferenceParser
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testSdfTextReferenceParser"
     STDOUT_REDIRECT result.txt
     DIFF_COMPARE result.txt
+)
+
+pxr_register_test(testSdfLayer
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testSdfLayer"
+)
+
+pxr_register_test(testSdfLayerMuting
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testSdfLayerMuting"
+)
+
+pxr_register_test(testSdfListOp
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testSdfListOp"
 )
 
 pxr_register_test(testSdfMetaDataPlugInfo

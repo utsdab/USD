@@ -24,6 +24,7 @@
 #include "pxr/usd/usdRi/splineAPI.h"
 #include "pxr/usd/usd/schemaRegistry.h"
 #include "pxr/usd/usd/typed.h"
+#include "pxr/usd/usd/tokens.h"
 
 #include "pxr/usd/sdf/types.h"
 #include "pxr/usd/sdf/assetPath.h"
@@ -34,9 +35,14 @@ PXR_NAMESPACE_OPEN_SCOPE
 TF_REGISTRY_FUNCTION(TfType)
 {
     TfType::Define<UsdRiSplineAPI,
-        TfType::Bases< UsdSchemaBase > >();
+        TfType::Bases< UsdAPISchemaBase > >();
     
 }
+
+TF_DEFINE_PRIVATE_TOKENS(
+    _schemaTokens,
+    (RiSplineAPI)
+);
 
 /* virtual */
 UsdRiSplineAPI::~UsdRiSplineAPI()
@@ -54,6 +60,20 @@ UsdRiSplineAPI::Get(const UsdStagePtr &stage, const SdfPath &path)
     return UsdRiSplineAPI(stage->GetPrimAtPath(path));
 }
 
+/*virtual*/
+bool 
+UsdRiSplineAPI::_IsAppliedAPISchema() const 
+{
+    return true;
+}
+
+/* static */
+UsdRiSplineAPI
+UsdRiSplineAPI::Apply(const UsdPrim &prim)
+{
+    return UsdAPISchemaBase::_ApplyAPISchema<UsdRiSplineAPI>(
+            prim, _schemaTokens->RiSplineAPI);
+}
 
 /* static */
 const TfType &
@@ -84,7 +104,7 @@ UsdRiSplineAPI::GetSchemaAttributeNames(bool includeInherited)
 {
     static TfTokenVector localNames;
     static TfTokenVector allNames =
-        UsdSchemaBase::GetSchemaAttributeNames(true);
+        UsdAPISchemaBase::GetSchemaAttributeNames(true);
 
     if (includeInherited)
         return allNames;

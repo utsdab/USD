@@ -24,6 +24,7 @@
 #include "pxr/usd/usdSkel/bindingAPI.h"
 #include "pxr/usd/usd/schemaRegistry.h"
 #include "pxr/usd/usd/typed.h"
+#include "pxr/usd/usd/tokens.h"
 
 #include "pxr/usd/sdf/types.h"
 #include "pxr/usd/sdf/assetPath.h"
@@ -34,9 +35,14 @@ PXR_NAMESPACE_OPEN_SCOPE
 TF_REGISTRY_FUNCTION(TfType)
 {
     TfType::Define<UsdSkelBindingAPI,
-        TfType::Bases< UsdSchemaBase > >();
+        TfType::Bases< UsdAPISchemaBase > >();
     
 }
+
+TF_DEFINE_PRIVATE_TOKENS(
+    _schemaTokens,
+    (BindingAPI)
+);
 
 /* virtual */
 UsdSkelBindingAPI::~UsdSkelBindingAPI()
@@ -54,6 +60,20 @@ UsdSkelBindingAPI::Get(const UsdStagePtr &stage, const SdfPath &path)
     return UsdSkelBindingAPI(stage->GetPrimAtPath(path));
 }
 
+/*virtual*/
+bool 
+UsdSkelBindingAPI::_IsAppliedAPISchema() const 
+{
+    return true;
+}
+
+/* static */
+UsdSkelBindingAPI
+UsdSkelBindingAPI::Apply(const UsdPrim &prim)
+{
+    return UsdAPISchemaBase::_ApplyAPISchema<UsdSkelBindingAPI>(
+            prim, _schemaTokens->BindingAPI);
+}
 
 /* static */
 const TfType &
@@ -89,6 +109,23 @@ UsdSkelBindingAPI::CreateGeomBindTransformAttr(VtValue const &defaultValue, bool
 {
     return UsdSchemaBase::_CreateAttr(UsdSkelTokens->primvarsSkelGeomBindTransform,
                        SdfValueTypeNames->Matrix4d,
+                       /* custom = */ false,
+                       SdfVariabilityVarying,
+                       defaultValue,
+                       writeSparsely);
+}
+
+UsdAttribute
+UsdSkelBindingAPI::GetJointsAttr() const
+{
+    return GetPrim().GetAttribute(UsdSkelTokens->skelJoints);
+}
+
+UsdAttribute
+UsdSkelBindingAPI::CreateJointsAttr(VtValue const &defaultValue, bool writeSparsely) const
+{
+    return UsdSchemaBase::_CreateAttr(UsdSkelTokens->skelJoints,
+                       SdfValueTypeNames->TokenArray,
                        /* custom = */ false,
                        SdfVariabilityUniform,
                        defaultValue,
@@ -155,19 +192,6 @@ UsdSkelBindingAPI::CreateSkeletonRel() const
                        /* custom = */ false);
 }
 
-UsdRelationship
-UsdSkelBindingAPI::GetJointsRel() const
-{
-    return GetPrim().GetRelationship(UsdSkelTokens->skelJoints);
-}
-
-UsdRelationship
-UsdSkelBindingAPI::CreateJointsRel() const
-{
-    return GetPrim().CreateRelationship(UsdSkelTokens->skelJoints,
-                       /* custom = */ false);
-}
-
 namespace {
 static inline TfTokenVector
 _ConcatenateAttributeNames(const TfTokenVector& left,const TfTokenVector& right)
@@ -186,12 +210,13 @@ UsdSkelBindingAPI::GetSchemaAttributeNames(bool includeInherited)
 {
     static TfTokenVector localNames = {
         UsdSkelTokens->primvarsSkelGeomBindTransform,
+        UsdSkelTokens->skelJoints,
         UsdSkelTokens->primvarsSkelJointIndices,
         UsdSkelTokens->primvarsSkelJointWeights,
     };
     static TfTokenVector allNames =
         _ConcatenateAttributeNames(
-            UsdSchemaBase::GetSchemaAttributeNames(true),
+            UsdAPISchemaBase::GetSchemaAttributeNames(true),
             localNames);
 
     if (includeInherited)
@@ -210,3 +235,71 @@ PXR_NAMESPACE_CLOSE_SCOPE
 // 'PXR_NAMESPACE_OPEN_SCOPE', 'PXR_NAMESPACE_CLOSE_SCOPE'.
 // ===================================================================== //
 // --(BEGIN CUSTOM CODE)--
+
+
+#include "pxr/usd/usdGeom/imageable.h"
+#include "pxr/usd/usdGeom/tokens.h"
+
+#include "pxr/usd/usdSkel/utils.h"
+
+PXR_NAMESPACE_OPEN_SCOPE
+
+
+UsdGeomPrimvar
+UsdSkelBindingAPI::GetJointIndicesPrimvar() const
+{
+    return UsdGeomPrimvar(GetJointIndicesAttr());
+}
+
+
+UsdGeomPrimvar
+UsdSkelBindingAPI::CreateJointIndicesPrimvar(bool constant,
+                                             int elementSize) const
+{
+    return UsdGeomImageable(GetPrim()).CreatePrimvar(
+        UsdSkelTokens->primvarsSkelJointIndices,
+        SdfValueTypeNames->IntArray,
+        constant ? UsdGeomTokens->constant : UsdGeomTokens->vertex,
+        elementSize);
+}
+
+
+UsdGeomPrimvar
+UsdSkelBindingAPI::GetJointWeightsPrimvar() const
+{
+    return UsdGeomPrimvar(GetJointWeightsAttr());
+}
+
+
+UsdGeomPrimvar
+UsdSkelBindingAPI::CreateJointWeightsPrimvar(bool constant,
+                                             int elementSize) const
+{
+    return UsdGeomImageable(GetPrim()).CreatePrimvar(
+        UsdSkelTokens->primvarsSkelJointWeights,
+        SdfValueTypeNames->FloatArray,
+        constant ? UsdGeomTokens->constant : UsdGeomTokens->vertex,
+        elementSize);
+}
+
+
+
+bool
+UsdSkelBindingAPI::SetRigidJointInfluence(int jointIndex, float weight) const
+{
+    UsdGeomPrimvar jointIndicesPv =
+        CreateJointIndicesPrimvar(/*constant*/ true, /*elementSize*/ 1);
+    UsdGeomPrimvar jointWeightsPv =
+        CreateJointWeightsPrimvar(/*constant*/ true, /*elementSize*/ 1);
+
+    VtIntArray indices(1);
+    indices[0] = jointIndex;
+
+    VtFloatArray weights(1);
+    weights[0] = weight;
+    
+    return jointIndicesPv.Set(indices) && jointWeightsPv.Set(weights);
+}
+
+
+PXR_NAMESPACE_CLOSE_SCOPE

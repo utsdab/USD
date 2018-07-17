@@ -11,6 +11,7 @@ pxr_library(usdLux
 
     PUBLIC_CLASSES
         blackbody
+        cylinderLight
         diskLight
         distantLight
         domeLight
@@ -29,11 +30,12 @@ pxr_library(usdLux
     PUBLIC_HEADERS
         api.h
 
-    CPPFILES
+    PYTHON_CPPFILES
         moduleDeps.cpp
 
     PYMODULE_CPPFILES
         module.cpp
+        wrapCylinderLight.cpp
         wrapDiskLight.cpp
         wrapDistantLight.cpp
         wrapDomeLight.cpp
@@ -49,11 +51,12 @@ pxr_library(usdLux
         wrapSphereLight.cpp
         wrapTokens.cpp
 
-    PYTHON_FILES
+   PYMODULE_FILES 
         __init__.py
 
     RESOURCE_FILES
         plugInfo.json
         generatedSchema.usda
+        schema.usda:usdLux/schema.usda
 )
 

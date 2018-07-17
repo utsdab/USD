@@ -29,6 +29,7 @@
 #include "pxr/imaging/hdx/version.h"
 #include "pxr/imaging/hd/task.h"
 #include "pxr/imaging/hdx/renderSetupTask.h"  // for short-term compatibility.
+#include "pxr/imaging/hdSt/renderPassState.h"
 
 #include <boost/shared_ptr.hpp>
 
@@ -53,10 +54,6 @@ public:
     HdxRenderTask(HdSceneDelegate* delegate, SdfPath const& id);
 
     /// Hooks for progressive rendering (delegated to renderpasses).
-
-    // XXX: If the render task collection param will change in the next Sync(),
-    // IsConverged() should be ignored since the renderpasses will be rebuilt.
-    void ResetImage();
     bool IsConverged() const;
 
 protected:
@@ -73,6 +70,11 @@ private:
 
     // XXX: temp members to keep compatibility (optional)
     HdxRenderSetupTaskSharedPtr _setupTask;
+
+    // XXX: Setup additional state that HdStRenderPassState requires.
+    // This should be moved to hdSt!
+    void _SetHdStRenderPassState(HdTaskContext *ctx,
+                                 HdStRenderPassState *renderPassState);
 };
 
 

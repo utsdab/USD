@@ -23,6 +23,7 @@
 #
 option(PXR_STRICT_BUILD_MODE "Turn on additional warnings. Enforce all warnings as errors." OFF)
 option(PXR_VALIDATE_GENERATED_CODE "Validate script generated code" OFF)
+option(PXR_HEADLESS_TEST_MODE "Disallow GUI based tests, useful for running under headless CI systems." OFF)
 option(PXR_BUILD_TESTS "Build tests" ON)
 option(PXR_BUILD_IMAGING "Build imaging components" ON)
 option(PXR_BUILD_EMBREE_PLUGIN "Build embree imaging plugin" OFF)
@@ -32,6 +33,7 @@ option(PXR_BUILD_MAYA_PLUGIN "Build usd maya plugin" OFF)
 option(PXR_BUILD_ALEMBIC_PLUGIN "Build the Alembic plugin for USD" OFF)
 option(PXR_BUILD_HOUDINI_PLUGIN "Build the Houdini plugin for USD" OFF)
 option(PXR_BUILD_DOCUMENTATION "Generate doxygen documentation" OFF)
+option(PXR_ENABLE_PYTHON_SUPPORT "Enable Python based components for USD" ON)
 option(PXR_ENABLE_MULTIVERSE_SUPPORT "Enable Multiverse backend in the Alembic plugin for USD" OFF)
 option(PXR_ENABLE_HDF5_SUPPORT "Enable HDF5 backend in the Alembic plugin for USD" ON)
 option(PXR_ENABLE_PTEX_SUPPORT "Enable Ptex support" ON)
@@ -54,6 +56,12 @@ set(PXR_INSTALL_LOCATION ""
     CACHE
     STRING
     "Intended final location for plugin resource files."
+)
+
+set(PXR_OVERRIDE_PLUGINPATH_NAME ""
+    CACHE
+    STRING
+    "Name of the environment variable that will be used to get plugin paths."
 )
 
 set(PXR_ALL_LIBS ""
@@ -100,3 +108,4 @@ set(PXR_MONOLITHIC_IMPORT ""
     STRING
     "Path to cmake file that imports a usd_ms target"
 )
+

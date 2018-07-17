@@ -30,9 +30,16 @@ from pxr import Sdf
 from pxr import Usd
 from pxr import UsdGeom
 from pxr import Vt
+from pxr import Tf
 
 from maya import cmds
 from maya import standalone
+
+try:
+    from pxr import UsdMaya
+except ImportError:
+    from pixar import UsdMaya
+
 
 
 class testUsdExportUVSets(unittest.TestCase):
@@ -47,7 +54,10 @@ class testUsdExportUVSets(unittest.TestCase):
         if expectedUnauthoredValuesIndex is None:
             expectedUnauthoredValuesIndex = -1
 
-        self.assertEqual(primvar.GetTypeName(), Sdf.ValueTypeNames.Float2Array)
+        if not UsdMaya.WriteUtil.WriteUVAsFloat2():
+            self.assertEqual(primvar.GetTypeName(), Sdf.ValueTypeNames.TexCoord2fArray)
+        else: 
+            self.assertEqual(primvar.GetTypeName(), Sdf.ValueTypeNames.Float2Array)
 
         for idx in range(len(primvar.Get())):
             self.assertEqual(primvar.Get()[idx], expectedValues[idx])
@@ -66,8 +76,17 @@ class testUsdExportUVSets(unittest.TestCase):
         standalone.initialize('usd')
         cmds.loadPlugin('pxrUsd')
 
-        cmds.file(os.path.abspath('UsdExportUVSetsTest.ma'), open=True,
+        if not UsdMaya.WriteUtil.WriteUVAsFloat2():
+            cmds.file(os.path.abspath('UsdExportUVSetsTest.ma'), open=True,
                        force=True)
+        else:
+            cmds.file(os.path.abspath('UsdExportFloatUVSetsTest.ma'), open=True,
+                       force=True)
+
+        # Make some live edits to the box with weird UVs for the
+        # testExportUvVersusUvIndexFromIterator test.
+        cmds.select("box.map[0:299]", r=True)
+        cmds.polyEditUV(u=1.0, v=1.0)
 
         usdFilePath = os.path.abspath('UsdExportUVSetsTest.usda')
         cmds.usdExport(mergeTransformAndShape=True,
@@ -330,6 +349,18 @@ class testUsdExportUVSets(unittest.TestCase):
             expectedInterpolation=expectedInterpolation,
             expectedIndices=expectedIndices)
 
+    def testExportUvVersusUvIndexFromIterator(self):
+        """
+        Tests that UVs export properly on a mesh where the UV returned by
+        MItMeshFaceVertex::getUV is known to be different from that
+        returned by MItMeshFaceVertex::getUVIndex and indexed into the UV array.
+        (The latter should return the desired result from the outMesh and is the
+        method currently used by usdMaya.)
+        """
+        brokenBoxMesh = UsdGeom.Mesh(self._stage.GetPrimAtPath(
+                "/UsdExportUVSetsTest/Geom/BrokenUVs/box"))
+        stPrimvar = brokenBoxMesh.GetPrimvar("st").ComputeFlattened()
+        self.assertEqual(stPrimvar[0], Gf.Vec2f(1.0, 1.0))
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

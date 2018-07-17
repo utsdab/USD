@@ -30,6 +30,7 @@
 #include "pxr/base/vt/array.h"
 #include "pxr/usd/sdf/path.h"
 #include <boost/smart_ptr.hpp>
+#include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -43,49 +44,97 @@ typedef boost::shared_ptr<class HdxSelection> HdxSelectionSharedPtr;
 typedef boost::shared_ptr<class HdxSelectionTracker> HdxSelectionTrackerSharedPtr;
 typedef boost::weak_ptr<class HdxSelectionTracker> HdxSelectionTrackerWeakPtr;
 
+
+enum HdxSelectionHighlightMode {
+    HdxSelectionHighlightModeSelect = 0,
+    HdxSelectionHighlightModeLocate,
+    HdxSelectionHighlightModeMask,
+
+    HdxSelectionHighlightModeCount
+};
+
 /// \class HdxSelection
 ///
 /// HdxSelection holds a collection of items which are rprims, instances of
-/// rprim, sub elements of rprim (such as faces, verts). HdxSelectionTracker
-/// takes HdxSelection and generates GPU buffer to be used for highlighting.
+/// rprim and subprimitives of rprim, such as elements (faces when dealing with 
+/// meshes, individual curves when dealing with basis curves) and edges.
+/// 
+/// HdxSelectionTracker takes HdxSelection and generates a GPU buffer to be used 
+/// for highlighting.
 ///
 class HdxSelection {
 public:
+    typedef TfHashMap<SdfPath, std::vector<VtIntArray>, SdfPath::Hash> InstanceMap;
+    typedef TfHashMap<SdfPath, VtIntArray, SdfPath::Hash> ElementIndicesMap;
+    typedef ElementIndicesMap EdgeIndicesMap;
+    typedef ElementIndicesMap PointIndicesMap;
+
     HdxSelection() = default;
 
-    void AddRprim(SdfPath const &path) {
-        selectedPrims.push_back(path);
-    }
+    HDX_API
+    void AddRprim(HdxSelectionHighlightMode const& mode,
+                  SdfPath const &path);
 
-    void AddInstance(
-        SdfPath const &path, VtIntArray const &instanceIndex=VtIntArray()) {
-        selectedPrims.push_back(path);
-        selectedInstances[path].push_back(instanceIndex);
-    }
+    HDX_API
+    void AddInstance(HdxSelectionHighlightMode const& mode,
+                     SdfPath const &path,
+                     VtIntArray const &instanceIndex=VtIntArray());
 
-    void AddFaces(
-        SdfPath const &path, VtIntArray const &faceIndices) {
-        selectedPrims.push_back(path);
-        selectedFaces[path] = faceIndices;
-    }
+    HDX_API
+    void AddElements(HdxSelectionHighlightMode const& mode,
+                     SdfPath const &path,
+                     VtIntArray const &elementIndices);
+    
+    HDX_API
+    void AddEdges(HdxSelectionHighlightMode const& mode,
+                  SdfPath const &path,
+                  VtIntArray const &edgeIndices);
+    
+    HDX_API
+    void AddPoints(HdxSelectionHighlightMode const& mode,
+                   SdfPath const &path,
+                   VtIntArray const &pointIndices);
 
-    // TODO: encapsulate members
+    SdfPathVector const&
+    GetSelectedPrims(HdxSelectionHighlightMode const& mode) const;
 
-    typedef TfHashMap<SdfPath, std::vector<VtIntArray>, SdfPath::Hash> InstanceMap;
-    typedef TfHashMap<SdfPath, VtIntArray, SdfPath::Hash> ElementMap;
+    InstanceMap const&
+    GetSelectedInstances(HdxSelectionHighlightMode const& mode) const;
 
-    // The SdfPaths are expected to be resolved rprim paths,
-    // root paths will not be expanded.
-    // Duplicated entries are allowed.
-    SdfPathVector selectedPrims;
+    ElementIndicesMap const&
+    GetSelectedElements(HdxSelectionHighlightMode const& mode) const;
 
-    /// This maps from prototype path to a vector of instance indices which is
-    /// also a vector (because of nested instancing).
-    InstanceMap selectedInstances;
+    EdgeIndicesMap const&
+    GetSelectedEdges(HdxSelectionHighlightMode const& mode) const;
+    
+    PointIndicesMap const&
+    GetSelectedPoints(HdxSelectionHighlightMode const& mode) const;
 
-    // The selected elements (faces, points, edges) , if any, for the selected
-    // objects. This maps from object path to a vector of element indices.
-    ElementMap selectedFaces;
+protected:
+    struct _SelectedEntities {
+        // The SdfPaths are expected to be resolved rprim paths,
+        // root paths will not be expanded.
+        // Duplicated entries are allowed.
+        SdfPathVector prims;
+
+        /// This maps from prototype path to a vector of instance indices which is
+        /// also a vector (because of nested instancing).
+        InstanceMap instances;
+
+        // The selected elements, if any, for the selected objects. This maps
+        // from object path to a vector of element indices.
+        ElementIndicesMap elements;
+
+        // The selected edges, if any, for the selected objects. This maps from 
+        // object path to a vector of (authored) edge indices.
+        EdgeIndicesMap edges;
+
+        // The selected points, if any, for the selected objects. This maps from
+        // object path to a vector of point (vertex) indices.
+        PointIndicesMap points;
+    };
+
+    _SelectedEntities _selEntities[HdxSelectionHighlightModeCount];
 };
 
 /// \class HdxSelectionTracker
@@ -104,11 +153,12 @@ public:
     HDX_API
     virtual void Sync(HdRenderIndex* index);
 
-    /// Populates an array of offsets required for selection highlighting.
+    /// Populates an array of offsets required for selection highlighting for
+    /// the given highlight mode.
     /// Returns true if offsets has anything selected.
     HDX_API
-    virtual bool GetBuffers(HdRenderIndex const* index,
-                            VtIntArray* offsets) const;
+    virtual bool GetSelectionOffsetBuffer(HdRenderIndex const* index,
+                                          VtIntArray* offsets) const;
 
     /// Returns a monotonically increasing version number, which increments
     /// whenever the result of GetBuffers has changed. Note that this number may
@@ -131,6 +181,12 @@ protected:
     /// via GetVersion().
     HDX_API
     void _IncrementVersion();
+
+    HDX_API
+    virtual bool _GetSelectionOffsets(HdxSelectionHighlightMode const& mode,
+                                      HdRenderIndex const* index,
+                                      size_t modeOffset,
+                                      std::vector<int>* offsets) const;
 
 private:
     int _version;

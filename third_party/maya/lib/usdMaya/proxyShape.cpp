@@ -27,22 +27,38 @@
 #include "usdMaya/stageCache.h"
 #include "usdMaya/stageData.h"
 
+#include "pxr/base/gf/bbox3d.h"
+#include "pxr/base/gf/range3d.h"
+#include "pxr/base/gf/ray.h"
+#include "pxr/base/gf/vec4f.h"
+#include "pxr/base/tf/envSetting.h"
 #include "pxr/base/tf/fileUtils.h"
+#include "pxr/base/tf/hash.h"
 #include "pxr/base/tf/pathUtils.h"
 #include "pxr/base/tf/staticData.h"
+#include "pxr/base/tf/staticTokens.h"
 #include "pxr/base/tf/stringUtils.h"
-#include "pxr/base/tf/hash.h"
-
+#include "pxr/base/tf/token.h"
 #include "pxr/usd/ar/resolver.h"
+#include "pxr/usd/sdf/layer.h"
+#include "pxr/usd/sdf/path.h"
+#include "pxr/usd/usd/prim.h"
+#include "pxr/usd/usd/stage.h"
+#include "pxr/usd/usd/stageCacheContext.h"
+#include "pxr/usd/usd/timeCode.h"
 #include "pxr/usd/usdGeom/imageable.h"
 #include "pxr/usd/usdGeom/bboxCache.h"
 #include "pxr/usd/usdGeom/tokens.h"
-#include "pxr/usd/usd/stageCacheContext.h"
 #include "pxr/usd/usdUtils/stageCache.h"
-#include "pxr/base/gf/bbox3d.h"
 
+#include <maya/MBoundingBox.h>
 #include <maya/MDagPath.h>
+#include <maya/MDataBlock.h>
+#include <maya/MDataHandle.h>
+#include <maya/MDGContext.h>
 #include <maya/MFnCompoundAttribute.h>
+#include <maya/MFnData.h>
+#include <maya/MFnDependencyNode.h>
 #include <maya/MFnEnumAttribute.h>
 #include <maya/MFnNumericAttribute.h>
 #include <maya/MFnPluginData.h>
@@ -50,11 +66,28 @@
 #include <maya/MFnTypedAttribute.h>
 #include <maya/MFnUnitAttribute.h>
 #include <maya/MGlobal.h>
+#include <maya/MObject.h>
+#include <maya/MPoint.h>
+#include <maya/MPlug.h>
+#include <maya/MPlugArray.h>
+#include <maya/MPxSurfaceShape.h>
+#include <maya/MSelectionMask.h>
+#include <maya/MStatus.h>
+#include <maya/MString.h>
 #include <maya/MTime.h>
+#include <maya/MViewport2Renderer.h>
 
-#include <mutex>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
+
 
 PXR_NAMESPACE_OPEN_SCOPE
+
+
+TF_DEFINE_PUBLIC_TOKENS(PxrUsdMayaProxyShapeTokens,
+                        PXRUSDMAYA_PROXY_SHAPE_TOKENS);
 
 
 // Hydra performs its own high-performance frustum culling, so
@@ -68,6 +101,9 @@ PXR_NAMESPACE_OPEN_SCOPE
 TF_DEFINE_ENV_SETTING(PIXMAYA_ENABLE_BOUNDING_BOX_MODE, false,
                       "Enable bounding box rendering (slows refresh rate)");
 
+UsdMayaProxyShape::ClosestPointDelegate
+UsdMayaProxyShape::_sharedClosestPointDelegate = nullptr;
+
 bool
 UsdMayaIsBoundingBoxModeEnabled()
 {
@@ -77,17 +113,15 @@ UsdMayaIsBoundingBoxModeEnabled()
 // ========================================================
 
 /* static */
-void* 
-UsdMayaProxyShape::creator(
-        const PluginStaticData& psData)
+void*
+UsdMayaProxyShape::creator(const PluginStaticData& psData)
 {
     return new UsdMayaProxyShape(psData);
 }
 
 /* static */
-MStatus 
-UsdMayaProxyShape::initialize(
-        PluginStaticData* psData)
+MStatus
+UsdMayaProxyShape::initialize(PluginStaticData* psData)
 {
     MStatus retValue = MS::kSuccess;
 
@@ -332,61 +366,103 @@ UsdMayaProxyShape::initialize(
     //
     // add attribute dependencies
     //
-    retValue = attributeAffects(psData->inStageData, psData->inStageDataCached);
-    retValue = attributeAffects(psData->inStageData, psData->outStageData);
-
     retValue = attributeAffects(psData->filePath, psData->inStageDataCached);
     retValue = attributeAffects(psData->filePath, psData->outStageData);
+
+    retValue = attributeAffects(psData->primPath, psData->inStageDataCached);
+    retValue = attributeAffects(psData->primPath, psData->outStageData);
 
     retValue = attributeAffects(psData->variantKey, psData->inStageDataCached);
     retValue = attributeAffects(psData->variantKey, psData->outStageData);
 
+    retValue = attributeAffects(psData->inStageData, psData->inStageDataCached);
+    retValue = attributeAffects(psData->inStageData, psData->outStageData);
+
     retValue = attributeAffects(psData->inStageDataCached, psData->outStageData);
 
-    retValue = attributeAffects(psData->primPath, psData->outStageData);
-    
     return retValue;
 }
 
-void UsdMayaProxyShape::postConstructor()
+/* static */
+UsdMayaProxyShape*
+UsdMayaProxyShape::GetShapeAtDagPath(const MDagPath& dagPath)
 {
-    // 
+    MObject mObj = dagPath.node();
+    if (mObj.apiType() != MFn::kPluginShape) {
+        MGlobal::displayError(
+            TfStringPrintf(
+                "Could not get UsdMayaProxyShape for non-plugin shape node "
+                "at dag path: %s (apiTypeStr = %s)",
+                dagPath.fullPathName().asChar(),
+                mObj.apiTypeStr()).c_str());
+        return nullptr;
+    }
+
+    const MFnDependencyNode depNodeFn(mObj);
+    UsdMayaProxyShape* pShape =
+        static_cast<UsdMayaProxyShape*>(depNodeFn.userNode());
+    if (!pShape) {
+        MGlobal::displayError(
+            TfStringPrintf(
+                "Could not get UsdMayaProxyShape for node at dag path: %s",
+                dagPath.fullPathName().asChar()).c_str());
+        return nullptr;
+    }
+
+    return pShape;
+}
+
+/* static */
+void
+UsdMayaProxyShape::SetClosestPointDelegate(ClosestPointDelegate delegate)
+{
+    _sharedClosestPointDelegate = delegate;
+}
+
+/* virtual */
+void
+UsdMayaProxyShape::postConstructor()
+{
+    //
     // don't allow shading groups to be assigned
     //
     setRenderable(true);
 }
 
-
-
-MStatus UsdMayaProxyShape::compute(
-    const MPlug& plug,
-    MDataBlock& dataBlock)
+/* virtual */
+MStatus
+UsdMayaProxyShape::compute(const MPlug& plug, MDataBlock& dataBlock)
 {
-    MStatus retValue = MS::kUnknownParameter;
-
-    //
-    // make sure the state of the model is normal
-    //
-
-    if(plug == _psData.inStageDataCached) 
-    {
-        retValue = computeInStageDataCached(dataBlock);
-        CHECK_MSTATUS_AND_RETURN_IT(retValue);
-    }
-    else if(plug == _psData.outStageData) 
-    {
-        retValue = computeOutStageData(dataBlock);
-        CHECK_MSTATUS_AND_RETURN_IT(retValue);
-    }
-    else {
+    if (plug == _psData.excludePrimPaths ||
+            plug == _psData.time ||
+            plug == _psData.complexity ||
+            plug == _psData.tint ||
+            plug == _psData.tintColor ||
+            plug == _psData.displayGuides ||
+            plug == _psData.displayRenderGuides) {
+        // If the attribute that needs to be computed is one of these, then it
+        // does not affect the ouput stage data, but it *does* affect imaging
+        // the shape. In that case, we notify Maya that the shape needs to be
+        // redrawn and let it take care of computing the attribute. This covers
+        // the case where an attribute on the proxy shape may have an incoming
+        // connection from another node (e.g. "time1.outTime" being connected
+        // to the proxy shape's "time" attribute). In that case,
+        // setDependentsDirty() might not get called and only compute() might.
+        MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
         return MS::kUnknownParameter;
     }
+    else if (plug == _psData.inStageDataCached) {
+        return computeInStageDataCached(dataBlock);
+    }
+    else if (plug == _psData.outStageData) {
+        return computeOutStageData(dataBlock);
+    }
 
-    return MS::kSuccess;
+    return MS::kUnknownParameter;
 }
 
-
-MStatus UsdMayaProxyShape::computeInStageDataCached(MDataBlock& dataBlock)
+MStatus
+UsdMayaProxyShape::computeInStageDataCached(MDataBlock& dataBlock)
 {
     MStatus retValue = MS::kSuccess;
 
@@ -425,11 +501,11 @@ MStatus UsdMayaProxyShape::computeInStageDataCached(MDataBlock& dataBlock)
         SdfPath        primPath;
 
         // get the variantKey
-        MDataHandle variantKeyHandle = 
+        MDataHandle variantKeyHandle =
             dataBlock.inputValue(_psData.variantKey, &retValue);
         CHECK_MSTATUS_AND_RETURN_IT(retValue);
         const MString variantKey = variantKeyHandle.asString();
-        
+
         SdfLayerRefPtr sessionLayer;
         std::vector<std::pair<std::string, std::string> > variantSelections;
         std::string variantKeyString = variantKey.asChar();
@@ -454,13 +530,15 @@ MStatus UsdMayaProxyShape::computeInStageDataCached(MDataBlock& dataBlock)
         if (SdfLayerRefPtr rootLayer = SdfLayer::FindOrOpen(fileString)) {
             UsdStageCacheContext ctx(UsdMayaStageCache::Get());
             if (sessionLayer) {
-                usdStage = UsdStage::Open(rootLayer, 
+                usdStage = UsdStage::Open(rootLayer,
                         sessionLayer,
                         ArGetResolver().GetCurrentContext());
             } else {
                 usdStage = UsdStage::Open(rootLayer,
                         ArGetResolver().GetCurrentContext());
             }
+
+            usdStage->SetEditTarget(usdStage->GetSessionLayer());
         }
 
         if (usdStage) {
@@ -474,7 +552,7 @@ MStatus UsdMayaProxyShape::computeInStageDataCached(MDataBlock& dataBlock)
             &retValue);
         CHECK_MSTATUS_AND_RETURN_IT(retValue);
 
-        UsdMayaStageData* usdStageData = 
+        UsdMayaStageData* usdStageData =
             reinterpret_cast<UsdMayaStageData*>(
                 pluginDataFactory.data(&retValue));
         CHECK_MSTATUS_AND_RETURN_IT(retValue);
@@ -496,9 +574,8 @@ MStatus UsdMayaProxyShape::computeInStageDataCached(MDataBlock& dataBlock)
     return MS::kFailure;
 }
 
-
-
-MStatus UsdMayaProxyShape::computeOutStageData(MDataBlock& dataBlock)
+MStatus
+UsdMayaProxyShape::computeOutStageData(MDataBlock& dataBlock)
 {
     MStatus retValue = MS::kSuccess;
 
@@ -509,14 +586,14 @@ MStatus UsdMayaProxyShape::computeOutStageData(MDataBlock& dataBlock)
 
     UsdStageRefPtr usdStage;
 
-    UsdMayaStageData* inData = 
+    UsdMayaStageData* inData =
         dynamic_cast<UsdMayaStageData*>(inDataCachedHandle.asPluginData());
     if(inData)
     {
         usdStage = inData->stage;
     }
 
-    // If failed to get a valid stage, then 
+    // If failed to get a valid stage, then
     // Propagate inDataCached -> outData
     // and return
     if (!usdStage) {
@@ -544,7 +621,8 @@ MStatus UsdMayaProxyShape::computeOutStageData(MDataBlock& dataBlock)
         }
         else {
             MGlobal::displayWarning(
-                MPxNode::name() + ": Stage primPath '" + MString(inData->primPath.GetText()) +
+                MPxSurfaceShape::name() + ": Stage primPath '" +
+                MString(inData->primPath.GetText()) +
                 "'' not a parent of primPath '");
         }
     } else {
@@ -558,7 +636,7 @@ MStatus UsdMayaProxyShape::computeOutStageData(MDataBlock& dataBlock)
         &retValue);
     CHECK_MSTATUS_AND_RETURN_IT(retValue);
 
-    UsdMayaStageData* usdStageData = 
+    UsdMayaStageData* usdStageData =
         reinterpret_cast<UsdMayaStageData*>(
             pluginDataFactory.data(&retValue));
     CHECK_MSTATUS_AND_RETURN_IT(retValue);
@@ -579,18 +657,21 @@ MStatus UsdMayaProxyShape::computeOutStageData(MDataBlock& dataBlock)
     return MS::kSuccess;
 }
 
-
-bool UsdMayaProxyShape::isBounded() const
+/* virtual */
+bool
+UsdMayaProxyShape::isBounded() const
 {
     return !_useFastPlayback && isStageValid()
                 && TfGetEnvSetting(PIXMAYA_ENABLE_BOUNDING_BOX_MODE);
 }
 
-
-MBoundingBox UsdMayaProxyShape::boundingBox() const
+/* virtual */
+MBoundingBox
+UsdMayaProxyShape::boundingBox() const
 {
-    if (_useFastPlayback)
-        return MBoundingBox();    
+    if (_useFastPlayback) {
+        return MBoundingBox();
+    }
 
     MStatus status;
 
@@ -623,26 +704,26 @@ MBoundingBox UsdMayaProxyShape::boundingBox() const
         if (showGuides && showRenderGuides) {
             allBox = imageablePrim.ComputeUntransformedBound(
                 currTime,
-                UsdGeomTokens->default_, 
+                UsdGeomTokens->default_,
                 UsdGeomTokens->proxy,
-                UsdGeomTokens->guide, 
+                UsdGeomTokens->guide,
                 UsdGeomTokens->render);
         } else if (showGuides && !showRenderGuides) {
             allBox = imageablePrim.ComputeUntransformedBound(
                 currTime,
-                UsdGeomTokens->default_, 
+                UsdGeomTokens->default_,
                 UsdGeomTokens->proxy,
                 UsdGeomTokens->guide);
         } else if (!showGuides && showRenderGuides) {
             allBox = imageablePrim.ComputeUntransformedBound(
                 currTime,
-                UsdGeomTokens->default_, 
+                UsdGeomTokens->default_,
                 UsdGeomTokens->proxy,
                 UsdGeomTokens->render);
         } else {
             allBox = imageablePrim.ComputeUntransformedBound(
                 currTime,
-                UsdGeomTokens->default_, 
+                UsdGeomTokens->default_,
                 UsdGeomTokens->proxy);
         }
     } else {
@@ -654,18 +735,19 @@ MBoundingBox UsdMayaProxyShape::boundingBox() const
     GfRange3d boxRange = allBox.ComputeAlignedBox();
     // Convert to GfRange3d to MBoundingBox
     if ( !boxRange.IsEmpty() ) {
-        retval = MBoundingBox( MPoint( boxRange.GetMin()[0], 
-                                       boxRange.GetMin()[1], 
+        retval = MBoundingBox( MPoint( boxRange.GetMin()[0],
+                                       boxRange.GetMin()[1],
                                        boxRange.GetMin()[2]),
-                               MPoint( boxRange.GetMax()[0], 
-                                       boxRange.GetMax()[1], 
+                               MPoint( boxRange.GetMax()[0],
+                                       boxRange.GetMax()[1],
                                        boxRange.GetMax()[2]) );
     }
 
     return retval;
 }
 
-bool UsdMayaProxyShape::isStageValid() const 
+bool
+UsdMayaProxyShape::isStageValid() const
 {
     MStatus localStatus;
     UsdMayaProxyShape* nonConstThis = const_cast<UsdMayaProxyShape*>(this);
@@ -674,7 +756,7 @@ bool UsdMayaProxyShape::isStageValid() const
     MDataHandle outDataHandle = dataBlock.inputValue( _psData.outStageData, &localStatus);
     CHECK_MSTATUS_AND_RETURN(localStatus, false);
 
-    UsdMayaStageData* outData = 
+    UsdMayaStageData* outData =
         dynamic_cast<UsdMayaStageData*>(outDataHandle.asPluginData());
     if(!outData || !outData->stage) {
         return false;
@@ -683,45 +765,61 @@ bool UsdMayaProxyShape::isStageValid() const
     return true;
 }
 
-bool UsdMayaProxyShape::setInternalValueInContext(
-    const MPlug& plug,
-    const MDataHandle& dataHandle,
-    MDGContext& ctx)
+/* virtual */
+MStatus
+UsdMayaProxyShape::setDependentsDirty(const MPlug& plug, MPlugArray& plugArray)
 {
-    if (plug == _psData.fastPlayback)
-    {
+    // If/when the MPxDrawOverride for the proxy shape specifies
+    // isAlwaysDirty=false to improve performance, we must be sure to notify
+    // the Maya renderer that the geometry is dirty and needs to be redrawn
+    // when any plug on the proxy shape is dirtied.
+    MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
+    return MPxSurfaceShape::setDependentsDirty(plug, plugArray);
+}
+
+/* virtual */
+bool
+UsdMayaProxyShape::setInternalValueInContext(
+        const MPlug& plug,
+        const MDataHandle& dataHandle,
+        MDGContext& ctx)
+{
+    if (plug == _psData.fastPlayback) {
         _useFastPlayback = dataHandle.asBool();
-    	return true;
+        return true;
     }
-    
+
     return MPxSurfaceShape::setInternalValueInContext(plug, dataHandle, ctx);
 }
 
-bool UsdMayaProxyShape::getInternalValueInContext(
-    const MPlug& plug,
-    MDataHandle& dataHandle,
-    MDGContext& ctx)
+/* virtual */
+bool
+UsdMayaProxyShape::getInternalValueInContext(
+        const MPlug& plug,
+        MDataHandle& dataHandle,
+        MDGContext& ctx)
 {
-    if (plug == _psData.fastPlayback)
-    {
+    if (plug == _psData.fastPlayback) {
         dataHandle.set(_useFastPlayback);
         return true;
     }
-    
-    return MPxSurfaceShape::setInternalValueInContext(plug, dataHandle, ctx);
+
+    return MPxSurfaceShape::getInternalValueInContext(plug, dataHandle, ctx);
 }
 
-
-UsdPrim UsdMayaProxyShape::usdPrim() const 
+/* virtual */
+UsdPrim
+UsdMayaProxyShape::usdPrim() const
 {
     return _GetUsdPrim( const_cast<UsdMayaProxyShape*>(this)->forceCache() );
 }
 
-UsdPrim UsdMayaProxyShape::_GetUsdPrim( MDataBlock dataBlock ) const
+UsdPrim
+UsdMayaProxyShape::_GetUsdPrim(MDataBlock dataBlock) const
 {
     MStatus localStatus;
     UsdPrim usdPrim;
-    
+
     MDataHandle outDataHandle = dataBlock.inputValue( _psData.outStageData, &localStatus);
     CHECK_MSTATUS_AND_RETURN(localStatus, usdPrim);
 
@@ -741,12 +839,14 @@ UsdPrim UsdMayaProxyShape::_GetUsdPrim( MDataBlock dataBlock ) const
     return usdPrim;
 }
 
-int UsdMayaProxyShape::getComplexity() const
+int
+UsdMayaProxyShape::getComplexity() const
 {
     return _GetComplexity( const_cast<UsdMayaProxyShape*>(this)->forceCache() );
 }
 
-int UsdMayaProxyShape::_GetComplexity( MDataBlock dataBlock ) const
+int
+UsdMayaProxyShape::_GetComplexity(MDataBlock dataBlock) const
 {
     int complexity = 0;
     MStatus status;
@@ -756,12 +856,14 @@ int UsdMayaProxyShape::_GetComplexity( MDataBlock dataBlock ) const
     return complexity;
 }
 
-UsdTimeCode UsdMayaProxyShape::getTime() const
+UsdTimeCode
+UsdMayaProxyShape::getTime() const
 {
     return _GetTime( const_cast<UsdMayaProxyShape*>(this)->forceCache() );
 }
 
-UsdTimeCode UsdMayaProxyShape::_GetTime( MDataBlock dataBlock ) const
+UsdTimeCode
+UsdMayaProxyShape::_GetTime(MDataBlock dataBlock) const
 {
     MStatus status;
 
@@ -769,13 +871,13 @@ UsdTimeCode UsdMayaProxyShape::_GetTime( MDataBlock dataBlock ) const
 }
 
 SdfPathVector
-UsdMayaProxyShape::getExcludePrimPaths() const 
+UsdMayaProxyShape::getExcludePrimPaths() const
 {
     return _GetExcludePrimPaths( const_cast<UsdMayaProxyShape*>(this)->forceCache() );
 }
 
 SdfPathVector
-UsdMayaProxyShape::_GetExcludePrimPaths( MDataBlock dataBlock )  const
+UsdMayaProxyShape::_GetExcludePrimPaths(MDataBlock dataBlock) const
 {
     SdfPathVector ret;
 
@@ -798,14 +900,14 @@ UsdMayaProxyShape::displayGuides() const
 }
 
 bool
-UsdMayaProxyShape::_GetDisplayGuides( MDataBlock dataBlock ) const
+UsdMayaProxyShape::_GetDisplayGuides(MDataBlock dataBlock) const
 {
     MStatus status;
     bool retValue = true;
 
     MDataHandle displayGuidesHandle = dataBlock.inputValue( _psData.displayGuides, &status);
     CHECK_MSTATUS_AND_RETURN(status, true );
-    
+
     retValue = displayGuidesHandle.asBool();
 
     return retValue;
@@ -818,62 +920,62 @@ UsdMayaProxyShape::displayRenderGuides() const
 }
 
 bool
-UsdMayaProxyShape::_GetDisplayRenderGuides( MDataBlock dataBlock ) const
+UsdMayaProxyShape::_GetDisplayRenderGuides(MDataBlock dataBlock) const
 {
     MStatus status;
     bool retValue = true;
 
     MDataHandle displayRenderGuidesHandle = dataBlock.inputValue( _psData.displayRenderGuides, &status);
     CHECK_MSTATUS_AND_RETURN(status, true );
-    
+
     retValue = displayRenderGuidesHandle.asBool();
 
     return retValue;
 }
 
 bool
-UsdMayaProxyShape::getTint(GfVec4f *outTintColor) const
+UsdMayaProxyShape::getTint(GfVec4f* outTintColor) const
 {
     return _GetTint( const_cast<UsdMayaProxyShape*>(this)->forceCache(), outTintColor );
 }
 
 bool
-UsdMayaProxyShape::_GetTint( MDataBlock dataBlock, GfVec4f *outTintColor ) const
+UsdMayaProxyShape::_GetTint(MDataBlock dataBlock, GfVec4f* outTintColor) const
 {
     // We're hardcoding this for now -- could add more support later if need be
     static const float tintAlpha = 0.35f;
-    
+
     MStatus status;
     bool retValue = true;
 
     MDataHandle tintHandle = dataBlock.inputValue( _psData.tint, &status);
     CHECK_MSTATUS_AND_RETURN(status, false);
-    
+
     retValue = tintHandle.asBool();
 
     MDataHandle tintColorHandle = dataBlock.inputValue( _psData.tintColor, &status);
     CHECK_MSTATUS_AND_RETURN(status, false);
-    
+
     float3 &tintColor = tintColorHandle.asFloat3();
-    
+
     *outTintColor = { tintColor[0], tintColor[1], tintColor[2], tintAlpha };
-    
+
     return retValue;
 }
 
 bool
 UsdMayaProxyShape::GetAllRenderAttributes(
-    UsdPrim* usdPrimOut,
-    SdfPathVector* excludePrimPathsOut,
-    int* complexityOut,
-    UsdTimeCode* timeOut,
-    bool* guidesOut,
-    bool* renderGuidesOut,
-    bool* tint,
-    GfVec4f* tintColor )
+        UsdPrim* usdPrimOut,
+        SdfPathVector* excludePrimPathsOut,
+        int* complexityOut,
+        UsdTimeCode* timeOut,
+        bool* guidesOut,
+        bool* renderGuidesOut,
+        bool* tint,
+        GfVec4f* tintColor)
 {
     MDataBlock dataBlock = forceCache();
-    
+
     *usdPrimOut = _GetUsdPrim( dataBlock );
     if (!usdPrimOut->IsValid())
         return false;
@@ -888,19 +990,15 @@ UsdMayaProxyShape::GetAllRenderAttributes(
     return true;
 }
 
-
-
-UsdMayaProxyShape::UsdMayaProxyShape(
-        const PluginStaticData& psData)
-    : MPxSurfaceShape()
-    , _psData(psData)
-    , _useFastPlayback( false )
+UsdMayaProxyShape::UsdMayaProxyShape(const PluginStaticData& psData) :
+        MPxSurfaceShape(),
+        _psData(psData),
+        _useFastPlayback(false)
 {
-    //
-    // empty
-    //
+    TfRegistryManager::GetInstance().SubscribeTo<UsdMayaProxyShape>();
 }
 
+/* virtual */
 UsdMayaProxyShape::~UsdMayaProxyShape()
 {
     //
@@ -908,12 +1006,12 @@ UsdMayaProxyShape::~UsdMayaProxyShape()
     //
 }
 
-MSelectionMask  
+MSelectionMask
 UsdMayaProxyShape::getShapeSelectionMask() const
 {
     if (_CanBeSoftSelected()) {
         // to support soft selection (mode=Object), we need to add kSelectMeshes
-        // to our selection mask.  
+        // to our selection mask.
         MSelectionMask::SelectionType selType = MSelectionMask::kSelectMeshes;
         return MSelectionMask(selType);
     }
@@ -934,5 +1032,36 @@ UsdMayaProxyShape::_CanBeSoftSelected() const
 
 }
 
-PXR_NAMESPACE_CLOSE_SCOPE
+bool
+UsdMayaProxyShape::closestPoint(
+    const MPoint& raySource,
+    const MVector& rayDirection,
+    MPoint& theClosestPoint,
+    MVector& theClosestNormal,
+    bool findClosestOnMiss,
+    double tolerance)
+{
+    if (_sharedClosestPointDelegate) {
+        GfRay ray(
+            GfVec3d(raySource.x, raySource.y, raySource.z),
+            GfVec3d(rayDirection.x, rayDirection.y, rayDirection.z));
+        GfVec3d hitPoint;
+        if (_sharedClosestPointDelegate(*this, ray, &hitPoint)) {
+            theClosestPoint = MPoint(hitPoint[0], hitPoint[1], hitPoint[2]);
+            // XXX: Need support in Hydra for sidecar information like surface
+            // normals in order to implement this. Right now, we're just
+            // returning a sane default of the up-axis.
+            theClosestNormal = MGlobal::upAxis();
+            return true;
+        }
+    }
 
+    return false;
+}
+
+bool UsdMayaProxyShape::canMakeLive() const {
+    return (bool) _sharedClosestPointDelegate;
+}
+
+
+PXR_NAMESPACE_CLOSE_SCOPE

@@ -25,6 +25,7 @@
 //
 
 #define TF_MAX_ARITY 7
+#include "pxr/pxr.h"
 #include "pxr/base/arch/defines.h"
 #if defined(ARCH_OS_DARWIN)
 #include <dirent.h>
@@ -60,6 +61,7 @@
 #include <intrin.h>
 #include <io.h>
 #include <boost/preprocessor/variadic/size.hpp>
+#include <boost/vmd/is_empty.hpp>
 #include <boost/vmd/is_tuple.hpp>
 #endif
 #include <algorithm>
@@ -88,6 +90,7 @@
 #include <limits.h>
 #include <limits>
 #include <list>
+#include <locale>
 #include <map>
 #include <math.h>
 #include <memory>
@@ -117,10 +120,8 @@
 #include <boost/any.hpp>
 #include <boost/assign.hpp>
 #include <boost/assign/list_of.hpp>
-#include <boost/bind.hpp>
 #include <boost/call_traits.hpp>
 #include <boost/compressed_pair.hpp>
-#include <boost/date_time/posix_time/posix_time_types.hpp>
 #include <boost/function.hpp>
 #include <boost/functional/hash.hpp>
 #include <boost/functional/hash_fwd.hpp>
@@ -166,6 +167,7 @@
 #include <boost/preprocessor/tuple/elem.hpp>
 #include <boost/preprocessor/tuple/to_list.hpp>
 #include <boost/preprocessor/tuple/to_seq.hpp>
+#ifdef PXR_PYTHON_SUPPORT_ENABLED
 #include <boost/python.hpp>
 #include <boost/python/bases.hpp>
 #include <boost/python/borrowed.hpp>
@@ -223,7 +225,7 @@
 #undef tolower
 #undef toupper
 #endif
-#include <boost/scoped_array.hpp>
+#endif // PXR_PYTHON_SUPPORT_ENABLED
 #include <boost/scoped_ptr.hpp>
 #include <boost/shared_ptr.hpp>
 #include <boost/smart_ptr.hpp>
@@ -236,20 +238,20 @@
 #include <boost/type_traits/is_const.hpp>
 #include <boost/type_traits/is_convertible.hpp>
 #include <boost/type_traits/is_enum.hpp>
+#include <boost/type_traits/is_polymorphic.hpp>
 #include <boost/type_traits/is_same.hpp>
 #include <boost/type_traits/is_signed.hpp>
 #include <boost/type_traits/remove_reference.hpp>
-#include <boost/unordered_map.hpp>
-#include <boost/unordered_set.hpp>
 #include <boost/utility.hpp>
 #include <boost/utility/enable_if.hpp>
 #include <boost/utility/in_place_factory.hpp>
-#include <boost/weak_ptr.hpp>
+#include <boost/variant.hpp>
 #include <tbb/atomic.h>
 #include <tbb/concurrent_hash_map.h>
 #include <tbb/enumerable_thread_specific.h>
 #include <tbb/spin_mutex.h>
 #include <tbb/spin_rw_mutex.h>
+#ifdef PXR_PYTHON_SUPPORT_ENABLED
 #include <Python.h>
-#include <datetime.h>
 #include <frameobject.h>
+#endif // PXR_PYTHON_SUPPORT_ENABLED

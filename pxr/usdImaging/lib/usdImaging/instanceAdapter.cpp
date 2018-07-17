@@ -24,6 +24,7 @@
 #include "pxr/usdImaging/usdImaging/instanceAdapter.h"
 
 #include "pxr/usdImaging/usdImaging/delegate.h"
+#include "pxr/usdImaging/usdImaging/indexProxy.h"
 #include "pxr/usdImaging/usdImaging/instancerContext.h"
 #include "pxr/usdImaging/usdImaging/tokens.h"
 
@@ -76,6 +77,16 @@ UsdImagingInstanceAdapter::Populate(UsdPrim const& prim,
                             UsdImagingIndexProxy* index,
                             UsdImagingInstancerContext const* instancerContext)
 {
+    return _Populate(prim, index, instancerContext,
+                     SdfPath::AbsoluteRootPath());
+}
+
+SdfPath
+UsdImagingInstanceAdapter::_Populate(UsdPrim const& prim,
+                            UsdImagingIndexProxy* index,
+                            UsdImagingInstancerContext const* instancerContext,
+                            SdfPath const& parentProxyPath)
+{
     TF_DEBUG(USDIMAGING_INSTANCER).Msg(
         "[Populate NI] prim=%s\n", prim.GetPath().GetText());
 
@@ -95,55 +106,71 @@ UsdImagingInstanceAdapter::Populate(UsdPrim const& prim,
         return SdfPath();
     }
 
-    // This is a shared_ptr to the prim adapter for the current instancePrim.
-    const UsdImagingPrimAdapterSharedPtr instancedPrimAdapter = 
-        _GetPrimAdapter(prim, /* ignoreInstancing = */ true);
-
     // This is a shared_ptr to ourself. The InstancerContext requires the
     // adapter shared_ptr.
     UsdImagingPrimAdapterSharedPtr const& instancerAdapter = 
                         _GetSharedFromThis();
 
-    // If the current prim is drawable (instancedPrimAdapter is non-NULL), we
-    // ask it to give us the shader binding.  Otherwise, this
-    // (instancerAdapter) will provide the shader binding.
-    const SdfPath& instanceShaderBinding = (instancedPrimAdapter
-            ? instancedPrimAdapter : instancerAdapter)->GetShaderBinding(prim);
+    const SdfPath& instanceMaterialId = instancerAdapter->GetMaterialId(prim);
 
-    // Store away the path of the given instance prim to use as the
-    // instancer for Hydra if this is the first time we've seen this 
-    // (master, shader binding) pair.
-    const SdfPath& instancerPath = 
-        _masterToInstancerMap[masterPrim.GetPath()].insert(
-            std::make_pair(instanceShaderBinding, instancePath)).first->second;
+    // Construct the instance proxy path for "instancePath" to look up the
+    // draw mode for this instance.  If this is a nested instance (meaning
+    // "prim" is part of a master), parentProxyPath contains the instance
+    // proxy path for the master we're currently in, so we can stitch the full
+    // proxy path together.
+    SdfPathVector instancerChain;
+    instancerChain = { instancePath };
+    if (prim.IsInMaster()) {
+        instancerChain.push_back(parentProxyPath);
+    }
+    const TfToken& instanceDrawMode = GetModelDrawMode(_GetPrim(
+        _GetPrimPathFromInstancerChain(instancerChain)));
+
+    // Check if there's an instance in use as a hydra instancer for this master
+    // with the appropriate inherited attributes.
+    SdfPath instancerPath;
+    auto range = _masterToInstancerMap.equal_range(masterPrim.GetPath());
+    for (auto it = range.first; it != range.second; ++it) {
+        _InstancerData& instancerData = _instancerData[it->second];
+        // If material ID or draw mode differ, split the instance.
+        if (instancerData.materialId == instanceMaterialId &&
+            instancerData.drawMode == instanceDrawMode) {
+            instancerPath = it->second;
+            break;
+        }
+    }
+
+    // If we didn't find a suitable hydra instancer for this master,
+    // add a new one.
+    if (instancerPath.IsEmpty()) {
+        _masterToInstancerMap.insert(
+            std::make_pair(masterPrim.GetPath(), instancePath));
+        instancerPath = instancePath;
+    }
 
     _InstancerData& instancerData = _instancerData[instancerPath];
     instancerData.dirtyBits = HdChangeTracker::AllDirty;
 
+    // Compute the instancer proxy path (which might be different than the
+    // one computed above, if instancePath and instancerPath are different...)
+    instancerChain = { instancerPath };
+    if (_GetPrim(instancerPath).IsInMaster()) {
+        instancerChain.push_back(parentProxyPath);
+    }
+    SdfPath instancerProxyPath = _GetPrimPathFromInstancerChain(instancerChain);
+
     std::vector<UsdPrim> nestedInstances;
 
-    // If this instance prim itself is an imageable prim, we disable
-    // drawing and report the issue to the user. We can not instance
-    // a gprim (or instancer) directly since we can not derive any 
-    // scalability benefit from mesh-to-mesh instancing. 
-    //
-    // This won't happen when processing the instance's master, 
-    // since the master is never a drawable prim.
-    if (instancedPrimAdapter) {
-        instancePath = SdfPath();
-
-        TF_WARN("The gprim at path <%s> was directly instanced. "
-                "In order to instance this prim, put the prim under an Xform, "
-                "and instance the Xform parent.",
-                prim.GetPath().GetText());
-    } else if(instancerData.instancePaths.empty()) {
+    if(instancerData.instancePaths.empty()) {
         instancerData.masterPath = masterPrim.GetPath();
-        instancerData.shaderBindingPath = instanceShaderBinding;
+        instancerData.materialId = instanceMaterialId;
+        instancerData.drawMode = instanceDrawMode;
 
         // Add this instancer into the render index.
         UsdImagingInstancerContext ctx = { SdfPath(),
                                            TfToken(),
                                            SdfPath(),
+                                           TfToken(),
                                            instancerAdapter };
 
         // -------------------------------------------------------------- //
@@ -160,15 +187,11 @@ UsdImagingInstanceAdapter::Populate(UsdPrim const& prim,
         // -------------------------------------------------------------- //
         // Allocate the Rprims
         // -------------------------------------------------------------- //
-        int protoID = 0;
 
-        // The master is a typeless stub for instancing and should
-        // never itself be a renderable gprim, so we can skip it initially
-        // and just iterate over its children;
         UsdPrimRange range(masterPrim);
-        range.increment_begin();
-
+        int protoID = 0;
         int primCount = 0;
+
         for (auto iter = range.begin(); iter != range.end(); ++iter) {
             // If we encounter an instance in this master, save it aside
             // for a subsequent population pass since we'll need to populate
@@ -178,32 +201,75 @@ UsdImagingInstanceAdapter::Populate(UsdPrim const& prim,
                 continue;
             }
 
-            UsdImagingPrimAdapterSharedPtr const& adapter =
-                _GetPrimAdapter(*iter);
-            if (!adapter) {
+            // Stitch the current prim-in-master path to the instancer proxy
+            // path to get a full scene-scoped path that we can pass to
+            // _GetPrimAdapter (since _GetPrimAdapter needs the instance proxy
+            // path for inherited value resolution).
+            instancerChain = { iter->GetPath(), instancerProxyPath };
+            UsdPrim instanceProxyPrim =
+                _GetPrim(_GetPrimPathFromInstancerChain(instancerChain));
+            if (!instanceProxyPrim) {
+                continue;
+            }
+
+            UsdImagingPrimAdapterSharedPtr const& primAdapter =
+                _GetPrimAdapter(instanceProxyPrim, /*ignoreInstancing=*/ true);
+            if (!primAdapter || primAdapter->IsPopulatedIndirectly()) {
+                continue;
+            }
+
+            // If we're processing the master prim, it's normally not allowed
+            // to be imageable.  We can't instance a gprim (or instancer)
+            // directly since we don't derive any scalability benefit from
+            // mesh-to-mesh instancing.
+            //
+            // Exceptions (like cards mode) will be flagged by the function
+            // CanPopulateMaster() on their prim adapter.
+            //
+            // If the master prim has an adapter and shouldn't, generate a
+            // warning and continue.
+            if (iter->IsMaster() && primAdapter &&
+                !primAdapter->CanPopulateMaster()) {
+                TF_WARN("The gprim at path <%s> was directly instanced. "
+                        "In order to instance this prim, put the prim under an "
+                        "Xform, and instance the Xform parent.",
+                        iter->GetPath().GetText());
                 continue;
             }
                 
             // 
-            // Rprim allocation. 
+            // prototype allocation. 
             //
             const TfToken protoName(TfStringPrintf(
                 "proto_%s_id%d", iter->GetName().GetText(), protoID++));
-
             bool isLeafInstancer;
 
+            // Inherited attribute resolution...
+            SdfPath protoMaterialId = primAdapter->GetMaterialId(prim);
+            if (protoMaterialId.IsEmpty()) {
+                protoMaterialId = instanceMaterialId;
+            }
+            TfToken protoDrawMode = GetModelDrawMode(instanceProxyPrim);
+
             const SdfPath protoPath = 
-                _InsertProtoRprim(&iter, protoName,
-                                  instanceShaderBinding,
-                                  instancerPath, instancerAdapter, index,
+                _InsertProtoRprim(&iter, protoName, protoMaterialId,
+                                  protoDrawMode, instancerPath,
+                                  primAdapter, instancerAdapter, index,
                                   &isLeafInstancer);
                     
             // 
             // Update instancer data.
             //
             _ProtoRprim& rproto = instancerData.primMap[protoPath];
-            rproto.path = iter->GetPath();
-            rproto.adapter = adapter;
+            if (iter->IsMaster()) {
+                // If the prototype we're populating is the master prim,
+                // our prim handle should be to the instance, since the master
+                // prim doesn't have attributes.
+                rproto.path = instancerPath;
+            } else {
+                rproto.path = iter->GetPath();
+            }
+            rproto.adapter = primAdapter;
             rproto.protoGroup = grp;
             ++primCount;
 
@@ -212,13 +278,23 @@ UsdImagingInstanceAdapter::Populate(UsdPrim const& prim,
             }
 
             TF_DEBUG(USDIMAGING_INSTANCER).Msg(
-                "[Add Instance NI] <%s>  %s (%s), adapter = %p\n",
+                "[Add Instance NI] <%s>  %s (%s), adapter = %s\n",
                 instancerPath.GetText(), protoPath.GetText(),
                 iter->GetName().GetText(),
-                adapter.get());
+                primAdapter ?
+                    TfType::GetCanonicalTypeName(typeid(*primAdapter)).c_str() :
+                    "none");
         }
         if (primCount > 0) {
-            index->InsertInstancer(instancerPath, &ctx); 
+            index->InsertInstancer(instancerPath,
+                                   /*parentPath=*/ctx.instancerId,
+                                   _GetPrim(instancerPath),
+                                   ctx.instancerAdapter);
+
+            // Ensure that the instance transforms are computed on the first
+            // call to UpdateForTime.
+            index->MarkInstancerDirty(instancerPath,
+                HdChangeTracker::DirtyPrimvar);
         } else if (nestedInstances.empty()) {
             // if this instance path ends up to have no prims in subtree
             // and not an instance itself , we don't need to track this path
@@ -250,7 +326,9 @@ UsdImagingInstanceAdapter::Populate(UsdPrim const& prim,
 
             // Make sure we add a dependency for this instance on this adapter,
             // so that changes to the instance are handled properly.
-            index->AddDependency(instancePath, instancerAdapter);
+            index->AddPrimInfo(instancePath,
+                               _GetPrim(instancePath),
+                               instancerAdapter);
 
             // If we're adding an instance to an instancer that had already
             // been drawn, we need to ensure it and its rprims are marked
@@ -272,7 +350,8 @@ UsdImagingInstanceAdapter::Populate(UsdPrim const& prim,
     // so now it's safe to re-enter this function to populate the
     // nested instances we discovered.
     TF_FOR_ALL(nestedInstanceIt, nestedInstances) {
-        Populate(*nestedInstanceIt, index, instancerContext);
+        _Populate(*nestedInstanceIt, index, instancerContext,
+                  instancerProxyPath);
     }
 
     return instancerPath;
@@ -282,68 +361,35 @@ SdfPath
 UsdImagingInstanceAdapter::_InsertProtoRprim(
     UsdPrimRange::iterator *it,
     TfToken const& protoName,
-    SdfPath instanceShaderBinding,
+    SdfPath materialId,
+    TfToken drawMode,
     SdfPath instancerPath,
+    UsdImagingPrimAdapterSharedPtr const& primAdapter,
     UsdImagingPrimAdapterSharedPtr const& instancerAdapter,
     UsdImagingIndexProxy* index,
     bool *isLeafInstancer)
 {
-    UsdPrim const& prim = **it;
-    SdfPath protoPath;
-
-    *isLeafInstancer = true;
-
-    // Talk to the prim's native adapter to do population and ShaderBinding
-    // queries on our behalf.
-    UsdImagingPrimAdapterSharedPtr const& adapter = 
-                        _GetPrimAdapter(prim, /* ignoreInstancing = */ true);
-
-    // If this prim is an instance, we can use the given instanceShaderBinding
-    // Otherwise, this is a prim in a master; we need to see if there's any
-    // applicable bindings authored and only fallback to the instance binding
-    // if there isn't one.
-    auto getShaderForPrim = [adapter, instanceShaderBinding](UsdPrim const& prim) {
-        if (prim.IsInstance()) { 
-            return instanceShaderBinding;
-        }
-        SdfPath shaderId = adapter->GetShaderBinding(prim);
-        return shaderId.IsEmpty() ? instanceShaderBinding : shaderId;
-    };
-
-    // If this prim is an instance, we don't want Hydra to treat its rprim
-    // as a prototype to be shared with all other instances. Only prims in
-    // masters should be treated as prototypes for the instancer.
-    auto getInstancerPathForPrim = [instancerPath](UsdPrim const& prim) {
-        return prim.IsInstance() ? SdfPath() : instancerPath;
-    };
-
-    // Here we use the instancerAdapter so when AddDependency is called, the
-    // the InstanceAdapter will be registered to handle change processing and
-    // data access.
-    UsdImagingInstancerContext ctx = { instancerPath,
-                                       protoName,
-                                       getShaderForPrim(prim),
-                                       instancerAdapter };
-
-    // There is no need to call AddDependency, as it will be picked up via the
-    // instancer context.
-    SdfPath populatedPath = adapter->Populate(prim, index, &ctx);
-
-    if (adapter->ShouldCullChildren(prim)) {
-        // If the prim's adapter wants to prune children, it's likely some sort
-        // of multiplexing adapter, in which case we wont attempt to relocate it
-        // under the instancer (this happens in the case of recursive
-        // instancers).
-        it->PruneChildren();
-
-        // we use populatedPath instead of prim.GetPath() so that prim adapter
-        // can clone the prim if necessary (see PointInstancer)
-        protoPath = populatedPath;
-        *isLeafInstancer = false;
-    } else {
-        protoPath = instancerPath.AppendProperty(protoName);
+    UsdPrim prim = **it;
+    if ((*it)->IsMaster()) {
+        // If the prototype we're populating is the master prim,
+        // our prim handle should be to the instance, since the master
+        // prim doesn't have attributes.
+        prim = _GetPrim(instancerPath);
     }
 
+    UsdImagingInstancerContext ctx = { instancerPath,
+                                       protoName,
+                                       materialId,
+                                       drawMode,
+                                       instancerAdapter };
+
+    SdfPath protoPath = primAdapter->Populate(prim, index, &ctx);
+
+    if (primAdapter->ShouldCullChildren(prim)) {
+        it->PruneChildren();
+    }
+
+    *isLeafInstancer = !(primAdapter->IsInstancerAdapter());
     return protoPath;
 }
 
@@ -353,31 +399,26 @@ UsdImagingInstanceAdapter::_IsChildPrim(UsdPrim const& prim,
 {
     // Child paths are the instancer path with a property appended. For leaf
     // gprims (mesh, points, etc) we use child paths, but for adapters which
-    // prune childern (and therefor likely want to manage their namespace), we
+    // prune children (and therefore likely want to manage their namespace), we
     // use the prim path of the original prim, thus IsChildPath fails.
+    //
+    // We can distinguish between child prims (e.g. children in primMap, from
+    // recursive populate calls) and instances (in _instanceToInstancerMap
+    // and the primInfo table) by checking whether the prim shows up in
+    // _instanceToInstancerMap.  If it's not there, it must be a child
+    // prim which we did not relocate during population.
     return IsChildPath(cachePath) 
-        // When we have a non-child path that is not in the instancer data, it
-        // must be an instanced prim which we did not relocate during
-        // population.
-        //
         // We could make this less ad-hoc by storing a list of valid non-child
         // paths, in exchange for the overhead of maintaining that list.
-        || nullptr == TfMapLookupPtr(_instancerData, prim.GetPath());
+        || nullptr == TfMapLookupPtr(_instanceToInstancerMap, prim.GetPath());
 }
 
 void 
 UsdImagingInstanceAdapter::TrackVariabilityPrep(UsdPrim const& prim,
                                       SdfPath const& cachePath,
-                                      HdDirtyBits requestedBits,
                                       UsdImagingInstancerContext const* 
                                           instancerContext)
 {
-    UsdImagingValueCache* valueCache = _GetValueCache();
-    // We will always cache purpose.
-    // XXX: this is an indicator of a problem, we should have some flag to
-    // drive purpose, just as all other values.
-    valueCache->GetPurpose(cachePath);
-
     if (_IsChildPrim(prim, cachePath)) {
         UsdImagingInstancerContext instancerContext;
         _ProtoRprim const& rproto = _GetProtoRprim(prim.GetPath(),
@@ -386,32 +427,18 @@ UsdImagingInstanceAdapter::TrackVariabilityPrep(UsdPrim const& prim,
         if (!TF_VERIFY(rproto.adapter, "%s", cachePath.GetText())) {
             return;
         }
-
-        // We must ensure InstanceIndices gets populated with some value;
-        // perhaps we should reconsider the way the instancing code works in
-        // Hydra.
-        if (requestedBits & HdChangeTracker::DirtyInstanceIndex)
-            valueCache->GetInstanceIndices(cachePath);
-
         rproto.adapter->TrackVariabilityPrep(
-            _GetPrim(rproto.path), cachePath, requestedBits, 
+            _GetPrim(rproto.path), cachePath, 
             &instancerContext);
     } 
-    else {
-        if (requestedBits & HdChangeTracker::DirtyPrimVar) {
-            valueCache->GetPrimvar(cachePath, HdTokens->instanceTransform);
-            valueCache->GetPrimvars(cachePath);
-        }
-    }
 }
 
 void 
 UsdImagingInstanceAdapter::TrackVariability(UsdPrim const& prim,
                                   SdfPath const& cachePath,
-                                  HdDirtyBits requestedBits,
-                                  HdDirtyBits* dirtyBits,
+                                  HdDirtyBits* timeVaryingBits,
                                   UsdImagingInstancerContext const* 
-                                      instancerContext)
+                                      instancerContext) const
 {
     UsdImagingValueCache* valueCache = _GetValueCache();
 
@@ -438,20 +465,18 @@ UsdImagingInstanceAdapter::TrackVariability(UsdPrim const& prim,
 
         // If requested, we will always mark indices dirty and update them
         // lazily.
-        if (requestedBits & HdChangeTracker::DirtyInstanceIndex) {
-            *dirtyBits |= HdChangeTracker::DirtyInstanceIndex;
-            // Initializing to an empty value is OK here because either this
-            // prototype will be invisible or it will be visible and the indices
-            // will be updated.
-            VtIntArray a;
-            valueCache->GetInstanceIndices(cachePath) = a;
-        }
+        *timeVaryingBits |= HdChangeTracker::DirtyInstanceIndex;
+        // Initializing to an empty value is OK here because either this
+        // prototype will be invisible or it will be visible and the indices
+        // will be updated.
+        VtIntArray a;
+        valueCache->GetInstanceIndices(cachePath) = a;
         
         UsdPrim protoPrim = _GetPrim(rproto.path);
         rproto.adapter->TrackVariability(
-            protoPrim, cachePath, requestedBits, &rproto.variabilityBits,
+            protoPrim, cachePath, &rproto.variabilityBits,
             &instancerContext);
-        *dirtyBits |= rproto.variabilityBits;
+        *timeVaryingBits |= rproto.variabilityBits;
 
         if (!(rproto.variabilityBits & HdChangeTracker::DirtyVisibility)) {
             // Pre-cache visibility, because we now know that it is static for
@@ -462,39 +487,24 @@ UsdImagingInstanceAdapter::TrackVariability(UsdPrim const& prim,
         // If any of the instances varies over time, we should flag the 
         // DirtyInstancer bits on the Rprim on every frame, to be sure the 
         // instancer data associated with the Rprim gets updated.
-        int instancerBits = _UpdateDirtyBits(prim.GetStage()->
-                                 GetPrimAtPath(instancerContext.instancerId));
-        *dirtyBits |=  (instancerBits & HdChangeTracker::DirtyInstancer);
+        int instancerBits = _UpdateDirtyBits(
+                _GetPrim(instancerContext.instancerId));
+        *timeVaryingBits |=  (instancerBits & HdChangeTracker::DirtyInstancer);
+        *timeVaryingBits |= HdChangeTracker::DirtyVisibility;
 
-        if (requestedBits & HdChangeTracker::DirtyVisibility) {
-            *dirtyBits |= HdChangeTracker::DirtyVisibility;
-        }
-
-    } else {
+    } else if (TfMapLookupPtr(_instancerData, prim.GetPath()) != nullptr) {
         // In this case, prim is an instance master. Master prims provide
         // no data of their own, so we fall back to the default purpose.
         valueCache->GetPurpose(cachePath) = UsdGeomTokens->default_;
 
-        if (requestedBits & HdChangeTracker::DirtyPrimVar) {
-            int instancerBits = _UpdateDirtyBits(prim);
+        int instancerBits = _UpdateDirtyBits(prim);
 
-            // If any of the instance transforms vary over time, the
-            // instancer will have the DirtyInstancer bit set. Translate
-            // that to DirtyPrimVar so that Hd will note that the 
-            // instance transform primvar is varying over time.
-            if (instancerBits & HdChangeTracker::DirtyInstancer) {
-                *dirtyBits |= HdChangeTracker::DirtyPrimVar;
-            }
-
-            VtMatrix4dArray instanceXforms;
-            if (_ComputeInstanceTransform(prim, &instanceXforms, time)) {
-                valueCache->GetPrimvar(
-                    cachePath, HdTokens->instanceTransform) = instanceXforms;
-                UsdImagingValueCache::PrimvarInfo primvar;
-                primvar.name = HdTokens->instanceTransform;
-                primvar.interpolation = _tokens->instance;
-                _MergePrimvar(primvar, &valueCache->GetPrimvars(cachePath));
-            }
+        // If any of the instance transforms vary over time, the
+        // instancer will have the DirtyInstancer bit set. Translate
+        // that to DirtyPrimvar so that Hd will note that the
+        // instance transform primvar is varying over time.
+        if (instancerBits & HdChangeTracker::DirtyInstancer) {
+            *timeVaryingBits |= HdChangeTracker::DirtyPrimvar;
         }
     }
 }
@@ -503,7 +513,7 @@ template <typename Functor>
 void
 UsdImagingInstanceAdapter::_RunForAllInstancesToDraw(
     UsdPrim const& instancer,
-    Functor* fn)
+    Functor* fn) const
 {
     const _InstancerData* instancerData = 
         TfMapLookupPtr(_instancerData, instancer.GetPath());
@@ -526,7 +536,7 @@ UsdImagingInstanceAdapter::_RunForAllInstancesToDrawImpl(
     UsdPrim const& instancer, 
     std::vector<UsdPrim> *instanceContext,
     size_t* instanceIdx,
-    Functor* fn)
+    Functor* fn) const
 {
     // NOTE: This logic is almost exactly similar to the logic in
     // _CountAllInstancesToDrawImpl. If you're updating this function, you
@@ -562,20 +572,17 @@ UsdImagingInstanceAdapter::_RunForAllInstancesToDrawImpl(
             }
 
             // Iterate over all instancers corresponding to different
-            // shader variations of this master prim, since each instancer
+            // variations of this master prim, since each instancer
             // will cause another copy of this master prim to be drawn.
-            const _ShaderBindingToInstancerMap* bindingToInstancerMap =
-                TfMapLookupPtr(_masterToInstancerMap, parentMaster.GetPath());
-            if (TF_VERIFY(bindingToInstancerMap)) {
-                for (const auto& i : *bindingToInstancerMap) {
-                    const UsdPrim instancerForShader = _GetPrim(i.second);
-                    if (TF_VERIFY(instancerForShader)) {
-                        continueIteration = _RunForAllInstancesToDrawImpl(
-                            instancerForShader, instanceContext, instanceIdx, 
-                            fn);
-                        if (!continueIteration) {
-                            break;
-                        }
+            auto range =
+                _masterToInstancerMap.equal_range(parentMaster.GetPath());
+            for (auto it = range.first; it != range.second; ++it) {
+                const UsdPrim instancer = _GetPrim(it->second);
+                if (TF_VERIFY(instancer)) {
+                    continueIteration = _RunForAllInstancesToDrawImpl(
+                        instancer, instanceContext, instanceIdx, fn);
+                    if (!continueIteration) {
+                        break;
                     }
                 }
             }
@@ -593,7 +600,7 @@ UsdImagingInstanceAdapter::_RunForAllInstancesToDrawImpl(
 
 size_t 
 UsdImagingInstanceAdapter::_CountAllInstancesToDraw(
-    UsdPrim const& instancer)
+    UsdPrim const& instancer) const
 {
     // Memoized table of instancer path to the total number of 
     // times that instancer will be drawn.
@@ -604,7 +611,7 @@ UsdImagingInstanceAdapter::_CountAllInstancesToDraw(
 size_t 
 UsdImagingInstanceAdapter::_CountAllInstancesToDrawImpl(
     UsdPrim const& instancer,
-    _InstancerDrawCounts* drawCounts)
+    _InstancerDrawCounts* drawCounts) const
 {
     // NOTE: This logic is almost exactly similar to the logic in
     // _RunForAllInstancesToDrawImpl. If you're updating this function, you
@@ -648,15 +655,13 @@ UsdImagingInstanceAdapter::_CountAllInstancesToDrawImpl(
                 parentMaster = parentMaster.GetParent();
             }
 
-            const _ShaderBindingToInstancerMap* bindingToInstancerMap =
-                TfMapLookupPtr(_masterToInstancerMap, parentMaster.GetPath());
-            if (TF_VERIFY(bindingToInstancerMap)) {
-                for (const auto& i : *bindingToInstancerMap) {
-                    const UsdPrim instancerForShader = _GetPrim(i.second);
-                    if (TF_VERIFY(instancerForShader)) {
-                        drawCount += _CountAllInstancesToDrawImpl(
-                            instancerForShader, drawCounts);
-                    }
+            auto range =
+                _masterToInstancerMap.equal_range(parentMaster.GetPath());
+            for (auto it = range.first; it != range.second; ++it) {
+                const UsdPrim instancer = _GetPrim(it->second);
+                if (TF_VERIFY(instancer)) {
+                    drawCount += _CountAllInstancesToDrawImpl(
+                        instancer, drawCounts);
                 }
             }
         }
@@ -669,7 +674,7 @@ UsdImagingInstanceAdapter::_CountAllInstancesToDrawImpl(
 struct UsdImagingInstanceAdapter::_ComputeInstanceTransformFn
 {
     _ComputeInstanceTransformFn(
-        UsdImagingInstanceAdapter* adapter_, const UsdTimeCode& time_) 
+        const UsdImagingInstanceAdapter* adapter_, const UsdTimeCode& time_) 
         : adapter(adapter_), time(time_) 
     { }
 
@@ -700,16 +705,16 @@ struct UsdImagingInstanceAdapter::_ComputeInstanceTransformFn
         return true;
     }
 
-    UsdImagingInstanceAdapter* adapter;
+    const UsdImagingInstanceAdapter* adapter;
     UsdTimeCode time;
     VtMatrix4dArray result;
 };
 
 bool
-UsdImagingInstanceAdapter::_ComputeInstanceTransform(
+UsdImagingInstanceAdapter::_ComputeInstanceTransforms(
     UsdPrim const& instancer,
     VtMatrix4dArray* outTransforms,
-    UsdTimeCode time)
+    UsdTimeCode time) const
 {
     _ComputeInstanceTransformFn computeXform(this, time);
     _RunForAllInstancesToDraw(instancer, &computeXform);
@@ -719,7 +724,7 @@ UsdImagingInstanceAdapter::_ComputeInstanceTransform(
 
 struct UsdImagingInstanceAdapter::_IsInstanceTransformVaryingFn
 {
-    _IsInstanceTransformVaryingFn(UsdImagingInstanceAdapter* adapter_)
+    _IsInstanceTransformVaryingFn(const UsdImagingInstanceAdapter* adapter_)
         : adapter(adapter_), result(false) { }
 
     void Initialize(size_t numInstances)
@@ -728,13 +733,8 @@ struct UsdImagingInstanceAdapter::_IsInstanceTransformVaryingFn
     bool operator()(
         const std::vector<UsdPrim>& instanceContext, size_t instanceIdx)
     {
-        HdDirtyBits dirtyBits;
         TF_FOR_ALL(primIt, instanceContext) {
-            if (adapter->_IsTransformVarying(
-                    *primIt, 
-                    HdChangeTracker::DirtyTransform,
-                    HdTokens->instancer,
-                    &dirtyBits)) {
+            if (_GetIsTransformVarying(*primIt)) {
                 result = true;
                 break;
             }
@@ -742,12 +742,37 @@ struct UsdImagingInstanceAdapter::_IsInstanceTransformVaryingFn
         return !result;
     }
 
-    UsdImagingInstanceAdapter* adapter;
+    bool _GetIsTransformVarying(const UsdPrim& prim) {
+        bool transformVarying;
+        HdDirtyBits dirtyBits;
+
+        // Cache any _IsTransformVarying calls.
+        auto cacheIt = cache.find(prim);
+        if (cacheIt == cache.end()) {
+            transformVarying = adapter->_IsTransformVarying(
+                prim,
+                HdChangeTracker::DirtyTransform,
+                HdTokens->instancer,
+                &dirtyBits);
+            cache[prim] = transformVarying;
+        } else {
+            transformVarying = cacheIt->second;
+        }
+
+        return transformVarying;
+    }
+
+    const UsdImagingInstanceAdapter* adapter;
     bool result;
+
+    // We keep a simple cache directly on _IsInstanceTransformVaryingFn because
+    // we only need it during initialization and resyncs (not in UpdateForTime).
+    boost::unordered_map<UsdPrim, bool, boost::hash<UsdPrim>> cache;
 };
 
 bool 
 UsdImagingInstanceAdapter::_IsInstanceTransformVarying(UsdPrim const& instancer)
+    const 
 {
     _IsInstanceTransformVaryingFn isTransformVarying(this);
     _RunForAllInstancesToDraw(instancer, &isTransformVarying);
@@ -762,8 +787,6 @@ UsdImagingInstanceAdapter::UpdateForTimePrep(UsdPrim const& prim,
                                    UsdImagingInstancerContext const* 
                                        instancerContext)
 {
-    UsdImagingValueCache* valueCache = _GetValueCache();
-
     if (_IsChildPrim(prim, cachePath)) {
         // Note that the proto group in this rproto has not yet been
         // updated with new instances at this point.
@@ -774,25 +797,9 @@ UsdImagingInstanceAdapter::UpdateForTimePrep(UsdPrim const& prim,
         if (!TF_VERIFY(rproto.adapter, "%s", cachePath.GetText())) {
             return;
         }
-
-        // All Update code paths will update visibility.
-        valueCache->GetVisible(cachePath);
-
-        if (requestedBits & HdChangeTracker::DirtyInstanceIndex)
-            valueCache->GetInstanceIndices(cachePath);
-        if (requestedBits & HdChangeTracker::DirtyTransform)
-            valueCache->GetInstancerTransform(cachePath);
-        if (requestedBits & HdChangeTracker::DirtySurfaceShader)
-            valueCache->GetSurfaceShader(cachePath);
-
         rproto.adapter->UpdateForTimePrep(
             _GetPrim(rproto.path), cachePath, time, requestedBits,
             &instancerContext);
-    } else {
-        if (requestedBits & HdChangeTracker::DirtyPrimVar) {
-            valueCache->GetPrimvar(cachePath, HdTokens->instanceTransform);
-            valueCache->GetPrimvars(cachePath);
-        }
     }
 }
 
@@ -801,8 +808,7 @@ UsdImagingInstanceAdapter::UpdateForTime(UsdPrim const& prim,
                                SdfPath const& cachePath, 
                                UsdTimeCode time,
                                HdDirtyBits requestedBits,
-                               HdDirtyBits* resultBits,
-                               UsdImagingInstancerContext const*)
+                               UsdImagingInstancerContext const*) const
 {
     UsdImagingValueCache* valueCache = _GetValueCache();
 
@@ -819,9 +825,6 @@ UsdImagingInstanceAdapter::UpdateForTime(UsdPrim const& prim,
 
         _UpdateInstanceMap(_GetPrim(instancerContext.instancerId), time);
 
-        // Uphold the original precondition: result == requested bits.
-        *resultBits = requestedBits;
-
         if (requestedBits & HdChangeTracker::DirtyInstanceIndex) {
             valueCache->GetInstanceIndices(cachePath) = 
                                           rproto.protoGroup->indices;
@@ -836,68 +839,64 @@ UsdImagingInstanceAdapter::UpdateForTime(UsdPrim const& prim,
 
         // Allow the prototype's adapter to update, if there's anything left
         // to do.
+        UsdPrim protoPrim = _GetPrim(rproto.path);
+
         if (protoReqBits != HdChangeTracker::Clean) {
-            rproto.adapter->UpdateForTime(
-                _GetPrim(rproto.path), cachePath, 
-                rproto.protoGroup->time, protoReqBits, resultBits,
-                &instancerContext);
+            rproto.adapter->UpdateForTime(protoPrim, cachePath, 
+                rproto.protoGroup->time, protoReqBits, &instancerContext);
         }
 
         // Make sure we always query and return visibility. This is done
         // after the adapter update to ensure we get our specialized view of
         // visibility.
-        requestedBits |= HdChangeTracker::DirtyVisibility;
-        *resultBits |= HdChangeTracker::DirtyVisibility;
 
         // Apply the instancer visibility at the current time to the
         // instance. Notice that the instance will also pickup the instancer
         // visibility at the time offset.
-        if (requestedBits & HdChangeTracker::DirtyVisibility) {
-            bool& vis = valueCache->GetVisible(cachePath);
-            bool protoHasFixedVis = !(rproto.variabilityBits 
-                                      & HdChangeTracker::DirtyVisibility);
-            if (protoHasFixedVis) { 
-                // The proto prim has fixed visibility (it does not vary over time), 
-                // we can use the pre-cached visibility.
-                vis = rproto.visible;
-            } 
-            else {
-                // The instancer is visible and the prototype has varying
-                // visibility, we must compute visibility.
-                vis = GetVisible(_GetPrim(instancerContext.instancerId), time);
-            }
+        bool& vis = valueCache->GetVisible(cachePath);
+        bool protoHasFixedVis = !(rproto.variabilityBits
+                                  & HdChangeTracker::DirtyVisibility);
+        if (protoHasFixedVis) {
+            // The proto prim has fixed visibility (it does not vary over time),
+            // we can use the pre-cached visibility.
+            vis = rproto.visible;
+        }
+        else {
+            // The instancer is visible and the prototype has varying
+            // visibility, we must compute visibility.
+            vis = GetVisible(_GetPrim(instancerContext.instancerId), time);
         }
 
-        if (*resultBits & HdChangeTracker::DirtyTransform) {
-            // Inverse out the root transform to avoid a double transformation
-            // when applying the instancer transform.
+        if (requestedBits & HdChangeTracker::DirtyTransform) {
             GfMatrix4d& childXf = _GetValueCache()->GetTransform(cachePath);
-            childXf = childXf * GetRootTransform().GetInverse();
-        }
-
-        if (requestedBits & HdChangeTracker::DirtySurfaceShader) {
-            // First try to get the shader binded in the instance, if no shader
-            // is bound then access the shader bound to the master prim.
-            SdfPath p = GetShaderBinding(prim);
-            if (p.IsEmpty()) {
-                p = GetShaderBinding(_GetPrim(rproto.path));
+            if (protoPrim.IsInstance()) {
+                // If the prototype we're processing is a master, protoPrim is
+                // a pointer to the instance for attribute lookup; but the
+                // instance transform for that instance is already part of the
+                // instanceTransform primvar.  Masters don't have any transform,
+                // aside from the root transform, so we can set the rprim
+                // transform to identity.
+                childXf.SetIdentity();
+            } else {
+                // Inverse out the root transform to avoid a double
+                // transformation when applying the instancer transform.
+                childXf = childXf * GetRootTransform().GetInverse();
             }
-            valueCache->GetSurfaceShader(cachePath) = p;
         }
 
-    } else {
+    } else if (TfMapLookupPtr(_instancerData, prim.GetPath()) != nullptr) {
         // For the instancer itself, we only send the instance transforms
-        // back as primvars, which falls into the DirtyPrimVar bucket
+        // back as primvars, which falls into the DirtyPrimvar bucket
         // currently.
-        if (requestedBits & HdChangeTracker::DirtyPrimVar) {
+        if (requestedBits & HdChangeTracker::DirtyPrimvar) {
             VtMatrix4dArray instanceXforms;
-            if (_ComputeInstanceTransform(prim, &instanceXforms, time)) {
+            if (_ComputeInstanceTransforms(prim, &instanceXforms, time)) {
                 valueCache->GetPrimvar(
                     cachePath, HdTokens->instanceTransform) = instanceXforms;
-                UsdImagingValueCache::PrimvarInfo primvar;
-                primvar.name = HdTokens->instanceTransform;
-                primvar.interpolation = _tokens->instance;
-                _MergePrimvar(primvar, &valueCache->GetPrimvars(cachePath));
+                _MergePrimvar(
+                    &valueCache->GetPrimvars(cachePath),
+                    HdTokens->instanceTransform,
+                    HdInterpolationInstance);
             }
         }
 
@@ -909,7 +908,7 @@ UsdImagingInstanceAdapter::UpdateForTime(UsdPrim const& prim,
     }
 }
 
-int
+HdDirtyBits
 UsdImagingInstanceAdapter::ProcessPropertyChange(UsdPrim const& prim,
                                       SdfPath const& cachePath, 
                                       TfToken const& propertyName)
@@ -919,14 +918,15 @@ UsdImagingInstanceAdapter::ProcessPropertyChange(UsdPrim const& prim,
 }
 
 void
-UsdImagingInstanceAdapter::ProcessPrimResync(SdfPath const& usdPath,
-                                             UsdImagingIndexProxy* index)
+UsdImagingInstanceAdapter::_ResyncPath(SdfPath const& usdPath,
+                                       UsdImagingIndexProxy* index,
+                                       bool reload)
 {
     // If prim data exists at this path, we'll drop it now.
     _InstancerDataMap::iterator instIt = _instancerData.find(usdPath);
     if (instIt != _instancerData.end()) {
         // Nuke the entire instancer.
-        _ReloadInstancer(usdPath, index);
+        _ResyncInstancer(usdPath, index, reload);
         return;
     }
 
@@ -980,9 +980,146 @@ UsdImagingInstanceAdapter::ProcessPrimResync(SdfPath const& usdPath,
     }
 
     TF_FOR_ALL(pathIt, instancersToUnload) {
-        _ReloadInstancer(*pathIt, index);
+        _ResyncInstancer(*pathIt, index, reload);
     }
 }
+
+void UsdImagingInstanceAdapter::ProcessPrimResync(SdfPath const& primPath,
+                                                  UsdImagingIndexProxy* index)
+{
+    _ResyncPath(primPath, index, /*reload=*/true);
+}
+
+void UsdImagingInstanceAdapter::ProcessPrimRemoval(SdfPath const& primPath,
+                                                   UsdImagingIndexProxy* index)
+{
+    _ResyncPath(primPath, index, /*reload=*/false);
+}
+
+void
+UsdImagingInstanceAdapter::MarkDirty(UsdPrim const& prim,
+                                     SdfPath const& cachePath,
+                                     HdDirtyBits dirty,
+                                     UsdImagingIndexProxy* index)
+{
+    if (_IsChildPrim(prim, cachePath)) {
+        UsdImagingInstancerContext instancerContext;
+        _ProtoRprim const& rproto = _GetProtoRprim(prim.GetPath(),
+                                                    cachePath,
+                                                    &instancerContext);
+        if (TF_VERIFY(rproto.adapter, "%s", cachePath.GetText())) {
+            rproto.adapter->MarkDirty(prim, cachePath, dirty, index);
+        }
+    } else if (TfMapLookupPtr(_instancerData, prim.GetPath()) != nullptr) {
+        index->MarkInstancerDirty(cachePath, dirty);
+    }
+}
+
+void
+UsdImagingInstanceAdapter::MarkRefineLevelDirty(UsdPrim const& prim,
+                                         SdfPath const& cachePath,
+                                         UsdImagingIndexProxy* index)
+{
+    // The instancer isn't interested in this, but it's children maybe
+    // so make sure the message gets forwarded
+    if (_IsChildPrim(prim, cachePath)) {
+        UsdImagingInstancerContext instancerContext;
+        _ProtoRprim const& rproto = _GetProtoRprim(prim.GetPath(),
+                                                    cachePath,
+                                                    &instancerContext);
+
+        if (TF_VERIFY(rproto.adapter, "%s", cachePath.GetText())) {
+            rproto.adapter->MarkRefineLevelDirty(prim, cachePath, index);
+        }
+    }
+}
+
+void
+UsdImagingInstanceAdapter::MarkReprDirty(UsdPrim const& prim,
+                                  SdfPath const& cachePath,
+                                  UsdImagingIndexProxy* index)
+{
+    // The instancer isn't interested in this, but it's children maybe
+    // so make sure the message gets forwarded
+    if (_IsChildPrim(prim, cachePath)) {
+        UsdImagingInstancerContext instancerContext;
+        _ProtoRprim const& rproto = _GetProtoRprim(prim.GetPath(),
+                                                    cachePath,
+                                                    &instancerContext);
+
+        if (TF_VERIFY(rproto.adapter, "%s", cachePath.GetText())) {
+            rproto.adapter->MarkReprDirty(prim, cachePath, index);
+        }
+    }
+}
+
+void
+UsdImagingInstanceAdapter::MarkCullStyleDirty(UsdPrim const& prim,
+                                       SdfPath const& cachePath,
+                                       UsdImagingIndexProxy* index)
+{
+    // The instancer isn't interested in this, but it's children maybe
+    // so make sure the message gets forwarded
+    if (_IsChildPrim(prim, cachePath)) {
+        UsdImagingInstancerContext instancerContext;
+        _ProtoRprim const& rproto = _GetProtoRprim(prim.GetPath(),
+                                                    cachePath,
+                                                    &instancerContext);
+
+        if (TF_VERIFY(rproto.adapter, "%s", cachePath.GetText())) {
+            rproto.adapter->MarkCullStyleDirty(prim, cachePath, index);
+        }
+    }
+}
+
+void
+UsdImagingInstanceAdapter::MarkTransformDirty(UsdPrim const& prim,
+                                              SdfPath const& cachePath,
+                                              UsdImagingIndexProxy* index)
+{
+    if (_IsChildPrim(prim, cachePath)) {
+        UsdImagingInstancerContext instancerContext;
+        _ProtoRprim const& rproto = _GetProtoRprim(prim.GetPath(),
+                                                    cachePath,
+                                                    &instancerContext);
+
+        if (TF_VERIFY(rproto.adapter, "%s", cachePath.GetText())) {
+            rproto.adapter->MarkTransformDirty(prim, cachePath, index);
+        }
+    } else if (TfMapLookupPtr(_instancerData, prim.GetPath()) != nullptr) {
+        // For the instancer itself, the instance transforms are sent back
+        // as primvars, so we need to augment the DirtyTransform bit with
+        // DirtyPrimvar.
+        static const HdDirtyBits transformDirty =
+                                                HdChangeTracker::DirtyPrimvar  |
+                                                HdChangeTracker::DirtyTransform;
+
+        index->MarkInstancerDirty(cachePath, transformDirty);
+    }
+}
+
+void
+UsdImagingInstanceAdapter::MarkVisibilityDirty(UsdPrim const& prim,
+                                               SdfPath const& cachePath,
+                                               UsdImagingIndexProxy* index)
+{
+    if (_IsChildPrim(prim, cachePath)) {
+        UsdImagingInstancerContext instancerContext;
+        _ProtoRprim const& rproto = _GetProtoRprim(prim.GetPath(),
+                                                    cachePath,
+                                                    &instancerContext);
+
+        if (TF_VERIFY(rproto.adapter, "%s", cachePath.GetText())) {
+            rproto.adapter->MarkVisibilityDirty(prim, cachePath, index);
+        }
+    } else if (TfMapLookupPtr(_instancerData, prim.GetPath()) != nullptr) {
+        static const HdDirtyBits visibilityDirty =
+                                               HdChangeTracker::DirtyVisibility;
+
+        index->MarkInstancerDirty(cachePath, visibilityDirty);
+    }
+}
+
 
 /*virtual*/
 SdfPath
@@ -996,15 +1133,72 @@ UsdImagingInstanceAdapter::GetInstancer(SdfPath const &cachePath)
     return SdfPath();
 }
 
-bool
-UsdImagingInstanceAdapter::ShouldCullChildren(UsdPrim const& prim)
+/*virtual*/
+size_t
+UsdImagingInstanceAdapter::SampleInstancerTransform(
+    UsdPrim const& instancerPrim,
+    SdfPath const& instancerPath,
+    UsdTimeCode time,
+    const std::vector<float>& configuredSampleTimes,
+    size_t maxSampleCount,
+    float *times,
+    GfMatrix4d *samples)
 {
-    return true;
+    // This code must match UpdateForTime(), which says:
+    // the instancer transform can only be the root transform.
+    if (maxSampleCount > 0) {
+        times[0] = 0.0;
+        samples[0] = GetRootTransform();
+        return 1;
+    }
+    return 0;
+}
+
+size_t
+UsdImagingInstanceAdapter::SamplePrimvar(
+    UsdPrim const& usdPrim,
+    SdfPath const& cachePath,
+    TfToken const& key,
+    UsdTimeCode time, const std::vector<float>& configuredSampleTimes,
+    size_t maxNumSamples, float *times, VtValue *samples)
+{
+    if (_IsChildPrim(usdPrim, cachePath)) {
+        // Note that the proto group in this rproto has not yet been
+        // updated with new instances at this point.
+        UsdImagingInstancerContext instancerContext;
+        _ProtoRprim const& rproto = _GetProtoRprim(usdPrim.GetPath(),
+                                                    cachePath,
+                                                    &instancerContext);
+        if (!TF_VERIFY(rproto.adapter, "%s", cachePath.GetText())) {
+            return 0;
+        }
+        return rproto.adapter->SamplePrimvar(
+            _GetPrim(rproto.path), cachePath,
+            key, time, configuredSampleTimes, maxNumSamples, times, samples);
+    }
+    if (key == HdTokens->instanceTransform) {
+        size_t numSamples = std::min(maxNumSamples,
+                                     configuredSampleTimes.size());
+        for (size_t i=0; i < numSamples; ++i) {
+            UsdTimeCode sceneTime =
+                _GetTimeWithOffset(configuredSampleTimes[i]);
+            times[i] = configuredSampleTimes[i];
+            VtMatrix4dArray xf;
+            _ComputeInstanceTransforms(usdPrim, &xf, sceneTime);
+            samples[i] = xf;
+        }
+        return numSamples;
+    } else {
+        return UsdImagingPrimAdapter::SamplePrimvar(
+            usdPrim, cachePath, key, time, configuredSampleTimes,
+            maxNumSamples, times, samples);
+    }
 }
 
 void
-UsdImagingInstanceAdapter::_ReloadInstancer(SdfPath const& instancerPath,
-                                            UsdImagingIndexProxy* index)
+UsdImagingInstanceAdapter::_ResyncInstancer(SdfPath const& instancerPath,
+                                            UsdImagingIndexProxy* index,
+                                            bool repopulate)
 {
     _InstancerDataMap::iterator instIt = _instancerData.find(instancerPath);
     if (!TF_VERIFY(instIt != _instancerData.end())) {
@@ -1022,35 +1216,31 @@ UsdImagingInstanceAdapter::_ReloadInstancer(SdfPath const& instancerPath,
     // copy of them around so we can repopulate them below.
     const SdfPathVector instancePaths = instIt->second.instancePaths;
     TF_FOR_ALL(instanceIt, instancePaths) {
-        index->RemoveDependency(*instanceIt);
+        index->RemovePrimInfo(*instanceIt);
     }
 
     // Remove this instancer's entry from the master -> instancer map.
-    auto shaderBindingIt = 
-        _masterToInstancerMap.find(instIt->second.masterPath);
-    if (TF_VERIFY(shaderBindingIt != _masterToInstancerMap.end())) {
-        _ShaderBindingToInstancerMap& bindingMap = shaderBindingIt->second;
-        auto instancerIt = bindingMap.find(instIt->second.shaderBindingPath);
-        if (TF_VERIFY(instancerIt != bindingMap.end())) {
-            bindingMap.erase(instancerIt);
-        }
-
-        if (bindingMap.empty()) {
-            _masterToInstancerMap.erase(shaderBindingIt);
+    auto range = _masterToInstancerMap.equal_range(instIt->second.masterPath);
+    for (auto it = range.first; it != range.second; ++it) {
+        if (it->second == instancerPath) {
+            _masterToInstancerMap.erase(it);
+            break;
         }
     }
 
     // Blow away the instancer and the associated local data.
     index->RemoveInstancer(instancerPath);
-    index->RemoveDependency(instancerPath);
+    index->RemovePrimInfo(instancerPath);
     _instancerData.erase(instIt);
 
     // Repopulate the instancer's previous instances. Those that don't exist
     // anymore will be ignored, while those that still exist will be
     // pushed back into this adapter and refreshed.
-    TF_FOR_ALL(pathIt, instancePaths) {
-        if (_GetPrim(*pathIt) && _GetPrim(*pathIt).IsActive()) {
-            index->Repopulate(*pathIt);
+    if (repopulate) {
+        TF_FOR_ALL(pathIt, instancePaths) {
+            if (_GetPrim(*pathIt) && _GetPrim(*pathIt).IsActive()) {
+                index->Repopulate(*pathIt);
+            }
         }
     }
 }
@@ -1068,14 +1258,15 @@ UsdImagingInstanceAdapter::_PrimIsInstancer(UsdPrim const& prim) const
 UsdImagingInstanceAdapter::_ProtoRprim const&
 UsdImagingInstanceAdapter::_GetProtoRprim(SdfPath const& instancerPath,
                                           SdfPath const& cachePath,
-                                          UsdImagingInstancerContext* ctx)
+                                          UsdImagingInstancerContext* ctx) const
 {
     static _ProtoRprim const EMPTY;
 
     _InstancerDataMap::const_iterator it = _instancerData.find(instancerPath);
     _ProtoRprim const* r = nullptr;
     SdfPath instancerId;
-    SdfPath shaderBinding;
+    SdfPath materialId;
+    TfToken drawMode;
 
     if (it != _instancerData.end()) {
         _PrimMap::const_iterator primIt = it->second.primMap.find(cachePath);
@@ -1083,7 +1274,8 @@ UsdImagingInstanceAdapter::_GetProtoRprim(SdfPath const& instancerPath,
             return EMPTY;
         }
         instancerId = instancerPath;
-        shaderBinding = it->second.shaderBindingPath;
+        materialId = it->second.materialId;
+        drawMode = it->second.drawMode;
         r = &(primIt->second);
     } else {
         // If we didn't find an instancerData entry, it's likely because the
@@ -1099,7 +1291,10 @@ UsdImagingInstanceAdapter::_GetProtoRprim(SdfPath const& instancerPath,
             if (protoIt != instancer.primMap.end()) {
                 // This is the correct instancer path for this prim.
                 instancerId = pathInstancerDataPair.first;
-                shaderBinding = pathInstancerDataPair.second.shaderBindingPath;
+                materialId = 
+                    pathInstancerDataPair.second.materialId;
+                drawMode =
+                    pathInstancerDataPair.second.drawMode;
                 r = &protoIt->second;
                 break;
             }
@@ -1111,9 +1306,13 @@ UsdImagingInstanceAdapter::_GetProtoRprim(SdfPath const& instancerPath,
     }
 
     ctx->instancerId = instancerId;
-    ctx->instanceSurfaceShaderPath = shaderBinding;
+    ctx->instanceMaterialId = materialId;
+    ctx->instanceDrawMode = drawMode;
     ctx->childName = TfToken();
-    ctx->instancerAdapter = _GetSharedFromThis();
+    // Note: use a null adapter here.  The UsdImagingInstancerContext is
+    // not really used outside of population.  We should clean this up and
+    // remove these contexts from everything outside of population.
+    ctx->instancerAdapter = UsdImagingPrimAdapterSharedPtr();
 
     return *r;
 }
@@ -1128,7 +1327,7 @@ UsdImagingInstanceAdapter::_GetSharedFromThis()
 struct UsdImagingInstanceAdapter::_UpdateInstanceMapFn
 {
     _UpdateInstanceMapFn(
-        UsdImagingInstanceAdapter* adapter_, const UsdTimeCode& time_,
+        const UsdImagingInstanceAdapter* adapter_, const UsdTimeCode& time_,
         std::vector<_InstancerData::Visibility>* visibility_, 
         VtIntArray* indices_)
         : adapter(adapter_), time(time_), 
@@ -1186,29 +1385,49 @@ struct UsdImagingInstanceAdapter::_UpdateInstanceMapFn
     bool IsVisibilityVarying(const std::vector<UsdPrim>& instanceContext)
     {
         TF_FOR_ALL(primIt, instanceContext) {
-            HdDirtyBits dirtyBits;
-            if (adapter->_IsVarying(*primIt, 
-                           UsdGeomTokens->visibility, 
-                           HdChangeTracker::DirtyVisibility,
-                           UsdImagingTokens->usdVaryingVisibility,
-                           &dirtyBits,
-                           true)) {
+            if (_GetIsVisibilityVarying(*primIt)) {
                 return true;
             }
         }
         return false;
     }
 
-    UsdImagingInstanceAdapter* adapter;
+    bool _GetIsVisibilityVarying(const UsdPrim& prim) {
+        bool visibilityVarying;
+
+        auto cacheIt = varyingCache.find(prim);
+        if (cacheIt == varyingCache.end()) {
+            HdDirtyBits dirtyBits;
+            visibilityVarying = adapter->_IsVarying(
+                prim,
+                UsdGeomTokens->visibility,
+                HdChangeTracker::DirtyVisibility,
+                UsdImagingTokens->usdVaryingVisibility,
+                &dirtyBits,
+                true);
+            varyingCache[prim] = visibilityVarying;
+        } else {
+            visibilityVarying = cacheIt->second;
+        }
+
+        return visibilityVarying;
+    }
+
+    const UsdImagingInstanceAdapter* adapter;
     UsdTimeCode time;
     std::vector<_InstancerData::Visibility>* visibility;
     VtIntArray* indices;
+
+    // We keep a simple cache of visibility varying states directly on
+    // _UpdateInstanceMapFn because we only need it for the first draw and
+    // during resyncs.
+    boost::unordered_map<UsdPrim, bool, boost::hash<UsdPrim>> varyingCache;
 };
 
 void
 UsdImagingInstanceAdapter::_UpdateInstanceMap(
                     UsdPrim const& instancerPrim, 
-                    UsdTimeCode time)
+                    UsdTimeCode time) const
 {
     // We expect the instancerData entry for this instancer to be established
     // before this method is called. This map should also never be accessed and
@@ -1247,7 +1466,7 @@ UsdImagingInstanceAdapter::_UpdateInstanceMap(
 
 int
 UsdImagingInstanceAdapter::_UpdateDirtyBits(
-                    UsdPrim const& instancerPrim)
+                    UsdPrim const& instancerPrim) const
 {
     // We expect the instancerData entry for this instancer to be established
     // before this method is called. This map should also never be accessed and
@@ -1431,11 +1650,13 @@ struct UsdImagingInstanceAdapter::_PopulateInstanceSelectionFn
         SdfPath const &instancerPath_,
         SdfPath const &instancePath_,
         VtIntArray const &instanceIndices_,
+        HdxSelectionHighlightMode const& highlightMode_,
         HdxSelectionSharedPtr const &result_)
         : adapter(adapter_)
         , instancerPath(instancerPath_)
         , instancePath(instancePath_)
         , instanceIndices(instanceIndices_)
+        , highlightMode(highlightMode_)
         , result(result_)
         , found(false)
     {}
@@ -1479,16 +1700,16 @@ struct UsdImagingInstanceAdapter::_PopulateInstanceSelectionFn
         TF_FOR_ALL (it, instancerData->primMap) {
             SdfPath protoRprim = it->first;
             // convert to indexPath (add prefix)
-            SdfPath indexPath = adapter->_delegate->GetPathForIndex(it->first);
+            SdfPath indexPath = adapter->_GetPathForIndex(it->first);
 
             // highlight all subtree with instanceIndices.
             // XXX: this seems redundant, but needed for point instancer 
-            // highlighting for now. Ideally we should communicate back to point 
+            // highlighting for now. Ideally we should communicate back to point
             // instancer adapter to not use renderIndex
-            SdfPathVector const &ids
-                = adapter->_delegate->GetRenderIndex().GetRprimSubtree(indexPath);
+            SdfPathVector const &ids = adapter->_GetRprimSubtree(indexPath);
+
             TF_FOR_ALL (protoIt, ids) {
-                result->AddInstance(*protoIt, niInstanceIndices);
+                result->AddInstance(highlightMode, *protoIt, niInstanceIndices);
 
                 TF_DEBUG(USDIMAGING_SELECTION).Msg(
                     "PopulateSelection: (instance) %s - %s : %ld\n",
@@ -1505,6 +1726,7 @@ struct UsdImagingInstanceAdapter::_PopulateInstanceSelectionFn
     SdfPath instancerPath;
     SdfPath instancePath;
     VtIntArray instanceIndices;
+    HdxSelectionHighlightMode highlightMode;
     HdxSelectionSharedPtr result;
     bool found;
 };
@@ -1512,6 +1734,7 @@ struct UsdImagingInstanceAdapter::_PopulateInstanceSelectionFn
 /*virtual*/
 bool
 UsdImagingInstanceAdapter::PopulateSelection(
+    HdxSelectionHighlightMode const& highlightMode,
     SdfPath const &instancePath,
     VtIntArray const &instanceIndices,
     HdxSelectionSharedPtr const &result)
@@ -1528,7 +1751,8 @@ UsdImagingInstanceAdapter::PopulateSelection(
     bool found = false;
     TF_FOR_ALL (it, _instancerData) {
         _PopulateInstanceSelectionFn populateFn(
-            this, it->first, instancePath, instanceIndices, result);
+            this, it->first, instancePath, instanceIndices,
+            highlightMode, result);
 
         _RunForAllInstancesToDraw(_GetPrim(it->first), &populateFn);
 
@@ -1564,6 +1788,15 @@ UsdImagingInstanceAdapter::GetDependPaths(SdfPath const &instancerPath) const
 }
 
 /*virtual*/
+void
+UsdImagingInstanceAdapter::_RemovePrim(SdfPath const& cachePath,
+                                       UsdImagingIndexProxy* index)
+{
+    TF_CODING_ERROR("Should use overidden ProcessPrimResync/ProcessPrimRemoval");
+}
+
+
+/*virtual*/
 VtIntArray
 UsdImagingInstanceAdapter::GetInstanceIndices(SdfPath const &instancerPath,
                                               SdfPath const &protoRprimPath)
@@ -1588,7 +1821,7 @@ UsdImagingInstanceAdapter::GetInstanceIndices(SdfPath const &instancerPath,
 GfMatrix4d
 UsdImagingInstanceAdapter::GetRelativeInstancerTransform(
     SdfPath const &parentInstancerPath,
-    SdfPath const &instancerPath, UsdTimeCode time)
+    SdfPath const &instancerPath, UsdTimeCode time) const
 {
     // regardless the parentInstancerPath is empty or not,
     // we subtract the root transform.

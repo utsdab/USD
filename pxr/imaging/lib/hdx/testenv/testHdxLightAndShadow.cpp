@@ -33,6 +33,7 @@
 #include "pxr/imaging/hd/engine.h"
 
 #include "pxr/imaging/hdSt/renderDelegate.h"
+#include "pxr/imaging/hdSt/light.h"
 
 #include "pxr/imaging/hdx/simpleLightTask.h"
 #include "pxr/imaging/hdx/shadowTask.h"
@@ -166,7 +167,7 @@ int main(int argc, char *argv[])
     // --------------------------------------------------------------------
     // move light
     light2.SetPosition(GfVec4f(-0.3,-0.2,1,0));
-    delegate->SetLight(SdfPath("/light2"), HdStLightTokens->params,
+    delegate->SetLight(SdfPath("/light2"), HdLightTokens->params,
                       VtValue(light2));
 
     // --------------------------------------------------------------------

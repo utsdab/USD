@@ -31,7 +31,6 @@
 
 #include "pxr/base/arch/pragmas.h"
 #include "pxr/base/tf/diagnostic.h"
-#include "pxr/base/tf/iterator.h"
 #include "pxr/base/tf/stringUtils.h"
 #include "pxr/base/tf/type.h"
 
@@ -81,7 +80,8 @@ public:
                        VtDictionary const & metadata);
 
 protected:
-    virtual bool _OpenForReading(std::string const & filename, int subimage);
+    virtual bool _OpenForReading(std::string const & filename, int subimage,
+                                 bool suppressErrors);
     virtual bool _OpenForWriting(std::string const & filename);
 
 private:
@@ -390,7 +390,8 @@ Glf_OIIOImage::GetNumMipLevels() const
 
 /* virtual */
 bool
-Glf_OIIOImage::_OpenForReading(std::string const & filename, int subimage)
+Glf_OIIOImage::_OpenForReading(std::string const & filename, int subimage,
+                               bool suppressErrors)
 {
     _filename = filename;
     _subimage = subimage;
@@ -490,8 +491,8 @@ Glf_OIIOImage::Write(StorageSpec const & storage,
     TypeDesc format = _GetOIIOBaseType(storage.type);
     ImageSpec spec(storage.width, storage.height, nchannels, format);
 
-    TF_FOR_ALL(metaIt, metadata) {
-        _SetAttribute(&spec, metaIt->first, metaIt->second);
+    for (const std::pair<std::string, VtValue>& m : metadata) {
+        _SetAttribute(&spec, m.first, m.second);
     }
 
     // Read from storage

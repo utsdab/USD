@@ -23,6 +23,7 @@
 //
 #include "pxr/pxr.h"
 #include "usdKatana/attrMap.h"
+#include "usdKatana/utils.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -32,25 +33,63 @@ PxrUsdKatanaAttrMap::set(
         const std::string& path,
         const Foundry::Katana::Attribute& attr)
 {
+    // on mutation, seed the groupBuilder with the lastBuild value and clear
+    if (_lastBuilt.isValid())
+    {
+        _groupBuilder.update(_lastBuilt);
+        _lastBuilt = Foundry::Katana::GroupAttribute();
+    }
+    
     _groupBuilder.set(path, attr);
+}
+
+PxrUsdKatanaAttrMap&
+PxrUsdKatanaAttrMap::Set(
+        const std::string& path,
+        const UsdAttribute& attr)
+{
+    VtValue val;
+    if (attr.IsValid() && attr.HasAuthoredValueOpinion()
+        && attr.Get(&val, _usdTimeCode)) {
+        FnKat::Attribute kat_attr =
+            PxrUsdKatanaUtils::ConvertVtValueToKatAttr( val,
+                                    /* asShaderParam */ true,
+                                    /* pathAsModel */ false,
+                                    /* resolvePath */ false);
+        _groupBuilder.set(path, kat_attr);
+    }
+    return *this;
 }
 
 void
 PxrUsdKatanaAttrMap::del(const std::string& path)
 {
+    // on mutation, seed the groupBuilder with the lastBuild value and clear
+    if (_lastBuilt.isValid())
+    {
+        _groupBuilder.update(_lastBuilt);
+        _lastBuilt = Foundry::Katana::GroupAttribute();
+    }
+    
     _groupBuilder.del(path);
 }
 
 FnAttribute::GroupAttribute
 PxrUsdKatanaAttrMap::build()
 {
-    return _groupBuilder.build();
+    if (_lastBuilt.isValid())
+    {
+        return _lastBuilt;
+    }
+    
+    _lastBuilt = _groupBuilder.build();
+    return _lastBuilt;
 }
 
 void
 PxrUsdKatanaAttrMap::toInterface(FnKat::GeolibCookInterface& interface)
 {
-    FnAttribute::GroupAttribute groupAttr = _groupBuilder.build();
+    FnAttribute::GroupAttribute groupAttr = build();
     size_t numChildren = groupAttr.getNumberOfChildren();
     for (size_t i = 0; i < numChildren; i++)
     {
@@ -80,6 +119,11 @@ PxrUsdKatanaAttrMap::toInterface(FnKat::GeolibCookInterface& interface)
             interface.setAttr(childName, childAttr);
         }
     }
+}
+
+bool PxrUsdKatanaAttrMap::isBuilt()
+{
+    return _lastBuilt.isValid();
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

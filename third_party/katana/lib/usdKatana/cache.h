@@ -60,7 +60,8 @@ class UsdKatanaCache : public TfSingleton<UsdKatanaCache>
     /// Construct a session layer from the groupAttr encoding of variants
     /// and deactivations -- or return a previously created one
     SdfLayerRefPtr& _FindOrCreateSessionLayer(
-            FnAttribute::GroupAttribute sessionAttr, std::string rootLocation);
+            FnAttribute::GroupAttribute sessionAttr, 
+            const std::string& rootLocation);
 
 
     /// Mute layers by name
@@ -68,6 +69,9 @@ class UsdKatanaCache : public TfSingleton<UsdKatanaCache>
         const UsdStageRefPtr &stage, const std::string &layerRegex);
 
     typedef std::map<std::string, UsdImagingGLSharedPtr> _RendererCache;
+
+    std::string _ComputeCacheKey(FnAttribute::GroupAttribute sessionAttr, 
+        const std::string& rootLocation);
 
     std::map<std::string, SdfLayerRefPtr> _sessionKeyCache;
     _RendererCache _rendererCache;
@@ -97,10 +101,25 @@ public:
                             std::string const& ignoreLayerRegex,
                             bool forcePopulate);
 
+    /// Flushes an individual stage if present in the cache
+    void FlushStage(const UsdStageRefPtr & stage);
+
+
+
+
     /// Get (or create) a cached renderer for a given prim path.
     UsdImagingGLSharedPtr const& GetRenderer(UsdStageRefPtr const& stage,
                                              UsdPrim const& root,
                                              std::string const& sessionKey);
+
+    /// \brief Find a cached session layer if it exists.  Does NOT create.
+    SdfLayerRefPtr FindSessionLayer(
+        FnAttribute::GroupAttribute sessionAttr, 
+        const std::string& rootLocation);
+
+
+    SdfLayerRefPtr FindSessionLayer(
+        const std::string& cacheKey) ;
 
 };
 

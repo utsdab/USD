@@ -27,16 +27,12 @@
 #include "pxr/pxr.h"
 #include "pxr/imaging/hd/version.h"
 #include "pxr/imaging/hd/bufferSource.h"
-#include "pxr/imaging/hd/bufferResourceGL.h"
 #include "pxr/imaging/hd/computation.h"
 #include "pxr/imaging/hd/tokens.h"
-
+#include "pxr/imaging/hdSt/bufferResourceGL.h"
 #include "pxr/imaging/hdSt/meshTopology.h"
-
 #include "pxr/imaging/hf/perfLog.h"
-
 #include "pxr/usd/sdf/path.h"
-
 #include "pxr/base/tf/token.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -80,8 +76,7 @@ public:
     virtual HdComputationSharedPtr CreateRefineComputationGPU(
         HdSt_MeshTopology *topology,
         TfToken const &name,
-        GLenum dataType,
-        int numComponents) = 0;
+        HdType type) = 0;
 
     /// Returns true if the subdivision for \a scheme generates triangles,
     /// instead of quads.
@@ -104,7 +99,7 @@ public:
                                 SdfPath const &id);
 
     /// overrides
-    virtual void AddBufferSpecs(HdBufferSpecVector *specs) const;
+    virtual void AddBufferSpecs(HdBufferSpecVector *specs) const override;
     virtual bool Resolve() = 0;
 
 protected:
@@ -133,9 +128,9 @@ protected:
 class HdSt_OsdIndexComputation : public HdComputedBufferSource {
 public:
     /// overrides
-    virtual bool HasChainedBuffer() const;
-    virtual void AddBufferSpecs(HdBufferSpecVector *specs) const;
-    virtual HdBufferSourceSharedPtr GetChainedBuffer() const;
+    virtual bool HasChainedBuffer() const override;
+    virtual void AddBufferSpecs(HdBufferSpecVector *specs) const override;
+    virtual HdBufferSourceVector GetChainedBuffers() const override;
     virtual bool Resolve() = 0;
 
 protected:
@@ -147,6 +142,7 @@ protected:
     HdSt_MeshTopology *_topology;
     HdBufferSourceSharedPtr _osdTopology;
     HdBufferSourceSharedPtr _primitiveBuffer;
+    HdBufferSourceSharedPtr _edgeIndicesBuffer;
 };
 
 // ---------------------------------------------------------------------------
@@ -165,20 +161,18 @@ public:
                             bool varying,
                             HdBufferSourceSharedPtr const &osdTopology);
     virtual ~HdSt_OsdRefineComputation();
-    virtual TfToken const &GetName() const;
-    virtual size_t ComputeHash() const;
-    virtual void const* GetData() const;
-    virtual int GetGLComponentDataType() const;
-    virtual int GetGLElementDataType() const;
-    virtual int GetNumElements() const;
-    virtual short GetNumComponents() const;
-    virtual void AddBufferSpecs(HdBufferSpecVector *specs) const;
-    virtual bool Resolve();
-    virtual bool HasPreChainedBuffer() const;
-    virtual HdBufferSourceSharedPtr GetPreChainedBuffer() const;
+    virtual TfToken const &GetName() const override;
+    virtual size_t ComputeHash() const override;
+    virtual void const* GetData() const override;
+    virtual HdTupleType GetTupleType() const override;
+    virtual int GetNumElements() const override;
+    virtual void AddBufferSpecs(HdBufferSpecVector *specs) const override;
+    virtual bool Resolve() override;
+    virtual bool HasPreChainedBuffer() const override;
+    virtual HdBufferSourceSharedPtr GetPreChainedBuffer() const override;
 
 protected:
-    virtual bool _CheckValid() const;
+    virtual bool _CheckValid() const override;
 
 private:
     HdSt_MeshTopology *_topology;
@@ -197,13 +191,12 @@ class HdSt_OsdRefineComputationGPU : public HdComputation {
 public:
     HdSt_OsdRefineComputationGPU(HdSt_MeshTopology *topology,
                                TfToken const &name,
-                               GLenum dataType,
-                               int numComponents);
+                               HdType type);
 
     virtual void Execute(HdBufferArrayRangeSharedPtr const &range,
-                         HdResourceRegistry *resourceRegistry);
-    virtual void AddBufferSpecs(HdBufferSpecVector *specs) const;
-    virtual int GetNumOutputElements() const;
+                         HdResourceRegistry *resourceRegistry) override;
+    virtual void AddBufferSpecs(HdBufferSpecVector *specs) const override;
+    virtual int GetNumOutputElements() const override;
 
     // A wrapper class to bridge between HdBufferResource and OpenSubdiv
     // vertex buffer API.
@@ -212,25 +205,24 @@ public:
     public:
         VertexBuffer(HdBufferResourceSharedPtr const &resource) { 
             _resource =
-                boost::static_pointer_cast<HdBufferResourceGL> (resource);
+                boost::static_pointer_cast<HdStBufferResourceGL> (resource);
         }
 
         // bit confusing, osd expects 'GetNumElements()' returns the num components,
         // in hydra sense
         int GetNumElements() const {
-            return _resource->GetNumComponents();
+            return HdGetComponentCount(_resource->GetTupleType().type);
         }
         GLuint BindVBO() {
             return _resource->GetId();
         }
-        HdBufferResourceGLSharedPtr _resource;
+        HdStBufferResourceGLSharedPtr _resource;
     };
 
 private:
     HdSt_MeshTopology *_topology;
     TfToken _name;
-    GLenum  _dataType;
-    int _numComponents;
+    HdType _type;
 };
 
 // ---------------------------------------------------------------------------
@@ -274,17 +266,10 @@ HdSt_OsdRefineComputation<VERTEX_BUFFER>::GetData() const
 }
 
 template <typename VERTEX_BUFFER>
-int
-HdSt_OsdRefineComputation<VERTEX_BUFFER>::GetGLComponentDataType() const
+HdTupleType
+HdSt_OsdRefineComputation<VERTEX_BUFFER>::GetTupleType() const
 {
-    return _source->GetGLComponentDataType();
-}
-
-template <typename VERTEX_BUFFER>
-int
-HdSt_OsdRefineComputation<VERTEX_BUFFER>::GetGLElementDataType() const
-{
-    return _source->GetGLElementDataType();
+    return _source->GetTupleType();
 }
 
 template <typename VERTEX_BUFFER>
@@ -292,13 +277,6 @@ int
 HdSt_OsdRefineComputation<VERTEX_BUFFER>::GetNumElements() const
 {
     return _cpuVertexBuffer->GetNumVertices();
-}
-
-template <typename VERTEX_BUFFER>
-short
-HdSt_OsdRefineComputation<VERTEX_BUFFER>::GetNumComponents() const
-{
-    return _cpuVertexBuffer->GetNumElements();
 }
 
 template <typename VERTEX_BUFFER>
@@ -321,8 +299,9 @@ HdSt_OsdRefineComputation<VERTEX_BUFFER>::Resolve()
 
     // prepare cpu vertex buffer including refined vertices
     TF_VERIFY(!_cpuVertexBuffer);
-    _cpuVertexBuffer = VERTEX_BUFFER::Create(_source->GetNumComponents(),
-                                             subdivision->GetNumVertices());
+    _cpuVertexBuffer = VERTEX_BUFFER::Create(
+        HdGetComponentCount(_source->GetTupleType().type),
+        subdivision->GetNumVertices());
 
     subdivision->RefineCPU(_source, _varying, _cpuVertexBuffer);
 

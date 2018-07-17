@@ -26,6 +26,7 @@
 
 #include "pxr/pxr.h"
 #include "pxr/usd/usdGeom/bboxCache.h"
+#include "pxr/usd/usdSkel/cache.h"
 #include "pxr/base/tf/refPtr.h"
 
 #include <tbb/enumerable_thread_specific.h>
@@ -117,7 +118,10 @@ public:
     }
 
     // bounds computation is kind of important, so we centralize it here.
-    std::vector<GfBBox3d> ComputeBounds(const UsdPrim& prim);
+    std::vector<GfBBox3d> ComputeBounds(
+        const UsdPrim& prim,
+        const std::vector<double>& motionSampleTimes,
+        bool applyLocalTransform = false);
 
     UsdPrim GetRootPrim() const;
 
@@ -177,8 +181,12 @@ public:
         return _verbose;
     }
 
-    std::vector<UsdGeomBBoxCache>& GetBBoxCache() {
+    std::map<double, UsdGeomBBoxCache>& GetBBoxCache() {
         return _bboxCaches.local();
+    }
+
+    UsdSkelCache& GetUsdSkelCache() {
+        return _usdSkelCache;
     }
 
     const std::string & GetErrorMessage() {
@@ -224,8 +232,11 @@ private:
     bool _prePopulate;
     bool _verbose;
 
-    typedef tbb::enumerable_thread_specific< std::vector<UsdGeomBBoxCache> > _ThreadLocalBBoxCaches;
+    typedef tbb::enumerable_thread_specific< std::map<double, UsdGeomBBoxCache> > _ThreadLocalBBoxCaches;
     _ThreadLocalBBoxCaches _bboxCaches;
+
+    // Cache for accelerating UsdSkel skinning data calculation.
+    UsdSkelCache _usdSkelCache;
     
     std::string _errorMessage;
 

@@ -27,16 +27,27 @@ from pxr import Usd, Sdf, Tf
 
 class TestUsdStagePopulationMask(unittest.TestCase):
     def test_Basic(self):
+        pm = Usd.StagePopulationMask.All()
+        assert not pm.IsEmpty()
+        assert pm.Includes('/any/path')
+        assert pm.GetIncludedChildNames('/') == (True, [])
+
         pm = Usd.StagePopulationMask()
         assert pm.IsEmpty()
-
         assert not pm.Includes('/any/path')
+        assert pm.GetIncludedChildNames('/') == (False, [])
+
         pm2 = Usd.StagePopulationMask().Add('/foo').Add('/bar')
         assert not pm.Includes(pm2)
         assert pm2.Includes(pm)
         assert pm.GetUnion(pm2) == pm2
         assert Usd.StagePopulationMask.Union(pm, pm2) == pm2
         
+        assert pm2.GetIncludedChildNames('/') == (True, ['bar', 'foo'])
+        assert pm2.GetIncludedChildNames('/foo') == (True, [])
+        assert pm2.GetIncludedChildNames('/bar') == (True, [])
+        assert pm2.GetIncludedChildNames('/baz') == (False, [])
+
         pm.Add('/World/anim/chars/CharGroup')
         assert pm.GetPaths() == ['/World/anim/chars/CharGroup']
         assert not pm.IsEmpty()
@@ -86,6 +97,17 @@ class TestUsdStagePopulationMask(unittest.TestCase):
         assert (Usd.StagePopulationMask.Intersection(pm, pm2) ==
                 Usd.StagePopulationMask(['/A/X', '/B/C']))
 
+        pm = Usd.StagePopulationMask(['/A/B', '/A/C', '/A/D/E', '/A/D/F', '/B'])
+        assert pm.GetIncludedChildNames('/') == (True, ['A', 'B'])
+        assert pm.GetIncludedChildNames('/A') == (True, ['B', 'C', 'D'])
+        assert pm.GetIncludedChildNames('/A/B') == (True, [])
+        assert pm.GetIncludedChildNames('/A/C') == (True, [])
+        assert pm.GetIncludedChildNames('/A/D') == (True, ['E', 'F'])
+        assert pm.GetIncludedChildNames('/A/D/E') == (True, [])
+        assert pm.GetIncludedChildNames('/A/D/F') == (True, [])
+        assert pm.GetIncludedChildNames('/B') == (True, [])
+        assert pm.GetIncludedChildNames('/C') == (False, [])
+
         # Errors.
         with self.assertRaises(Tf.ErrorException):
             Usd.StagePopulationMask(['relativePath/is/no/good'])
@@ -120,6 +142,10 @@ class TestUsdStagePopulationMask(unittest.TestCase):
         assert not doryStage.GetPrimAtPath('/World/sets')
         assert not doryStage.GetPrimAtPath('/World/anim/chars/NemoGroup')
 
+        assert not doryStage._GetPcpCache().FindPrimIndex('/World/sets')
+        assert not doryStage._GetPcpCache().FindPrimIndex(
+            '/World/anim/chars/NemoGroup')
+
         doryAndNemoMask = (Usd.StagePopulationMask()
                            .Add('/World/anim/chars/DoryGroup')
                            .Add('/World/anim/chars/NemoGroup'))
@@ -134,6 +160,22 @@ class TestUsdStagePopulationMask(unittest.TestCase):
         assert doryStage.GetPrimAtPath('/World/anim/chars/DoryGroup/Dory')
         assert doryStage.GetPrimAtPath('/World/anim/chars/NemoGroup')
         assert doryStage.GetPrimAtPath('/World/anim/chars/NemoGroup/Nemo')
+
+        assert doryStage._GetPcpCache().FindPrimIndex(
+            '/World/anim/chars/NemoGroup')
+
+        doryStage.SetPopulationMask(doryMask)
+
+        assert doryStage.GetPrimAtPath('/World')
+        assert doryStage.GetPrimAtPath('/World/anim')
+        assert doryStage.GetPrimAtPath('/World/anim/chars')
+        assert doryStage.GetPrimAtPath('/World/anim/chars/DoryGroup')
+        assert doryStage.GetPrimAtPath('/World/anim/chars/DoryGroup/Dory')
+        assert not doryStage.GetPrimAtPath('/World/anim/chars/NemoGroup')
+        assert not doryStage.GetPrimAtPath('/World/anim/chars/NemoGroup/Nemo')
+
+        assert not doryStage._GetPcpCache().FindPrimIndex(
+            '/World/anim/chars/NemoGroup')
         
         doryAndNemoStage = Usd.Stage.OpenMasked(
             unmasked.GetRootLayer(), doryAndNemoMask)
@@ -149,7 +191,7 @@ class TestUsdStagePopulationMask(unittest.TestCase):
 
         assert not doryAndNemoStage.GetPrimAtPath('/World/sets')
 
-    def test_Expansion(self):
+    def test_ExpansionRelationships(self):
         stage = Usd.Stage.CreateInMemory()
         a = stage.DefinePrim('/World/A')
         b = stage.DefinePrim('/World/B')
@@ -157,11 +199,13 @@ class TestUsdStagePopulationMask(unittest.TestCase):
         d = stage.DefinePrim('/World/D')
         e = stage.DefinePrim('/World/E')
 
-        a.CreateRelationship('r').AppendTarget(b.GetPath())
-        b.CreateRelationship('r').AppendTarget(c.GetPath())
-        c.CreateRelationship('r').AppendTarget(d.GetPath())
+        cAttr = c.CreateAttribute('attr', Sdf.ValueTypeNames.Float)
 
-        a.CreateRelationship('pred').AppendTarget(e.GetPath())
+        a.CreateRelationship('r').AddTarget(b.GetPath())
+        b.CreateRelationship('r').AddTarget(cAttr.GetPath())
+        c.CreateRelationship('r').AddTarget(d.GetPath())
+
+        a.CreateRelationship('pred').AddTarget(e.GetPath())
         
         mask = Usd.StagePopulationMask().Add(a.GetPath())
         masked = Usd.Stage.OpenMasked(stage.GetRootLayer(), mask)
@@ -189,7 +233,63 @@ class TestUsdStagePopulationMask(unittest.TestCase):
         assert not masked.GetPrimAtPath(e.GetPath())
 
         # Expand with a predicate that only consults relationships named 'pred'
-        masked.ExpandPopulationMask(lambda r: r.GetName() == 'pred')
+        masked.ExpandPopulationMask(
+            relationshipPredicate=lambda r: r.GetName() == 'pred')
+
+        assert masked.GetPrimAtPath(a.GetPath())
+        assert not masked.GetPrimAtPath(b.GetPath())
+        assert not masked.GetPrimAtPath(c.GetPath())
+        assert not masked.GetPrimAtPath(d.GetPath())
+        assert masked.GetPrimAtPath(e.GetPath())
+
+    def test_ExpansionConnections(self):
+        stage = Usd.Stage.CreateInMemory()
+        a = stage.DefinePrim('/World/A')
+        b = stage.DefinePrim('/World/B')
+        c = stage.DefinePrim('/World/C')
+        d = stage.DefinePrim('/World/D')
+        e = stage.DefinePrim('/World/E')
+
+        bAttr = b.CreateAttribute('attr', Sdf.ValueTypeNames.Float)
+        cAttr = c.CreateAttribute('attr', Sdf.ValueTypeNames.Float)
+        dAttr = d.CreateAttribute('attr', Sdf.ValueTypeNames.Float)
+        eAttr = e.CreateAttribute('attr', Sdf.ValueTypeNames.Float)
+
+        floatType = Sdf.ValueTypeNames.Float
+        a.CreateAttribute('a', floatType).AddConnection(bAttr.GetPath())
+        b.CreateAttribute('a', floatType).AddConnection(cAttr.GetPath())
+        c.CreateAttribute('a', floatType).AddConnection(dAttr.GetPath())
+
+        a.CreateAttribute('pred', floatType).AddConnection(eAttr.GetPath())
+        
+        mask = Usd.StagePopulationMask().Add(a.GetPath())
+        masked = Usd.Stage.OpenMasked(stage.GetRootLayer(), mask)
+        assert masked.GetPrimAtPath(a.GetPath())
+        assert not masked.GetPrimAtPath(b.GetPath())
+        assert not masked.GetPrimAtPath(c.GetPath())
+        assert not masked.GetPrimAtPath(d.GetPath())
+        assert not masked.GetPrimAtPath(e.GetPath())
+
+        # Now expand the mask for all connections.
+        masked.ExpandPopulationMask()
+
+        assert masked.GetPrimAtPath(a.GetPath())
+        assert masked.GetPrimAtPath(b.GetPath())
+        assert masked.GetPrimAtPath(c.GetPath())
+        assert masked.GetPrimAtPath(d.GetPath())
+        assert masked.GetPrimAtPath(e.GetPath())
+
+        masked.SetPopulationMask(Usd.StagePopulationMask().Add(a.GetPath()))
+     
+        assert masked.GetPrimAtPath(a.GetPath())
+        assert not masked.GetPrimAtPath(b.GetPath())
+        assert not masked.GetPrimAtPath(c.GetPath())
+        assert not masked.GetPrimAtPath(d.GetPath())
+        assert not masked.GetPrimAtPath(e.GetPath())
+
+        # Expand with a predicate that only consults attributes named 'pred'
+        masked.ExpandPopulationMask(
+            attributePredicate=lambda r: r.GetName() == 'pred')
 
         assert masked.GetPrimAtPath(a.GetPath())
         assert not masked.GetPrimAtPath(b.GetPath())
@@ -204,7 +304,7 @@ class TestUsdStagePopulationMask(unittest.TestCase):
         foo, bar, i1, i2 = [
             stage.DefinePrim(p) for p in ('/foo', '/bar', '/i1', '/i2')]
         foo.SetInstanceable(True)
-        [p.GetReferences().AppendInternalReference(foo.GetPath()) for p in (i1, i2)]
+        [p.GetReferences().AddInternalReference(foo.GetPath()) for p in (i1, i2)]
         assert len(stage.GetMasters())
         stage2 = Usd.Stage.OpenMasked(
             stage.GetRootLayer(), Usd.StagePopulationMask(['/i1']))
@@ -231,6 +331,41 @@ class TestUsdStagePopulationMask(unittest.TestCase):
         assert not testStage.GetPrimAtPath('/Cubes/Geom/CubeOne')
         assert testStage.GetPrimAtPath('/Cubes/Geom/CubeTwo')
         assert not testStage.GetPrimAtPath('/Cubes/Geom/CubeThree')
-    
+
+    def test_Bug152904(self):
+        # Master prims weren't being generated on stages where the population
+        # mask included paths of prims beneath instances.
+        stage = Usd.Stage.CreateInMemory()
+        stage.DefinePrim('/Ref/geom')
+        stage.DefinePrim('/Ref/shading')
+
+        for path in ['/Instance_1', '/Instance_2']:
+            prim = stage.DefinePrim(path)
+            prim.GetReferences().AddInternalReference('/Ref')
+            prim.SetInstanceable(True)
+
+        # Open the stage with a mask that includes the 'geom' prim beneath
+        # the instances.   
+        maskedStage = Usd.Stage.OpenMasked(
+            stage.GetRootLayer(), 
+            Usd.StagePopulationMask(['/Instance_1/geom', '/Instance_2/geom']))
+
+        # Both instances should share the same master prim.
+        instance_1 = maskedStage.GetPrimAtPath('/Instance_1')
+        assert instance_1.IsInstance()
+        assert instance_1.GetMaster()
+
+        instance_2 = maskedStage.GetPrimAtPath('/Instance_2')
+        assert instance_2.IsInstance()
+        assert instance_2.GetMaster()
+
+        # For now, all prims in masters will be composed, even if they are
+        # not included in the population mask.
+        assert instance_1.GetMaster() == instance_2.GetMaster()
+        master = instance_1.GetMaster()
+
+        assert master.GetChild('geom')
+        assert master.GetChild('shading')
+
 if __name__ == '__main__':
     unittest.main()

@@ -62,7 +62,7 @@ void wrapUsdKatanaLookAPI()
 {
     typedef UsdKatanaLookAPI This;
 
-    class_<This, bases<UsdSchemaBase> >
+    class_<This, bases<UsdAPISchemaBase> >
         cls("LookAPI");
 
     cls
@@ -73,8 +73,24 @@ void wrapUsdKatanaLookAPI()
         .def("Get", &This::Get, (arg("stage"), arg("path")))
         .staticmethod("Get")
 
-        .def("Define", &This::Define, (arg("stage"), arg("path")))
-        .staticmethod("Define")
+        .def("Apply", &This::Apply, (arg("prim")))
+        .staticmethod("Apply")
+
+        .def("IsConcrete",
+            static_cast<bool (*)(void)>( [](){ return This::IsConcrete; }))
+        .staticmethod("IsConcrete")
+
+        .def("IsTyped",
+            static_cast<bool (*)(void)>( [](){ return This::IsTyped; } ))
+        .staticmethod("IsTyped")
+
+        .def("IsApplied", 
+            static_cast<bool (*)(void)>( [](){ return This::IsApplied; } ))
+        .staticmethod("IsApplied")
+
+        .def("IsMultipleApply", 
+            static_cast<bool (*)(void)>( [](){ return This::IsMultipleApply; } ))
+        .staticmethod("IsMultipleApply")
 
         .def("GetSchemaAttributeNames",
              &This::GetSchemaAttributeNames,

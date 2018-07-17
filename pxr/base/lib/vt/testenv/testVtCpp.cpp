@@ -48,6 +48,7 @@
 
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/errorMark.h"
+#include "pxr/base/tf/iterator.h"
 #include "pxr/base/tf/stopwatch.h"
 #include "pxr/base/tf/token.h"
 #include "pxr/base/tf/enum.h"
@@ -192,29 +193,31 @@ static void testArray() {
     }
 
     {
-        // Test that mutating reserved data doesn't affect copies of an array.
+        // Test that mutating shape data doesn't affect copies of an array.
         VtArray<int> a(4);
-        a._GetReserved()->data[0] = 4;
-        a._GetReserved()->data[1] = 0;
+        a._GetShapeData()->otherDims[0] = 4;
+        a._GetShapeData()->otherDims[1] = 0;
 
         VtArray<int> b = a;
         const auto &ca = a;
         const auto &cb = b;
-        TF_AXIOM(ca._GetReserved()->data[0] == cb._GetReserved()->data[0]);
-        TF_AXIOM(ca._GetReserved()->data[1] == cb._GetReserved()->data[1]);
+        TF_AXIOM(ca._GetShapeData()->otherDims[0] ==
+                 cb._GetShapeData()->otherDims[0]);
+        TF_AXIOM(ca._GetShapeData()->otherDims[1] ==
+                 cb._GetShapeData()->otherDims[1]);
 
-        b._GetReserved()->data[0] = 2;
-        b._GetReserved()->data[1] = 2;
-        b._GetReserved()->data[2] = 0;
+        b._GetShapeData()->otherDims[0] = 2;
+        b._GetShapeData()->otherDims[1] = 2;
+        b._GetShapeData()->otherDims[2] = 0;
 
-        // Check that a's reserved data is unchanged
-        TF_AXIOM(ca._GetReserved()->data[0] == 4);
-        TF_AXIOM(ca._GetReserved()->data[1] == 0);
+        // Check that a's shape data is unchanged
+        TF_AXIOM(ca._GetShapeData()->otherDims[0] == 4);
+        TF_AXIOM(ca._GetShapeData()->otherDims[1] == 0);
 
-        // and that b's reserved data has been updated as expected.
-        TF_AXIOM(cb._GetReserved()->data[0] == 2);
-        TF_AXIOM(cb._GetReserved()->data[1] == 2);
-        TF_AXIOM(cb._GetReserved()->data[2] == 0);
+        // and that b's shape data has been updated as expected.
+        TF_AXIOM(cb._GetShapeData()->otherDims[0] == 2);
+        TF_AXIOM(cb._GetShapeData()->otherDims[1] == 2);
+        TF_AXIOM(cb._GetShapeData()->otherDims[2] == 0);
     }
 }
 
@@ -515,61 +518,6 @@ static void testDictionaryOverRecursive() {
     if ( bCopy != aOverBResultRecursive ) {
         die("VtDictionaryOverRecursive - strong ref, weak Ptr version");
     }
-}
-
-static void testDictionaryPyFormatting() {
-#if defined(PXR_PYTHON_MODULES_ENABLED)
-    VtDictionary vt0;
-    vt0["key"] = "value";
-    vt0["list"] = VtValue(vector<VtValue>(1, VtValue("single item")));
-
-    string stuff = VtDictionaryPrettyPrint(vt0);
-    if (stuff.empty())
-        die("VtDictionaryPrettyPrint - formatting failed!");
-
-    VtDictionary vt1 = VtDictionaryFromPythonString(stuff);
-    if (vt0 != vt1) {
-        die(TfStringPrintf("VtDictionaryFromPythonString - "
-                           "'''%s''' != '''%s'''!",
-                           TfStringify(vt0).c_str(),
-                           TfStringify(vt1).c_str()));
-    }
-
-    const char* fileName = "testDictionaryPyFormatting.txt";
-    if (!VtDictionaryPrettyPrintToFile(vt0, fileName))
-        die("VtDictionaryPrettyPrintToFile - failed to write to file!");
-
-    VtDictionary vt2 = VtDictionaryFromFile(fileName);
-    if (vt0 != vt2)
-        die("VtDictionaryFromFile - written and read dictionaries differ!");
-
-#if !defined(ARCH_OS_WINDOWS)
-    ArchUnlinkFile("link-to-dictionary");
-    TfSymlink(fileName, "link-to-dictionary");
-    VtDictionary vt3 = VtDictionaryFromFile("link-to-dictionary");
-    if (vt3 != vt2)
-        die("VtDictionaryFromFile - read from TfSymlink failed!");
-#endif
-
-    {
-        TfErrorMark m;
-        fprintf(stderr, "expected error:\n");
-        VtDictionary d = VtDictionaryFromPythonString("");
-        fprintf(stderr, "end expected error\n");
-        if (!d.empty() || m.IsClean())
-            die("VtDictionaryFromPythonString - empty string should fail!");
-    }
-
-    {
-        TfErrorMark m;
-        fprintf(stderr, "expected error:\n");
-        VtDictionary d = VtDictionaryFromPythonString("['notadict']");
-        fprintf(stderr, "end expected error\n");
-        if (!d.empty() || m.IsClean())
-            die("VtDictionaryFromPythonString - invalid dict");
-    }
-
-#endif
 }
 
 static void
@@ -886,6 +834,98 @@ static void testValue() {
     if (v.CanCastToTypeid(typeid(GfVec3d)))
         die("CanCast double to typeid of GfVec3d");
 
+    // Check that too large doubles cast to float infinities
+    v = VtValue(1e50);
+    if (!v.CanCast<float>())
+        die("CanCast of too large double to float");
+    if (v.Cast<float>() != std::numeric_limits<float>::infinity())
+        die("Cast of too large double to float is not +inf");
+    
+    v = VtValue(-1e50);
+    if (!v.CanCast<float>())
+        die("CanCast of too small double to float");
+    if (v.Cast<float>() != -std::numeric_limits<float>::infinity())
+        die("Cast of too small double to float is not -inf");
+
+    // Check that double infinities cast to float infinities
+    v = VtValue(std::numeric_limits<double>::infinity());
+    if (!v.CanCast<float>())
+        die("CanCast of double +inf to float");
+    if (v.Cast<float>() != std::numeric_limits<float>::infinity())
+        die("Cast of double +inf to float is not +inf");
+
+    v = VtValue(-std::numeric_limits<double>::infinity());
+    if (!v.CanCast<float>())
+        die("CanCast of double -inf to float");
+    if (v.Cast<float>() != -std::numeric_limits<float>::infinity())
+        die("Cast of double -inf to float is not -inf");
+
+    // Check that float infinities cast to double infinities
+    v = VtValue(std::numeric_limits<float>::infinity());
+    if (!v.CanCast<double>())
+        die("CanCast of float +inf to double");
+    if (v.Cast<double>() != std::numeric_limits<double>::infinity())
+        die("Cast of float +inf to double is not +inf");
+
+    v = VtValue(-std::numeric_limits<float>::infinity());
+    if (!v.CanCast<double>())
+        die("CanCast of float -inf to double");
+    if (v.Cast<double>() != -std::numeric_limits<double>::infinity())
+        die("Cast of float -inf to double is not -inf");
+
+    // Check that really large long long casts to double
+    v = VtValue(1000000000000000000ll);
+    if (!v.CanCast<double>())
+        die("CanCast of really large long long to double");
+    if (v.Cast<double>() != 1e+18)
+        die("Cast of really large long long to double");
+
+    // Check that really large long long casts to float
+    v = VtValue(1000000000000000000ll);
+    if (!v.CanCast<float>())
+        die("CanCast of really large long long to float");
+    if (v.Cast<float>() != 1e+18f)
+        die("Cast of really large long long to float");
+        
+    // Check that really large long long casts to GfHalf infinity
+    v = VtValue(1000000000000000000ll);
+    if (!v.CanCast<GfHalf>())
+        die("CanCast of really large long long to GfHalf");
+    if (v.Cast<GfHalf>() != std::numeric_limits<GfHalf>::infinity())
+        die("Cast of really large long long to GfHalf is not +inf");
+
+    // Check that really small long long casts to minus GfHalf infinity
+    v = VtValue(-1000000000000000000ll);
+    if (!v.CanCast<GfHalf>())
+        die("CanCast of really small long long to GfHalf");
+    if (v.Cast<GfHalf>() != -std::numeric_limits<GfHalf>::infinity())
+        die("Cast of really small long long to GfHalf is not -inf");
+
+    // Check that too large unsigned short casts to GfHalf infinity
+    v = VtValue((unsigned short)65535);
+    if (!v.CanCast<GfHalf>())
+        die("CanCast of too large unsigned short to GfHalf");
+    if (v.Cast<GfHalf>() != std::numeric_limits<GfHalf>::infinity())
+        die("Cast of too large unsigned short to GfHalf is not +inf");
+
+    // Some sanity checks
+    v = VtValue((int)0);
+    if (!v.CanCast<double>())
+        die("CanCast of integer zero to double");
+    if (v.Cast<double>() != 0.0)
+        die("Cast of integer zero to double not zero");
+
+    v = VtValue((int)-1);
+    if (!v.CanCast<double>())
+        die("CanCast of integer -1 to double");
+    if (v.Cast<double>() != -1.0)
+        die("Cast of integer -1 to double not -1");
+
+    v = VtValue((int)+1);
+    if (!v.CanCast<double>())
+        die("CanCast of integer one to double");
+    if (v.Cast<double>() != +1.0)
+        die("Cast of integer one to double not one");
 
     // Range-checked casts.
     v = VtValue(std::numeric_limits<short>::max());
@@ -1201,7 +1241,6 @@ int main(int argc, char *argv[])
     testDictionaryIterators();
     testDictionaryInitializerList();
 
-    testDictionaryPyFormatting();
     testValue();
     testValueHash();
 

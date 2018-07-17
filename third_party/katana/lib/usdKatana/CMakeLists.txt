@@ -5,14 +5,16 @@ pxr_shared_library(${PXR_PACKAGE}
         plug
         gf
         tf
-        tracelite
+        trace
         vt
         ar
         sdf
         usd
+        usdHydra
         usdImaging
         usdImagingGL
         usdShade
+        usdSkel
         usdGeom
         usdLux
         usdRi
@@ -43,6 +45,7 @@ pxr_shared_library(${PXR_PACKAGE}
         readCamera
         readConstraintTarget
         readGprim
+        readGeomSubset
         readLight
         readLightFilter
         readMaterial
@@ -59,14 +62,16 @@ pxr_shared_library(${PXR_PACKAGE}
 
     PYMODULE_CPPFILES
         wrapBlindDataObject.cpp
+        wrapCache.cpp
         wrapLookAPI.cpp
         module.cpp
 
-    PYTHON_FILES
+    PYMODULE_FILES
         __init__.py
 
     RESOURCE_FILES
         plugInfo.json
         generatedSchema.usda
+        schema.usda:usdKatana/schema.usda
 )
 

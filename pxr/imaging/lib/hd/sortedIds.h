@@ -49,7 +49,7 @@ public:
     ~Hd_SortedIds() = default;
 
     HD_API
-    Hd_SortedIds(const Hd_SortedIds &&other);
+    Hd_SortedIds(Hd_SortedIds &&other);
 
     /// Sorts the ids if needed and returns the sorted list of ids.
     HD_API
@@ -62,6 +62,12 @@ public:
     /// Remove an id from the collection.
     HD_API
     void Remove(const SdfPath &id);
+
+    /// Remove a range of id from the collection.
+    /// Range defined by position index in sorted list.
+    /// end is inclusive.
+    HD_API
+    void RemoveRange(size_t start, size_t end);
 
     /// Removes all ids from the collection.
     HD_API

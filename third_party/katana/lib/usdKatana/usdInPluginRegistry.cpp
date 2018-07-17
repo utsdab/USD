@@ -164,5 +164,92 @@ PxrUsdKatanaUsdInPluginRegistry::FindKindForSite(
     return _DoFindKind(kind, opName, _kindExtReg);
 }
 
+typedef std::map<std::string, PxrUsdKatanaUsdInPluginRegistry::OpDirectExecFnc>
+        _OpDirectExecFncTable;
+
+static _OpDirectExecFncTable _opDirectExecFncTable;
+
+void PxrUsdKatanaUsdInPluginRegistry::RegisterOpDirectExecFnc(
+       const std::string& opName,
+       OpDirectExecFnc fnc)
+{
+    _opDirectExecFncTable[opName] = fnc;
+}
+    
+void PxrUsdKatanaUsdInPluginRegistry::ExecuteOpDirectExecFnc(
+        const std::string& opName,
+        const PxrUsdKatanaUsdInPrivateData& privateData,
+        FnKat::GroupAttribute opArgs,
+        FnKat::GeolibCookInterface& interface)
+{
+    _OpDirectExecFncTable::iterator I = _opDirectExecFncTable.find(opName);
+    
+    if (I != _opDirectExecFncTable.end())
+    {
+        (*((*I).second))(privateData, opArgs, interface);
+    }
+}
+
+
+typedef std::vector<PxrUsdKatanaUsdInPluginRegistry::LightListFnc>
+        _LightListFncList;
+static _LightListFncList _lightListFncList;
+
+
+void
+PxrUsdKatanaUsdInPluginRegistry::RegisterLightListFnc(LightListFnc fnc)
+{
+    _lightListFncList.push_back(fnc);
+}
+
+void
+PxrUsdKatanaUsdInPluginRegistry::ExecuteLightListFncs(
+        PxrUsdKatanaUtilsLightListAccess& lightList)
+{
+    for (auto i : _lightListFncList)
+    {
+        (*i)(lightList);
+    }
+}
+
+
+typedef std::vector<PxrUsdKatanaUsdInPluginRegistry::OpDirectExecFnc>
+        _LocationDecoratorFncList;
+
+static _LocationDecoratorFncList _locationDecoratorFncList;
+
+
+void
+PxrUsdKatanaUsdInPluginRegistry::RegisterLocationDecoratorOp(
+        const std::string& opName)
+{
+    _OpDirectExecFncTable::iterator I = _opDirectExecFncTable.find(opName);
+    
+    if (I != _opDirectExecFncTable.end())
+    {
+        _locationDecoratorFncList.push_back((*I).second);
+    }
+    
+}
+
+FnKat::GroupAttribute
+PxrUsdKatanaUsdInPluginRegistry::ExecuteLocationDecoratorOps(
+        const PxrUsdKatanaUsdInPrivateData& privateData,
+        FnKat::GroupAttribute opArgs,
+        FnKat::GeolibCookInterface& interface)
+{
+    for (auto i : _locationDecoratorFncList)
+    {
+        (*i)(privateData, opArgs, interface);
+        
+        opArgs = privateData.updateExtensionOpArgs(opArgs);
+    }
+    
+    return opArgs;
+}
+
+
+
+
 PXR_NAMESPACE_CLOSE_SCOPE
 

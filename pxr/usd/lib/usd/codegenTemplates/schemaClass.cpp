@@ -24,6 +24,9 @@
 #include "{{ libraryPath }}/{{ cls.GetHeaderFile() }}"
 #include "pxr/usd/usd/schemaRegistry.h"
 #include "pxr/usd/usd/typed.h"
+{% if cls.isApi %}
+#include "pxr/usd/usd/tokens.h"
+{% endif %}
 
 #include "pxr/usd/sdf/types.h"
 #include "pxr/usd/sdf/assetPath.h"
@@ -38,7 +41,7 @@ TF_REGISTRY_FUNCTION(TfType)
     TfType::Define<{{ cls.cppClassName }},
         TfType::Bases< {{ cls.parentCppClassName }} > >();
     
-{% if cls.isConcrete == "true" %}
+{% if cls.isConcrete %}
     // Register the usd prim typename as an alias under UsdSchemaBase. This
     // enables one to call
     // TfType::Find<UsdSchemaBase>().FindDerivedByName("{{ cls.usdPrimTypeName }}")
@@ -48,6 +51,13 @@ TF_REGISTRY_FUNCTION(TfType)
 {% endif %}
 }
 
+{% if cls.isApi %}
+TF_DEFINE_PRIVATE_TOKENS(
+    _schemaTokens,
+    ({{ cls.primName }})
+);
+
+{% endif %}
 /* virtual */
 {{ cls.cppClassName }}::~{{ cls.cppClassName }}()
 {
@@ -64,7 +74,7 @@ TF_REGISTRY_FUNCTION(TfType)
     return {{ cls.cppClassName }}(stage->GetPrimAtPath(path));
 }
 
-{% if cls.isConcrete == "true" %}
+{% if cls.isConcrete %}
 /* static */
 {{ cls.cppClassName }}
 {{ cls.cppClassName }}::Define(
@@ -77,6 +87,39 @@ TF_REGISTRY_FUNCTION(TfType)
     }
     return {{ cls.cppClassName }}(
         stage->DefinePrim(path, usdPrimTypeName));
+}
+{% endif %}
+{% if cls.isAppliedAPISchema %}
+/*virtual*/
+bool 
+{{ cls.cppClassName }}::_IsAppliedAPISchema() const 
+{
+    return true;
+}
+
+/* static */
+{{ cls.cppClassName }}
+{% if cls.isPrivateApply %}
+{% if not cls.isMultipleApply %}
+{{ cls.cppClassName }}::_Apply(const UsdPrim &prim)
+{% else %}
+{{ cls.cppClassName }}::_Apply(const UsdPrim &prim, const TfToken &name)
+{% endif %}
+{% else %}
+{% if not cls.isMultipleApply %}
+{{ cls.cppClassName }}::Apply(const UsdPrim &prim)
+{% else %}
+{{ cls.cppClassName }}::Apply(const UsdPrim &prim, const TfToken &name)
+{% endif %}
+{% endif %}
+{
+{% if cls.isMultipleApply %}
+    return UsdAPISchemaBase::_MultipleApplyAPISchema<{{ cls.cppClassName }}>(
+            prim, _schemaTokens->{{ cls.primName }}, name);
+{% else %}
+    return UsdAPISchemaBase::_ApplyAPISchema<{{ cls.cppClassName }}>(
+            prim, _schemaTokens->{{ cls.primName }});
+{% endif %}
 }
 {% endif %}
 
@@ -105,11 +148,13 @@ const TfType &
 
 {% for attrName in cls.attrOrder %}
 {% set attr = cls.attrs[attrName] %}
+{% if attr.apiGet != "custom" %}
 UsdAttribute
 {{ cls.cppClassName }}::Get{{ Proper(attr.apiName) }}Attr() const
 {
     return GetPrim().GetAttribute({{ tokensPrefix }}Tokens->{{ attr.name }});
 }
+{% endif %}
 
 UsdAttribute
 {{ cls.cppClassName }}::Create{{ Proper(attr.apiName) }}Attr(VtValue const &defaultValue, bool writeSparsely) const
@@ -125,11 +170,13 @@ UsdAttribute
 {% endfor %}
 {% for relName in cls.relOrder %}
 {% set rel = cls.rels[relName] %}
+{% if rel.apiGet != "custom" %}
 UsdRelationship
 {{ cls.cppClassName }}::Get{{ Proper(rel.apiName) }}Rel() const
 {
     return GetPrim().GetRelationship({{ tokensPrefix }}Tokens->{{ rel.name }});
 }
+{% endif %}
 
 UsdRelationship
 {{ cls.cppClassName }}::Create{{ Proper(rel.apiName) }}Rel() const

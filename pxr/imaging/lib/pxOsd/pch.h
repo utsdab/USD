@@ -25,6 +25,7 @@
 //
 
 #define TF_MAX_ARITY 7
+#include "pxr/pxr.h"
 #include "pxr/base/arch/defines.h"
 #if defined(ARCH_OS_DARWIN)
 #include <mach/mach_time.h>
@@ -39,6 +40,7 @@
 
 #include <intrin.h>
 #include <boost/preprocessor/variadic/size.hpp>
+#include <boost/vmd/is_empty.hpp>
 #include <boost/vmd/is_tuple.hpp>
 #endif
 #include <algorithm>
@@ -73,7 +75,6 @@
 #include <vector>
 #include <boost/aligned_storage.hpp>
 #include <boost/any.hpp>
-#include <boost/bind.hpp>
 #include <boost/container/vector.hpp>
 #include <boost/function.hpp>
 #include <boost/functional/hash.hpp>
@@ -117,12 +118,14 @@
 #include <boost/preprocessor/tuple/elem.hpp>
 #include <boost/preprocessor/tuple/to_list.hpp>
 #include <boost/preprocessor/tuple/to_seq.hpp>
+#ifdef PXR_PYTHON_SUPPORT_ENABLED
 #include <boost/python/object_fwd.hpp>
 #include <boost/python/object_operators.hpp>
 #if defined(__APPLE__) // Fix breakage caused by Python's pyport.h.
 #undef tolower
 #undef toupper
 #endif
+#endif // PXR_PYTHON_SUPPORT_ENABLED
 #include <boost/scoped_ptr.hpp>
 #include <boost/shared_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ptr.hpp>
@@ -137,11 +140,12 @@
 #include <boost/type_traits/is_convertible.hpp>
 #include <boost/type_traits/is_enum.hpp>
 #include <boost/type_traits/is_same.hpp>
-#include <boost/unordered_set.hpp>
 #include <boost/utility/enable_if.hpp>
 #include <boost/utility/value_init.hpp>
 #include <boost/weak_ptr.hpp>
 #include <opensubdiv/far/topologyRefiner.h>
 #include <opensubdiv/far/topologyRefinerFactory.h>
 #include <tbb/atomic.h>
+#ifdef PXR_PYTHON_SUPPORT_ENABLED
 #include <Python.h>
+#endif // PXR_PYTHON_SUPPORT_ENABLED

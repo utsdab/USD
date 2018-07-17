@@ -24,7 +24,7 @@
 
 #include "pxr/pxr.h"
 #include "pxr/usd/pcp/mapFunction.h"
-#include "pxr/base/tracelite/trace.h"
+#include "pxr/base/trace/trace.h"
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/enum.h"
 #include "pxr/base/tf/mallocTag.h"
@@ -275,7 +275,7 @@ _Map(const SdfPath& path,
     // to be fixed, they must be certain to recurse on target paths
     // themselves.
     //
-    // XXX: It may be preferrable to have PcpMapFunction be in charge
+    // XXX: It may be preferable to have PcpMapFunction be in charge
     //      of doing that, but some path translation issues make that
     //      infeasible for now.
 

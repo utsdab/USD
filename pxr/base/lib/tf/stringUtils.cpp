@@ -101,7 +101,7 @@ TfStringToDouble(const string& s)
     return TfStringToDouble(s.c_str());
 }
 
-// Convert a seqeunce of digits in a string to a negative integral value of
+// Convert a sequence of digits in a string to a negative integral value of
 // signed integral type Int.  Caller is responsible for ensuring that p points
 // to a valid sequence of digits.  The minus sign '-' may not appear.
 //
@@ -128,7 +128,7 @@ _StringToNegative(const char *p, bool *outOfRange)
     return result;
 }
 
-// Convert a seqeunce of digits in a string to a positive integral value of
+// Convert a sequence of digits in a string to a positive integral value of
 // integral type Int.  Caller is responsible for ensuring that p points to a
 // valid sequence of digits.
 //
@@ -320,7 +320,22 @@ TfGetBaseName(const string& fileName)
     if (i == fileName.size() - 1)    // ends in directory delimiter
         return TfGetBaseName(fileName.substr(0, i));
 #if defined(ARCH_OS_WINDOWS)
-    return PathFindFileName(fileName.c_str());
+    PTSTR result = PathFindFileName(fileName.c_str());
+
+    // If PathFindFilename returns the same string back, that means it didn't
+    // do anything.  That could mean that the patch has no basename, in which
+    // case we want to return the empty string, or it could mean that the
+    // fileName was already basename, in which case we want to return the
+    // string back.
+    if (result == fileName.c_str()) {
+        const bool hasDriveLetter = fileName.find(":") != string::npos;
+        const bool hasPathSeparator  = i != string::npos;
+        if (hasDriveLetter || hasPathSeparator) {
+            return std::string();
+        }
+    }
+    return result;
+
 #else
     if (i == string::npos)                      // no / in name
         return fileName;
@@ -511,14 +526,14 @@ TfQuotedStringTokenize(const string &source, const char *delimiters,
 
     if (strpbrk(delimiters, quotes) != NULL) {
         if (errors != NULL)
-            *errors = "Cannot use quotes as delimeters.";
+            *errors = "Cannot use quotes as delimiters.";
         
         return resultVec;
     }
     
     string quote;
     for (size_t i = 0; i < source.length();) {
-        // Eat leading delimeters.
+        // Eat leading delimiters.
         i = source.find_first_not_of(delimiters, i);
 
         if (i == string::npos) {

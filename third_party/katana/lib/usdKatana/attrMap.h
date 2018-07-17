@@ -27,6 +27,9 @@
 #include "pxr/pxr.h"
 #include <FnAttribute/FnGroupBuilder.h>
 #include <FnGeolib/op/FnGeolibOp.h>
+#include "pxr/usd/usd/attribute.h"
+
+#include <boost/thread/shared_mutex.hpp>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -40,8 +43,16 @@ PXR_NAMESPACE_OPEN_SCOPE
 /// GroupBuilder.
 class PxrUsdKatanaAttrMap
 {
-
 public:
+    /// Configure this object to evaluate USD attributes at the given time.
+    void SetUSDTimeCode(UsdTimeCode timeCode) {
+        _usdTimeCode = timeCode;
+    }
+
+    /// Set the katana attribute \p path by evaluating the given
+    /// USD attribute \p attr at the time configured in SetUSDTime().
+    /// Returns this object by reference so these calls can be chained.
+    PxrUsdKatanaAttrMap& Set(const std::string& path, const UsdAttribute& attr);
 
     /// \brief set \p attr at \p path.
     void set(const std::string& path, const Foundry::Katana::Attribute& attr);
@@ -55,10 +66,32 @@ public:
     /// \brief sets attrs in \p attrs onto the \p interface.
     void toInterface(Foundry::Katana::GeolibCookInterface& interface);
 
+
+    /// \brief returns true if a call to build has been made prior to any
+    ///        subsequent calls to set or del.
+    bool isBuilt();
+    
+
+    typedef boost::upgrade_mutex Mutex;
+    /// \brief while no locking occurs internal to this class, calling code
+    ///        may wish to manage read/write locks per-instance.
+    Mutex & getInstanceMutex() { return m_mutex; }
+
 private:
 
     Foundry::Katana::GroupBuilder _groupBuilder;
 
+    // Cache the last call to _groupBuilder.build() so that instances can be
+    // reused (as GroupBuilder clears itself by default)
+    Foundry::Katana::GroupAttribute _lastBuilt;
+
+
+    // Timecode to use when reading USD samples
+    UsdTimeCode _usdTimeCode;
+    
+    // per-instance mutex available for external use.
+    Mutex m_mutex;
+    
 };
 
 

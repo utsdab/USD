@@ -30,7 +30,7 @@
 #include "pxr/usd/sdf/layer.h"
 #include "pxr/usd/sdf/layerBase.h"
 
-#include "pxr/base/tracelite/trace.h"
+#include "pxr/base/trace/trace.h"
 
 #include "pxr/base/tf/envSetting.h"
 #include "pxr/base/tf/pathUtils.h"
@@ -257,10 +257,28 @@ UsdUsdFileFormat::Read(
 {
     TRACE_FUNCTION();
 
-    auto underlyingFileFormat = _GetUnderlyingFileFormat(resolvedPath);
+    // Try binary usdc format first, since that's most common, then usda text.
+    // The deprecated usdb format will be tried later if necessary, via the call
+    // to _GetUnderlyingFileFormat().
+    static auto formats = {
+        _GetFileFormat(UsdUsdcFileFormatTokens->Id),
+        _GetFileFormat(UsdUsdaFileFormatTokens->Id),
+    };
 
-    return underlyingFileFormat && 
-        underlyingFileFormat->Read(layerBase, resolvedPath, metadataOnly);
+    // Network-friendly path -- just try to read the file and if we get one that
+    // works we're good.
+    for (auto const &fmt: formats) {
+        TfErrorMark m;
+        if (fmt && fmt->Read(layerBase, resolvedPath, metadataOnly))
+            return true;
+        m.Clear();
+    }
+
+    // Failed to load.  Do the slower (for the network) version where we attempt
+    // to determine the underlying format first, and then load using it.
+    auto underlyingFormat = _GetUnderlyingFileFormat(resolvedPath);
+    return underlyingFormat &&
+        underlyingFormat->Read(layerBase, resolvedPath, metadataOnly);
 }
 
 SdfFileFormatConstPtr 

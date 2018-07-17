@@ -87,6 +87,11 @@ public:
     /// a non-empty typeName.
     static const bool IsConcrete = true;
 
+    /// Compile-time constant indicating whether or not this class inherits from
+    /// UsdTyped. Types which inherit from UsdTyped can impart a typename on a
+    /// UsdPrim.
+    static const bool IsTyped = true;
+
     /// Construct a UsdGeomMesh on UsdPrim \p prim .
     /// Equivalent to UsdGeomMesh::Get(prim.GetStage(), prim.GetPath())
     /// for a \em valid \p prim, but will not immediately throw an error for
@@ -479,20 +484,25 @@ public:
     // ===================================================================== //
     // --(BEGIN CUSTOM CODE)--
 
+    /// Validate the topology of a mesh.
+    /// This validates that the sum of \p faceVertexCounts is equal to the size
+    /// of the \p faceVertexIndices array, and that all face vertex indices in
+    /// the \p faceVertexIndices array are in the range [0, numPoints).
+    /// Returns true if the topology is valid, or false otherwise.
+    /// If the topology is invalid and \p reason is non-null, an error message
+    /// describing the validation error will be set.
+    USDGEOM_API
+    static bool ValidateTopology(const VtIntArray& faceVertexIndices,
+                                 const VtIntArray& faceVertexCounts,
+                                 size_t numPoints,
+                                 std::string* reason=nullptr);
+
 public:
     /// \var const float SHARPNESS_INFINITE
     /// As an element of a 'creaseSharpness' or 'cornerSharpness' array,
     /// indicates that the crease or corner is perfectly sharp.
     USDGEOM_API
     static const float SHARPNESS_INFINITE;
-
-    // A transition API which can read both the new (faceVaryingLinearInterpolation)
-    // and old(faceVaryingInterpolateBoundary) attributes, but only returns values
-    // in the new form. This aims to limit the number of consumers which need to 
-    // handle both sets of values.
-    USDGEOM_API
-    TfToken GetFaceVaryingLinearInterpolation(
-        UsdTimeCode time=UsdTimeCode::Default()) const; 
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

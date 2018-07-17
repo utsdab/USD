@@ -56,7 +56,7 @@ TF_DECLARE_PUBLIC_TOKENS(HdStDrawTargetTokens, HDST_API, HDST_DRAW_TARGET_TOKENS
 
 class HdSceneDelegate;
 class HdRenderIndex;
-class HdStCamera;
+class HdCamera;
 class HdStDrawTargetAttachmentDescArray;
 
 
@@ -79,7 +79,7 @@ public:
     virtual ~HdStDrawTarget();
 
     /// Dirty bits for the HdStDrawTarget object
-    enum DirtyBits {
+    enum DirtyBits : HdDirtyBits {
         Clean                   = 0,
         DirtyDTEnable           = 1 <<  0,
         DirtyDTCamera           = 1 <<  1,
@@ -163,7 +163,7 @@ private:
 
     void _SetCamera(const SdfPath &cameraPath);
 
-    const HdStCamera *_GetCamera(const HdRenderIndex &renderIndex) const;
+    const HdCamera *_GetCamera(const HdRenderIndex &renderIndex) const;
 
     void _ResizeDrawTarget();
     void _RegisterTextureResource(HdSceneDelegate *sceneDelegate,

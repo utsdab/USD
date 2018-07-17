@@ -30,6 +30,8 @@
 #include "pxr/usd/sdf/path.h"
 
 #include <vector>
+#include <tbb/enumerable_thread_specific.h>
+#include <tbb/blocked_range.h>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -102,7 +104,6 @@ public:
                           void                *predicateParam,
                           SdfPathVector       *results);
 
-
     ///
     /// Subtree is a simplified form of filter, that gathers
     /// all prims that meet the single rootPath prefix condition.
@@ -116,6 +117,25 @@ public:
     void Subtree(const SdfPathVector &paths,
                  const SdfPath       &rootPath,
                  SdfPathVector       *results);
+
+    ///
+    /// Subtree is a simplified form of filter, that gathers
+    /// all prims that meet the single rootPath prefix condition.
+    ///
+    /// The list of paths to filter must be pre-sorted with
+    /// ordering defined by std::less<SdfPath &>.
+    ///
+    /// Rather than returning a list the paths, it instead returns
+    /// the start and end (inclusive) indexes into the paths
+    /// vector of that subtree range.
+    ///
+    /// If the rootPath wasn't found or an error occurred, that
+    /// otherwise produces an invalid range. The method returns false.
+    HD_API
+    bool SubtreeAsRange(const SdfPathVector &paths,
+                        const SdfPath       &rootPath,
+                        size_t *start,
+                        size_t *end);
 
 private:
     struct _PathFilter {
@@ -152,10 +172,14 @@ private:
 
     };
     typedef std::vector<_Range> _RangeArray;
+    typedef tbb::enumerable_thread_specific<_RangeArray> _ConcurrentRangeArray;
+    typedef tbb::blocked_range<size_t>                   _ConcurrentRange;
 
-    _PathFilterArray  _filterList;
-    _RangeArray       _gatheredRanges;
-    _RangeArray       _resultRanges;
+
+
+    _PathFilterArray      _filterList;
+    _RangeArray           _gatheredRanges;
+    _ConcurrentRangeArray _resultRanges;
 
 
 
@@ -178,16 +202,26 @@ private:
 
     void _GatherPaths(const SdfPathVector &paths);
 
-    void _DoPredicateTest(const SdfPathVector &paths,
-                          size_t               begin,
-                          size_t               end,
-                          FilterPredicateFn    predicateFn,
-                          void                *predicateParam);
+    // Outer Loop called for each range in vector
+    void _DoPredicateTestOnRange(const SdfPathVector &paths,
+                                 const _Range        &range,
+                                 FilterPredicateFn    predicateFn,
+                                 void                *predicateParam);
 
+    // Inner Loop over each prim in a sub range of _Range.
+    void _DoPredicateTestOnPrims(const SdfPathVector &paths,
+                                 _ConcurrentRange    &range,
+                                 FilterPredicateFn    predicateFn,
+                                 void                *predicateParam);
 
-    void _WriteResults(const SdfPathVector &paths,
-                       const _RangeArray &ranges,
-                       SdfPathVector *results) const;
+    template <class Iterator>
+    static void _WriteResults(const SdfPathVector &paths,
+                              const Iterator &rangesBegin,
+                              const Iterator &rangesEnd,
+                              SdfPathVector *results);
+
+    void _FilterSubTree(const SdfPathVector &paths,
+                        const SdfPath       &rootPath);
 
     // No default copying or assignment
     HdPrimGather(const HdPrimGather &) = delete;

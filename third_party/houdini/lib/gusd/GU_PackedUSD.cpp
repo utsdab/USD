@@ -24,17 +24,18 @@
 #include "GU_PackedUSD.h"
 
 #include "GT_PackedUSD.h"
+#include "GT_Utils.h"
 #include "xformWrapper.h"
 #include "meshWrapper.h"
 #include "pointsWrapper.h"
+#include "primWrapper.h"
 
 #include "UT_Gf.h"
-#include "UT_Usd.h"
 #include "GU_USD.h"
+#include "stageEdit.h"
 
 #include "USD_StdTraverse.h"
 #include "GT_PrimCache.h"
-#include "USD_StageCache.h"
 #include "USD_XformCache.h"
 #include "boundsCache.h"
 
@@ -140,24 +141,63 @@ GusdGU_PackedUSD::Build(
     GU_Detail&              detail, 
     const UT_StringHolder&  fileName, 
     const SdfPath&          primPath, 
-    const UsdTimeCode&      frame, 
+    UsdTimeCode             frame, 
     const char*             lod,
-    GusdPurposeSet          purposes )
+    GusdPurposeSet          purposes,
+    const UsdPrim&          prim )
 {   
-    auto prim = GU_PrimPacked::build( detail, k_typeName );
-    auto impl = UTverify_cast<GusdGU_PackedUSD *>(prim->implementation());
+    auto packedPrim = GU_PrimPacked::build( detail, k_typeName );
+    auto impl = UTverify_cast<GusdGU_PackedUSD *>(packedPrim->implementation());
     impl->m_fileName = fileName;
     impl->m_primPath = primPath;
     impl->m_frame = frame;
+    impl->m_usdPrim = prim;
+
+    if( prim && !prim.IsA<UsdGeomBoundable>() )
+    {
+        UsdGeomImageable geom = UsdGeomImageable(prim);
+        std::vector<UsdGeomPrimvar> authoredPrimvars = geom.GetAuthoredPrimvars();
+        GT_DataArrayHandle buffer;
+
+        for( const UsdGeomPrimvar &primvar : authoredPrimvars ) {
+            // This is temporary code, we need to factor the usd read code into GT_Utils.cpp
+            // to avoid duplicates and read for types GfHalf,double,int,string ...
+            GT_DataArrayHandle gtData = GusdPrimWrapper::convertPrimvarData( primvar, frame );
+            const UT_String  name(primvar.GetPrimvarName());
+            const GT_Storage gtStorage = gtData->getStorage();
+            const GT_Size    gtTupleSize = gtData->getTupleSize();
+
+            GA_Attribute *anAttr = detail.addTuple(GT_Util::getGAStorage(gtStorage), GA_ATTRIB_PRIMITIVE, name,
+                                                   gtTupleSize);
+
+            if( const GA_AIFTuple *aIFTuple = anAttr->getAIFTuple()) {
+
+                const float* flatArray = gtData->getF32Array( buffer );
+                aIFTuple->set( anAttr, packedPrim->getMapOffset(), flatArray, gtTupleSize );
+
+            }  else {
+
+                //TF_WARN( "Unsupported primvar type: %s, %s, tupleSize = %zd", 
+                //         GT_String( name ), GTstorage( gtStorage ), gtTupleSize );
+            }
+        }
+    }
+
     if( lod )
+    {
+#if HDK_API_VERSION < 16050000
         impl->intrinsicSetViewportLOD( lod );
+#else
+        impl->intrinsicSetViewportLOD( packedPrim, lod );
+#endif
+    }
     impl->setPurposes( purposes );
 
     // It seems that Houdini may reuse memory for packed implementations with
     // out calling the constructor to initialize data. 
     impl->resetCaches();
     impl->updateTransform();
-    return prim;
+    return packedPrim;
 }
 
 /* static */
@@ -168,27 +208,36 @@ GusdGU_PackedUSD::Build(
     const SdfPath&          primPath, 
     const SdfPath&          srcPrimPath,
     int                     index,
-    const UsdTimeCode&      frame, 
+    UsdTimeCode             frame, 
     const char*             lod,
-    GusdPurposeSet          purposes )
+    GusdPurposeSet          purposes,
+    const UsdPrim&          prim )
 {   
-    auto prim = GU_PrimPacked::build( detail, k_typeName );
-    auto impl = UTverify_cast<GusdGU_PackedUSD *>(prim->implementation());
+    auto packedPrim = GU_PrimPacked::build( detail, k_typeName );
+    auto impl = UTverify_cast<GusdGU_PackedUSD *>(packedPrim->implementation());
     impl->m_fileName = fileName;
     impl->m_primPath = primPath;
     impl->m_srcPrimPath = srcPrimPath;
     impl->m_index = index;
     impl->m_frame = frame;
+    impl->m_usdPrim = prim;
     if( lod )
+    {
+#if HDK_API_VERSION < 16050000
         impl->intrinsicSetViewportLOD( lod );
+#else
+        impl->intrinsicSetViewportLOD( packedPrim, lod );
+#endif
+    }
     impl->setPurposes( purposes );
 
     // It seems that Houdini may reuse memory for packed implementations with
     // out calling the constructor to initialize data. 
     impl->resetCaches();
     impl->updateTransform();
-    return prim;
+    return packedPrim;
 }
+
 
 GusdGU_PackedUSD::GusdGU_PackedUSD()
     : GU_PackedImpl()
@@ -210,7 +259,6 @@ GusdGU_PackedUSD::GusdGU_PackedUSD( const GusdGU_PackedUSD &src )
     , m_frame( src.m_frame )
     , m_purposes( src.m_purposes )
     , m_usdPrim( src.m_usdPrim )
-    , m_stageProxy( src.m_stageProxy )
     , m_boundsCache( src.m_boundsCache )
     , m_transformCacheValid( src.m_transformCacheValid )
     , m_transformCache( src.m_transformCache )
@@ -252,8 +300,7 @@ void
 GusdGU_PackedUSD::resetCaches()
 {
     m_boundsCache.makeInvalid();
-    m_usdPrim = GusdUSD_PrimHolder();
-    m_stageProxy = GusdUSD_StageProxyHandle();
+    m_usdPrim = UsdPrim();
     m_transformCacheValid = false;
     m_gtPrimCache = GT_PrimitiveHandle();
 }
@@ -295,14 +342,9 @@ GusdGU_PackedUSD::setAltFileName( const UT_StringHolder& fileName )
 void
 GusdGU_PackedUSD::setPrimPath( const UT_StringHolder& p ) 
 {
-    if( p.isstring() )
-    {
-        setPrimPath(SdfPath(p.buffer()));
-    }
-    else
-    {
-        setPrimPath(SdfPath());
-    }
+    SdfPath path;
+    GusdUSD_Utils::CreateSdfPath(p, path);
+    setPrimPath(path);
 }
 
 
@@ -321,14 +363,9 @@ GusdGU_PackedUSD::setPrimPath( const SdfPath &path )
 void
 GusdGU_PackedUSD::setSrcPrimPath( const UT_StringHolder& p )
 {
-    if( p.isstring() )
-    {
-        setSrcPrimPath(SdfPath(p.buffer()));
-    }
-    else
-    {
-        setSrcPrimPath( SdfPath() );
-    }
+    SdfPath path;
+    GusdUSD_Utils::CreateSdfPath(p, path);
+    setSrcPrimPath(path);
 }
 
 void
@@ -348,7 +385,7 @@ GusdGU_PackedUSD::setIndex( exint index )
 }
 
 void
-GusdGU_PackedUSD::setFrame( const UsdTimeCode& frame ) 
+GusdGU_PackedUSD::setFrame( UsdTimeCode frame ) 
 {
     if( frame != m_frame )
     {
@@ -401,24 +438,16 @@ GusdGU_PackedUSD::getIntrinsicPurposes( UT_StringArray& purposes ) const
 void 
 GusdGU_PackedUSD::setIntrinsicPurposes( const UT_StringArray& purposes )
 {
-    int p = GUSD_PURPOSE_DEFAULT;
-    for( auto& s : purposes ) {
-        if( s == "proxy" )
-            p |= GUSD_PURPOSE_PROXY;
-        else if( s == "render" ) 
-            p |= GUSD_PURPOSE_RENDER;
-        else if( s == "guide" )
-            p |= GUSD_PURPOSE_GUIDE;
-    }
-    setPurposes( GusdPurposeSet( p ));
+    // always includ default purpose
+    setPurposes(GusdPurposeSet(GusdPurposeSetFromArray(purposes)|
+                               GUSD_PURPOSE_DEFAULT));
 }
 
 UT_StringHolder
 GusdGU_PackedUSD::intrinsicType() const
 {
     // Return the USD prim type so it can be displayed in the spreadsheet.
-    GusdUSD_PrimHolder::ScopedLock lock;
-    UsdPrim prim = getUsdPrim(lock);    
+    UsdPrim prim = getUsdPrim();
     return UT_StringHolder( prim.GetTypeName().GetText() );
 }
 
@@ -428,8 +457,7 @@ GusdGU_PackedUSD::getUsdTransform() const
     if( m_transformCacheValid )
         return m_transformCache;
 
-    GusdUSD_PrimHolder::ScopedLock lock;
-    UsdPrim prim = getUsdPrim(lock);
+    UsdPrim prim = getUsdPrim();
 
     if( !prim  ) {
         TF_WARN( "Invalid prim! %s", m_primPath.GetText() );
@@ -496,7 +524,7 @@ GusdGU_PackedUSD::load(const UT_Options &options, const GA_LoadMap &map)
 void    
 GusdGU_PackedUSD::update(const UT_Options &options)
 {
-    string fileName, altFileName, primPath;
+    UT_StringHolder fileName, altFileName, primPath;
     if( options.importOption( "usdFileName", fileName ) || 
         options.importOption( "fileName", fileName ))
     {
@@ -512,12 +540,12 @@ GusdGU_PackedUSD::update(const UT_Options &options)
     if( options.importOption( "usdPrimPath", primPath ) ||
         options.importOption( "nodePath", primPath ))
     {
-        m_primPath = primPath.empty() ? SdfPath() : SdfPath(primPath);
+        GusdUSD_Utils::CreateSdfPath(primPath, m_primPath);
     }
 
     if( options.importOption( "usdSrcPrimPath", primPath ))
     {
-        m_srcPrimPath = primPath.empty() ? SdfPath() : SdfPath(primPath);
+        GusdUSD_Utils::CreateSdfPath(primPath, m_srcPrimPath);
     }
 
     exint index;
@@ -549,7 +577,7 @@ GusdGU_PackedUSD::save(UT_Options &options, const GA_SaveMap &map) const
     options.setOptionS( "usdPrimPath", m_primPath.GetText() );
     options.setOptionS( "usdSrcPrimPath", m_srcPrimPath.GetText() );
     options.setOptionI( "usdIndex", m_index );
-    options.setOptionF( "usdFrame", m_frame.GetValue() );
+    options.setOptionF( "usdFrame", GusdUSD_Utils::GetNumericTime(m_frame) );
 
     UT_StringArray purposes;
     getIntrinsicPurposes( purposes );
@@ -566,24 +594,15 @@ GusdGU_PackedUSD::getBounds(UT_BoundingBox &box) const
         return true;
     }
 
-    GusdUSD_PrimHolder::ScopedLock lock;
-    UsdPrim prim = getUsdPrim(lock);
+    UsdPrim prim = getUsdPrim();
 
-    if( !prim || !m_stageProxy ) {
+    if( !prim ) {
         cerr << "Invalid prim " << m_primPath << endl;
     }
 
     if(UsdGeomImageable visPrim = UsdGeomImageable(prim))
     {
-        TfTokenVector purposes;
-        if( m_purposes & GUSD_PURPOSE_DEFAULT )
-            purposes.push_back( UsdGeomTokens->default_ );
-        if( m_purposes & GUSD_PURPOSE_PROXY )
-            purposes.push_back( UsdGeomTokens->proxy );
-        if( m_purposes & GUSD_PURPOSE_RENDER )
-            purposes.push_back( UsdGeomTokens->render );
-        if( m_purposes & GUSD_PURPOSE_GUIDE )
-            purposes.push_back( UsdGeomTokens->guide );
+        TfTokenVector purposes = GusdPurposeSetToTokens(m_purposes);
 
         if( GusdBoundsCache::GetInstance().ComputeUntransformedBound( 
                         prim, 
@@ -622,31 +641,6 @@ GusdGU_PackedUSD::getLocalTransform(UT_Matrix4D &m) const
 }
 
 bool
-containsBoundable( UsdPrim p )
-{
-    // Return true if this prim has a boundable geom descendant.
-    // Boundables are gprims and the point instancers.
-    // Used when unpacking so we don't create empty GU prims.
-
-    if( p.IsInstance() )
-        return containsBoundable( p.GetMaster() );
-
-    UsdGeomImageable ip( p );
-    if( !GusdUSD_Utils::ImageablePrimHasDefaultPurpose(ip) && !p.IsMaster() )
-        return false;
-    
-    if( p.IsA<UsdGeomBoundable>() )
-        return true;
-
-    for( auto child : p.GetChildren() )
-    {
-        if( containsBoundable( child ))
-            return true;
-    }
-    return false;
-}
-
-bool
 GusdGU_PackedUSD::unpackPrim( 
     GU_Detail&              destgdp,
     UsdGeomImageable        prim, 
@@ -657,7 +651,6 @@ GusdGU_PackedUSD::unpackPrim(
 {
     GT_PrimitiveHandle gtPrim = 
         GusdPrimWrapper::defineForRead( 
-                    m_stageProxy,
                     prim,
                     m_frame,
                     m_purposes );
@@ -674,11 +667,15 @@ GusdGU_PackedUSD::unpackPrim(
 
     if( !wrapper->unpack( 
             destgdp,
-            TfToken(fileName().buffer()),
+            fileName(),
             primPath,
             xform,
             intrinsicFrame(),
-            intrinsicViewportLOD(),
+#if HDK_API_VERSION < 16050000
+	    intrinsicViewportLOD(),
+#else
+	    intrinsicViewportLOD( getPrim() ),
+#endif
             m_purposes )) {
 
         // If the wrapper prim does not do the unpack, do it here.
@@ -729,8 +726,7 @@ bool
 GusdGU_PackedUSD::unpackGeometry(GU_Detail &destgdp,
                                  const char* primvarPattern) const
 {
-    GusdUSD_PrimHolder::ScopedLock lock;
-    UsdPrim usdPrim = getUsdPrim(lock);
+    UsdPrim usdPrim = getUsdPrim();
 
     if( !usdPrim )
     {
@@ -755,36 +751,9 @@ GusdGU_PackedUSD::unpackGeometry(GU_Detail &destgdp,
     GT_PrimitiveHandle gtPrim;
 
     DBG( cerr << "GusdGU_PackedUSD::unpackGeometry: " << usdPrim.GetTypeName() << ", " << usdPrim.GetPath() << endl; )
+    
+    unpackPrim( destgdp, UsdGeomImageable( usdPrim ), m_primPath, xform, rparms, true );
 
-    if( usdPrim.IsInstance() )
-    {
-        // We can't refine instances into other usd packed prims. This may be fixed
-        // soon but right now you can't have a prim path that refers to the 
-        // contents of an instance. 
-        // So unpack instances all the way to houdini geometry.
-        // Also, note that we don't create primpath attributes for the houdini
-        // geometry. There is no valid primpath for instanced geometry.
-
-        UT_Array<UsdPrim> gprims;
-        GusdUSD_StdTraverse::GetBoundableAndInstanceTraversal().FindPrims( 
-                usdPrim.GetMaster(),
-                m_frame,
-                m_purposes,
-                gprims,
-                true );
-
-        for( const auto &prim : gprims ) {
-
-            UT_Matrix4D m;
-        GusdUSD_XformCache::GetInstance().GetLocalToWorldTransform( 
-                    prim, m_frame, m );            
-
-            unpackPrim( destgdp, UsdGeomImageable(prim), SdfPath(), m, rparms, false );
-        }
-    }
-    else {
-        unpackPrim( destgdp, UsdGeomImageable( usdPrim ), m_primPath, xform, rparms, true );
-    }
     return true;
 }
 
@@ -807,16 +776,32 @@ GusdGU_PackedUSD::getInstanceKey(UT_Options& key) const
 {
     key.setOptionS("f", m_fileName);
     key.setOptionS("n", m_primPath.GetString());
-    key.setOptionF("t", m_frame.GetValue());
+    key.setOptionF("t", GusdUSD_Utils::GetNumericTime(m_frame));
     key.setOptionI("p", m_purposes );
-
+    
     if( !m_masterPathCacheValid ) {
-        GusdUSD_PrimHolder::ScopedLock lock;
-        UsdPrim usdPrim = getUsdPrim(lock);
+        UsdPrim usdPrim = getUsdPrim();
+
+        if( !usdPrim ) {
+            return true;
+        }
+
+        // Disambiguate masters of instances by including the stage pointer.
+        // Sometimes instances are opened on different stages, so their
+        // path will both be "/__Master_1" even if they are different prims.
+        // TODO: hash by the Usd instancing key if it becomes exposed.
+        std::ostringstream ost;
+        ost << (void const *)get_pointer(usdPrim.GetStage());
+        std::string stagePtr = ost.str();
         if( usdPrim.IsValid() && usdPrim.IsInstance() ) {
-            m_masterPathCache = usdPrim.GetMaster().GetPrimPath().GetString();
+            m_masterPathCache = stagePtr +
+                usdPrim.GetMaster().GetPrimPath().GetString();
         } 
-        else {
+        else if( usdPrim.IsValid() && usdPrim.IsInstanceProxy() ) {
+            m_masterPathCache = stagePtr +
+                usdPrim.GetPrimInMaster().GetPrimPath().GetString();
+        } 
+        else{
             m_masterPathCache = "";
         }
         m_masterPathCacheValid = true;
@@ -856,58 +841,24 @@ GusdGU_PackedUSD::visibleGT() const
 }
 
 UsdPrim 
-GusdGU_PackedUSD::getUsdPrim(GusdUSD_PrimHolder::ScopedLock &lock,
-                             GusdUT_ErrorContext* err) const
+GusdGU_PackedUSD::getUsdPrim(UT_ErrorSeverity sev) const
 {
-    if (BOOST_UNLIKELY(!m_usdPrim)) {
+    if(m_usdPrim)
+        return m_usdPrim;
 
-        GusdUSD_StageCacheContext cache;
+    m_masterPathCacheValid = false;
 
-        // bind accessor using the cache
-        GusdUSD_StageProxy::Accessor accessor;
+    SdfPath primPathWithoutVariants;
+    GusdStageBasicEditPtr edit;
+    GusdStageBasicEdit::GetPrimPathAndEditFromVariantsPath(
+        m_primPath, primPathWithoutVariants, edit);
 
-        const TfToken filePath(m_fileName.toStdString());
-
-        // The m_primPath member stores a path using variant notation (meaning
-        // it may contain variant selections inside {} curly braces). So set up
-        // the PrimIdentifier by giving it m_primPath as a variant path.
-        GusdUSD_Utils::PrimIdentifier identifier;
-        identifier.SetFromVariantPath(m_primPath);
-        if (cache.Bind(accessor, filePath, identifier, err)) {
-            m_usdPrim = accessor.GetPrimHolderAtPath(identifier.GetPrimPath(), err);
-            m_stageProxy = accessor.GetProxy();
-        }
-    }
-
-    if( !m_usdPrim ) {
-        return UsdPrim();
-    }
-
-    lock.Acquire(m_usdPrim, /*write*/false);
-    return *lock;
+    GusdStageCacheReader cache;
+    m_usdPrim = cache.GetPrim(m_fileName, primPathWithoutVariants, edit,
+                              GusdStageOpts::LoadAll(), sev).first;
+    return m_usdPrim;
 }
 
-GusdUSD_StageProxyHandle
-GusdGU_PackedUSD::getProxy() const
-{
-    if (BOOST_UNLIKELY(!m_stageProxy)) {
-
-        GusdUSD_StageCacheContext cache;
-
-        const TfToken filePath(m_fileName.toStdString());
-
-        // The m_primPath member stores a path using variant notation (meaning
-        // it may contain variant selections inside {} curly braces). So set up
-        // the PrimIdentifier by giving it m_primPath as a variant path.
-        GusdUSD_Utils::PrimIdentifier identifier;
-        identifier.SetFromVariantPath(m_primPath);
-
-        m_stageProxy =
-            cache.FindOrCreateProxy(filePath, identifier.GetVariants());
-    }
-
-    return m_stageProxy;
-}
 
 GT_PrimitiveHandle
 GusdGU_PackedUSD::fullGT() const
@@ -915,18 +866,12 @@ GusdGU_PackedUSD::fullGT() const
     if( m_gtPrimCache )
         return m_gtPrimCache;
 
-    GusdUSD_PrimHolder::ScopedLock lock;
-    UsdPrim usdPrim = getUsdPrim(lock);
-    if( !usdPrim.IsValid() ) {
-        return GT_PrimitiveHandle();
+    if(UsdPrim usdPrim = getUsdPrim()) {
+        m_gtPrimCache = GusdGT_PrimCache::GetInstance().GetPrim( 
+                            m_usdPrim, 
+                            m_frame,
+                            m_purposes );
     }
-
-    m_gtPrimCache = GusdGT_PrimCache::GetInstance().GetPrim( 
-                        m_stageProxy,
-                        m_usdPrim, 
-                        m_frame,
-                        m_purposes );
-
     return m_gtPrimCache;
 }
 

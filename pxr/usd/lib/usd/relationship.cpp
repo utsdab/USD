@@ -22,10 +22,12 @@
 // language governing permissions and limitations under the Apache License.
 //
 #include "pxr/pxr.h"
+#include "pxr/usd/usd/common.h"
 #include "pxr/usd/usd/relationship.h"
 #include "pxr/usd/usd/instanceCache.h"
 #include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/stage.h"
+#include "pxr/usd/usd/valueUtils.h"
 
 #include "pxr/usd/pcp/targetIndex.h"
 #include "pxr/usd/sdf/attributeSpec.h"
@@ -34,7 +36,7 @@
 #include "pxr/usd/sdf/primSpec.h"
 #include "pxr/usd/sdf/relationshipSpec.h"
 #include "pxr/usd/sdf/schema.h"
-#include "pxr/base/tracelite/trace.h"
+#include "pxr/base/trace/trace.h"
 
 #include <algorithm>
 #include <set>
@@ -75,7 +77,7 @@ UsdRelationship::_GetTargetForAuthoring(const SdfPath &target,
     if (!target.IsEmpty()) {
         SdfPath absTarget =
             target.MakeAbsolutePath(GetPath().GetAbsoluteRootOrPrimPath());
-        if (Usd_InstanceCache::IsPathMasterOrInMaster(absTarget)) {
+        if (Usd_InstanceCache::IsPathInMaster(absTarget)) {
             if (whyNot) { 
                 *whyNot = "Cannot target a master or an object within a "
                     "master.";
@@ -99,7 +101,8 @@ UsdRelationship::_GetTargetForAuthoring(const SdfPath &target,
 }
 
 bool
-UsdRelationship::AppendTarget(const SdfPath& target) const
+UsdRelationship::AddTarget(const SdfPath& target,
+                           UsdListPosition position) const
 {
     std::string errMsg;
     const SdfPath targetToAuthor = _GetTargetForAuthoring(target, &errMsg);
@@ -121,7 +124,8 @@ UsdRelationship::AppendTarget(const SdfPath& target) const
     if (!relSpec)
         return false;
 
-    relSpec->GetTargetPathList().Add(targetToAuthor);
+    Usd_InsertListItem( relSpec->GetTargetPathList(), targetToAuthor,
+                        position );
     return true;
 }
 
@@ -200,9 +204,7 @@ UsdRelationship::SetTargets(const SdfPathVector& targets) const
         return false;
 
     relSpec->GetTargetPathList().ClearEditsAndMakeExplicit();
-    for (const SdfPath &path: mappedPaths) {
-        relSpec->GetTargetPathList().Add(path);
-    }
+    relSpec->GetTargetPathList().GetExplicitItems() = mappedPaths;
 
     return true;
 }

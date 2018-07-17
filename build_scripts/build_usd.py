@@ -26,6 +26,7 @@ from distutils.spawn import find_executable
 import argparse
 import contextlib
 import datetime
+import fnmatch
 import glob
 import multiprocessing
 import os
@@ -99,26 +100,37 @@ def GetVisualStudioCompilerAndVersion():
 
 MSVC_2017_COMPILER_VERSION = (19, 10, 00000)
 
-def Run(cmd):
+def GetCPUCount():
+    try:
+        return multiprocessing.cpu_count()
+    except NotImplementedError:
+        return 1
+
+def Run(cmd, logCommandOutput = True):
     """Run the specified command in a subprocess."""
     PrintInfo('Running "{cmd}"'.format(cmd=cmd))
 
     with open("log.txt", "a") as logfile:
-        # Let exceptions escape from subprocess.check_output -- higher level
-        # code will handle them.
-        p = subprocess.Popen(shlex.split(cmd),
-                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         logfile.write(datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
         logfile.write("\n")
         logfile.write(cmd)
         logfile.write("\n")
-        while True:
-            l = p.stdout.readline()
-            if l != "":
-                logfile.write(l)
-                PrintCommandOutput(l)
-            elif p.poll() is not None:
-                break
+
+        # Let exceptions escape from subprocess calls -- higher level
+        # code will handle them.
+        if logCommandOutput:
+            p = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE, 
+                                 stderr=subprocess.STDOUT)
+            while True:
+                l = p.stdout.readline()
+                if l != "":
+                    logfile.write(l)
+                    PrintCommandOutput(l)
+                elif p.poll() is not None:
+                    break
+        else:
+            p = subprocess.Popen(shlex.split(cmd))
+            p.wait()
 
     if p.returncode != 0:
         # If verbosity >= 3, we'll have already been printing out command output
@@ -184,11 +196,14 @@ def RunCMake(context, force, extraArgs = None):
         if msvcCompilerAndVersion:
             _, version = msvcCompilerAndVersion
             if version >= MSVC_2017_COMPILER_VERSION:
-                generator = '-G "Visual Studio 15 2017 Win64"'
+                generator = "Visual Studio 15 2017 Win64"
             else:
-                generator = '-G "Visual Studio 14 2015 Win64"'
+                generator = "Visual Studio 14 2015 Win64"
+
+    if generator is not None:
+        generator = '-G "{gen}"'.format(gen=generator)
                 
-    # On MacOS, enable the use of @rpath for  relocatable builds.
+    # On MacOS, enable the use of @rpath for relocatable builds.
     osx_rpath = None
     if MacOS():
         osx_rpath = "-DCMAKE_MACOSX_RPATH=ON"
@@ -209,7 +224,7 @@ def RunCMake(context, force, extraArgs = None):
                     extraArgs=(" ".join(extraArgs) if extraArgs else "")))
         Run("cmake --build . --config Release --target install -- {multiproc}"
             .format(multiproc=("/M:{procs}" if Windows() else "-j{procs}")
-                               .format(procs=multiprocessing.cpu_count())))
+                               .format(procs=context.numJobs)))
 
 def PatchFile(filename, patches):
     """Applies patches to the specified file. patches is a list of tuples
@@ -224,10 +239,15 @@ def PatchFile(filename, patches):
         shutil.copy(filename, filename + ".old")
         open(filename, 'w').writelines(newLines)
 
-def DownloadURL(url, context, force):
+def DownloadURL(url, context, force, dontExtract = None):
     """Download and extract the archive file at given URL to the
-    source directory specified in the context. Returns the absolute 
-    path to the directory where files have been extracted."""
+    source directory specified in the context. 
+
+    dontExtract may be a sequence of path prefixes that will
+    be excluded when extracting the archive.
+
+    Returns the absolute path to the directory where files have 
+    been extracted."""
     with CurrentWorkingDirectory(context.srcDir):
         # Extract filename from URL and see if file already exists. 
         filename = url.split("/")[-1]       
@@ -246,48 +266,105 @@ def DownloadURL(url, context, force):
             # succeed in downloading the file.
             maxRetries = 5
             lastError = None
+
+            # Download to a temporary file and rename it to the expected
+            # filename when complete. This ensures that incomplete downloads
+            # will be retried if the script is run again.
+            tmpFilename = filename + ".tmp"
+            if os.path.exists(tmpFilename):
+                os.remove(tmpFilename)
+
             for i in xrange(maxRetries):
                 try:
-                    r = urllib2.urlopen(url)
-                    with open(filename, "wb") as outfile:
-                        outfile.write(r.read())
+                    if context.useCurl:
+                        # Don't log command output so that curl's progress
+                        # meter doesn't get written to the log file.
+                        Run("curl {progress} -L -o {filename} {url}".format(
+                            progress="-#" if verbosity >= 2 else "-s",
+                            filename=tmpFilename, url=url), 
+                            logCommandOutput=False)
+                    else:
+                        r = urllib2.urlopen(url)
+                        with open(tmpFilename, "wb") as outfile:
+                            outfile.write(r.read())
+
                     break
                 except Exception as e:
                     PrintCommandOutput("Retrying download due to error: {err}\n"
                                        .format(err=e))
                     lastError = e
             else:
+                errorMsg = str(lastError)
+                if "SSL: TLSV1_ALERT_PROTOCOL_VERSION" in errorMsg:
+                    errorMsg += ("\n\n"
+                                 "Your OS or version of Python may not support "
+                                 "TLS v1.2+, which is required for downloading "
+                                 "files from certain websites. This support "
+                                 "was added in Python 2.7.9."
+                                 "\n\n"
+                                 "You can use curl to download dependencies "
+                                 "by installing it in your PATH and re-running "
+                                 "this script.")
                 raise RuntimeError("Failed to download {url}: {err}"
-                                   .format(url=url, err=lastError))
+                                   .format(url=url, err=errorMsg))
+
+            shutil.move(tmpFilename, filename)
 
         # Open the archive and retrieve the name of the top-most directory.
         # This assumes the archive contains a single directory with all
         # of the contents beneath it.
         archive = None
         rootDir = None
+        members = None
         try:
             if tarfile.is_tarfile(filename):
                 archive = tarfile.open(filename)
                 rootDir = archive.getnames()[0].split('/')[0]
+                if dontExtract != None:
+                    members = (m for m in archive.getmembers() 
+                               if not any((fnmatch.fnmatch(m.name, p)
+                                           for p in dontExtract)))
             elif zipfile.is_zipfile(filename):
                 archive = zipfile.ZipFile(filename)
                 rootDir = archive.namelist()[0].split('/')[0]
+                if dontExtract != None:
+                    members = (m for m in archive.getnames() 
+                               if not any((fnmatch.fnmatch(m, p)
+                                           for p in dontExtract)))
             else:
                 raise RuntimeError("unrecognized archive file type")
 
-            extractedPath = os.path.abspath(rootDir)
-            if force and os.path.isdir(extractedPath):
-                shutil.rmtree(extractedPath)
+            with archive:
+                extractedPath = os.path.abspath(rootDir)
+                if force and os.path.isdir(extractedPath):
+                    shutil.rmtree(extractedPath)
 
-            if os.path.isdir(extractedPath):
-                PrintInfo("Directory {0} already exists, skipping extract"
-                          .format(extractedPath))
-            else:
-                PrintInfo("Extracting archive to {0}".format(extractedPath))
-                archive.extractall()
+                if os.path.isdir(extractedPath):
+                    PrintInfo("Directory {0} already exists, skipping extract"
+                              .format(extractedPath))
+                else:
+                    PrintInfo("Extracting archive to {0}".format(extractedPath))
 
-            return extractedPath
+                    # Extract to a temporary directory then move the contents
+                    # to the expected location when complete. This ensures that
+                    # incomplete extracts will be retried if the script is run
+                    # again.
+                    tmpExtractedPath = os.path.abspath("extract_dir")
+                    if os.path.isdir(tmpExtractedPath):
+                        shutil.rmtree(tmpExtractedPath)
+
+                    archive.extractall(tmpExtractedPath, members=members)
+
+                    shutil.move(os.path.join(tmpExtractedPath, rootDir),
+                                extractedPath)
+                    shutil.rmtree(tmpExtractedPath)
+
+                return extractedPath
         except Exception as e:
+            # If extraction failed for whatever reason, assume the
+            # archive file was bad and move it aside so that re-running
+            # the script will try downloading and extracting again.
+            shutil.move(filename, filename + ".bad")
             raise RuntimeError("Failed to extract archive {filename}: {err}"
                                .format(filename=filename, err=e))
 
@@ -305,25 +382,24 @@ class Dependency(object):
                     for f in self.filesToCheck])
 
 class PythonDependency(object):
-    def __init__(self, name, installer, moduleName):
+    def __init__(self, name, getInstructions, moduleNames):
         self.name = name
-        self.installer = installer
-        self.moduleName = moduleName
+        self.getInstructions = getInstructions
+        self.moduleNames = moduleNames
 
     def Exists(self, context):
-        try:
-            # Eat all output; we just care if the import succeeded or not.
-            subprocess.check_output(shlex.split(
-                'python -c "import {module}"'.format(module=self.moduleName)),
-                stderr=subprocess.STDOUT)
-            return True
-        except subprocess.CalledProcessError:
-            return False
+        # If one of the modules in our list exists we are good
+        for moduleName in self.moduleNames:
+            try:
+                # Eat all output; we just care if the import succeeded or not.
+                subprocess.check_output(shlex.split(
+                    'python -c "import {module}"'.format(module=moduleName)),
+                    stderr=subprocess.STDOUT)
+                return True
+            except subprocess.CalledProcessError:
+                pass
+        return False
 
-class ManualPythonDependency(PythonDependency):
-    def __init__(self, name, getInstructions, moduleName):
-        super(ManualPythonDependency, self).__init__(name, None, moduleName)
-        self.getInstructions = getInstructions
 
 def AnyPythonDependencies(deps):
     return any([type(d) is PythonDependency for d in deps])
@@ -348,15 +424,27 @@ elif Windows() or MacOS():
     BOOST_URL = "http://downloads.sourceforge.net/project/boost/boost/1.61.0/boost_1_61_0.tar.gz"
 
 def InstallBoost(context, force):
-    with CurrentWorkingDirectory(DownloadURL(BOOST_URL, context, force)):
+    # Documentation files in the boost archive can have exceptionally
+    # long paths. This can lead to errors when extracting boost on Windows,
+    # since paths are limited to 260 characters by default on that platform.
+    # To avoid this, we skip extracting all documentation.
+    #
+    # For some examples, see: https://svn.boost.org/trac10/ticket/11677
+    dontExtract = ["*/doc/*", "*/libs/*/doc/*"]
+
+    with CurrentWorkingDirectory(DownloadURL(BOOST_URL, context, force, 
+                                             dontExtract)):
         bootstrap = "bootstrap.bat" if Windows() else "./bootstrap.sh"
         Run('{bootstrap} --prefix="{instDir}"'
             .format(bootstrap=bootstrap, instDir=context.instDir))
 
+        # b2 supports at most -j64 and will error if given a higher value.
+        num_procs = min(64, context.numJobs)
+
         b2_settings = [
             '--prefix="{instDir}"'.format(instDir=context.instDir),
             '--build-dir="{buildDir}"'.format(buildDir=context.buildDir),
-            '-j{procs}'.format(procs=multiprocessing.cpu_count()),
+            '-j{procs}'.format(procs=num_procs),
             'address-model=64',
             'link=shared',
             'runtime-link=shared',
@@ -366,11 +454,13 @@ def InstallBoost(context, force):
             '--with-date_time',
             '--with-filesystem',
             '--with-program_options',
-            '--with-python',
             '--with-regex',
             '--with-system',
             '--with-thread'
         ]
+
+        if context.buildPython:
+            b2_settings.append("--with-python")
 
         if force:
             b2_settings.append("-a")
@@ -417,7 +507,7 @@ if Windows():
 elif MacOS():
     TBB_URL = "https://github.com/01org/tbb/archive/2017_U2.tar.gz"
 else:
-    TBB_URL = "https://github.com/01org/tbb/archive/4.4.tar.gz"
+    TBB_URL = "https://github.com/01org/tbb/archive/4.4.6.tar.gz"
 
 def InstallTBB(context, force):
     if Windows():
@@ -438,7 +528,7 @@ def InstallTBB_LinuxOrMacOS(context, force):
     with CurrentWorkingDirectory(DownloadURL(TBB_URL, context, force)):
         # TBB does not support out-of-source builds in a custom location.
         Run('make -j{procs}'
-            .format(procs=multiprocessing.cpu_count()))
+            .format(procs=context.numJobs))
 
         CopyFiles(context, "build/*_release/libtbb*.*", "lib")
         CopyDirectory(context, "include/serial", "include/serial")
@@ -470,35 +560,28 @@ def InstallJPEG_Lib(context, force):
             '--disable-static --enable-shared'
             .format(instDir=context.instDir))
         Run('make -j{procs} install'
-            .format(procs=multiprocessing.cpu_count()))
+            .format(procs=context.numJobs))
 
 JPEG = Dependency("JPEG", InstallJPEG, "include/jpeglib.h")
         
 ############################################################
 # TIFF
 
-TIFF_URL = "ftp://download.osgeo.org/libtiff/tiff-4.0.7.zip"
+TIFF_URL = "http://download.osgeo.org/libtiff/tiff-4.0.7.zip"
 
 def InstallTIFF(context, force):
-    if Windows():
-        InstallTIFF_Windows(context, force)
-    else:
-        InstallTIFF_LinuxOrMacOS(context, force)
-
-def InstallTIFF_Windows(context, force):
     with CurrentWorkingDirectory(DownloadURL(TIFF_URL, context, force)):
         # libTIFF has a build issue on Windows where tools/tiffgt.c
         # unconditionally includes unistd.h, which does not exist.
         # To avoid this, we patch the CMakeLists.txt to skip building
-        # the tools entirely. We also need to skip building tests, since
-        # they rely on the tools we've just elided.
+        # the tools entirely. We do this on Linux and MacOS as well
+        # to avoid requiring some GL and X dependencies.
+        #
+        # We also need to skip building tests, since they rely on 
+        # the tools we've just elided.
         PatchFile("CMakeLists.txt", 
                    [("add_subdirectory(tools)", "# add_subdirectory(tools)"),
                     ("add_subdirectory(test)", "# add_subdirectory(test)")])
-        RunCMake(context, force)
-        
-def InstallTIFF_LinuxOrMacOS(context, force):
-    with CurrentWorkingDirectory(DownloadURL(TIFF_URL, context, force)):
         RunCMake(context, force)
 
 TIFF = Dependency("TIFF", InstallTIFF, "include/tiff.h")
@@ -522,20 +605,14 @@ OPENEXR_URL = "https://github.com/openexr/openexr/archive/v2.2.0.zip"
 def InstallOpenEXR(context, force):
     srcDir = DownloadURL(OPENEXR_URL, context, force)
 
-    # Specify NAMESPACE_VERSIONING=OFF so that the built libraries
-    # don't have the version appended to their filename. USD's
-    # FindOpenEXR module can't handle that right now -- see 
-    # https://github.com/PixarAnimationStudios/USD/issues/71
     ilmbaseSrcDir = os.path.join(srcDir, "IlmBase")
     with CurrentWorkingDirectory(ilmbaseSrcDir):
-        RunCMake(context, force,
-                 ['-DNAMESPACE_VERSIONING=OFF'])
+        RunCMake(context, force)
 
     openexrSrcDir = os.path.join(srcDir, "OpenEXR")
     with CurrentWorkingDirectory(openexrSrcDir):
         RunCMake(context, force,
-                 ['-DNAMESPACE_VERSIONING=OFF',
-                  '-DILMBASE_PACKAGE_PREFIX="{instDir}"'
+                 ['-DILMBASE_PACKAGE_PREFIX="{instDir}"'
                   .format(instDir=context.instDir)])
 
 OPENEXR = Dependency("OpenEXR", InstallOpenEXR, "include/OpenEXR/ImfVersion.h")
@@ -571,7 +648,7 @@ def InstallGLEW_LinuxOrMacOS(context, force):
     with CurrentWorkingDirectory(DownloadURL(GLEW_URL, context, force)):
         Run('make GLEW_DEST="{instDir}" -j{procs} install'
             .format(instDir=context.instDir,
-                    procs=multiprocessing.cpu_count()))
+                    procs=context.numJobs))
 
 GLEW = Dependency("GLEW", InstallGLEW, "include/GL/glew.h")
 
@@ -620,7 +697,19 @@ OIIO_URL = "https://github.com/OpenImageIO/oiio/archive/Release-1.7.14.zip"
 def InstallOpenImageIO(context, force):
     with CurrentWorkingDirectory(DownloadURL(OIIO_URL, context, force)):
         extraArgs = ['-DOIIO_BUILD_TOOLS=OFF',
-                     '-DOIIO_BUILD_TESTS=OFF']
+                     '-DOIIO_BUILD_TESTS=OFF',
+                     '-DUSE_PYTHON=OFF',
+                     '-DSTOP_ON_WARNING=OFF']
+
+        # OIIO's FindOpenEXR module circumvents CMake's normal library 
+        # search order, which causes versions of OpenEXR installed in
+        # /usr/local or other hard-coded locations in the module to
+        # take precedence over the version we've built, which would 
+        # normally be picked up when we specify CMAKE_PREFIX_PATH. 
+        # This may lead to undefined symbol errors at build or runtime. 
+        # So, we explicitly specify the OpenEXR we want to use here.
+        extraArgs.append('-DOPENEXR_HOME="{instDir}"'
+                         .format(instDir=context.instDir))
 
         # If Ptex support is disabled in USD, disable support in OpenImageIO
         # as well. This ensures OIIO doesn't accidentally pick up a Ptex
@@ -679,11 +768,16 @@ OPENSUBDIV = Dependency("OpenSubdiv", InstallOpenSubdiv,
 ############################################################
 # PyOpenGL
 
-def InstallPyOpenGL(context, force):
-    PrintStatus("Installing PyOpenGL...")
-    Run("pip install PyOpenGL")
+def GetPyOpenGLInstructions():
+    return ('PyOpenGL is not installed. If you have pip '
+            'installed, run "pip install PyOpenGL" to '
+            'install it, then re-run this script.\n'
+            'If PyOpenGL is already installed, you may need to '
+            'update your PYTHONPATH to indicate where it is '
+            'located.')
 
-PYOPENGL = PythonDependency("PyOpenGL", InstallPyOpenGL, moduleName="OpenGL")
+PYOPENGL = PythonDependency("PyOpenGL", GetPyOpenGLInstructions, 
+                            moduleNames=["OpenGL"])
 
 ############################################################
 # PySide
@@ -693,24 +787,25 @@ def GetPySideInstructions():
     if MacOS():
         return ('PySide is not installed. If you have MacPorts '
                 'installed, run "port install py27-pyside-tools" '
-                'to install it, then re-run this installer.\n'
+                'to install it, then re-run this script.\n'
                 'If PySide is already installed, you may need to '
                 'update your PYTHONPATH to indicate where it is '
                 'located.')
     else:                       
-        return ('PySide is not installed. Run "pip install PySide" '
-                'to install it, then re-run this installer.\n'
+        return ('PySide is not installed. If you have pip '
+                'installed, run "pip install PySide" '
+                'to install it, then re-run this script.\n'
                 'If PySide is already installed, you may need to '
                 'update your PYTHONPATH to indicate where it is '
                 'located.')
 
-PYSIDE = ManualPythonDependency("PySide", GetPySideInstructions, 
-                                moduleName="PySide")
+PYSIDE = PythonDependency("PySide", GetPySideInstructions,
+                          moduleNames=["PySide", "PySide2"])
 
 ############################################################
 # HDF5
 
-HDF5_URL = "http://support.hdfgroup.org/ftp/HDF5/releases/hdf5-1.10/hdf5-1.10.0-patch1/src/hdf5-1.10.0-patch1.zip"
+HDF5_URL = "https://support.hdfgroup.org/ftp/HDF5/releases/hdf5-1.10/hdf5-1.10.0-patch1/src/hdf5-1.10.0-patch1.zip"
 
 def InstallHDF5(context, force):
     with CurrentWorkingDirectory(DownloadURL(HDF5_URL, context, force)):
@@ -757,6 +852,11 @@ ALEMBIC = Dependency("Alembic", InstallAlembic, "include/Alembic/Abc/Base.h")
 def InstallUSD(context):
     with CurrentWorkingDirectory(context.usdSrcDir):
         extraArgs = []
+
+        if context.buildPython:
+            extraArgs.append('-DPXR_ENABLE_PYTHON_SUPPORT=ON')
+        else:
+            extraArgs.append('-DPXR_ENABLE_PYTHON_SUPPORT=OFF')
 
         if context.buildShared:
             extraArgs.append('-DBUILD_SHARED_LIBS=ON')
@@ -846,6 +946,9 @@ programDescription = """\
 Installation Script for USD
 
 Builds and installs USD and 3rd-party dependencies to specified location.
+
+If curl is installed and located in PATH, it will be used to download
+dependencies. Otherwise, a built-in downloader will be used.
 """
 
 parser = argparse.ArgumentParser(
@@ -866,6 +969,10 @@ group.add_argument("-q", "--quiet", action="store_const", const=0,
                    help="Suppress all output except for error messages")
 
 group = parser.add_argument_group(title="Build Options")
+group.add_argument("-j", "--jobs", type=int, default=GetCPUCount(),
+                   help=("Number of build jobs to run in parallel. "
+                         "(default: # of processors [{0}])"
+                         .format(GetCPUCount())))
 group.add_argument("--build", type=str,
                    help=("Build directory for USD and 3rd-party dependencies " 
                          "(default: <install_dir>/build)"))
@@ -907,6 +1014,12 @@ subgroup.add_argument("--docs", dest="build_docs", action="store_true",
                       default=False, help="Build documentation")
 subgroup.add_argument("--no-docs", dest="build_docs", action="store_false",
                       help="Do not build documentation (default)")
+subgroup = group.add_mutually_exclusive_group()
+subgroup.add_argument("--python", dest="build_python", action="store_true",
+                      default=True, help="Build python based components "
+                                         "(default)")
+subgroup.add_argument("--no-python", dest="build_python", action="store_false",
+                      help="Do not build python based components")
 
 (NO_IMAGING, IMAGING, USD_IMAGING) = (0, 1, 2)
 
@@ -934,8 +1047,7 @@ subgroup = group.add_mutually_exclusive_group()
 subgroup.add_argument("--embree", dest="build_embree", action="store_true",
                       default=False,
                       help="Build Embree sample imaging plugin")
-subgroup.add_argument("--no-embree", dest="build_embree", action="store_true",
-                      default=False,
+subgroup.add_argument("--no-embree", dest="build_embree", action="store_false",
                       help="Do not build Embree sample imaging plugin (default)")
 group.add_argument("--embree-location", type=str,
                    help="Directory where Embree is installed.")
@@ -1007,8 +1119,16 @@ class InstallContext:
         self.buildDir = (os.path.abspath(args.build) if args.build
                          else os.path.join(self.usdInstDir, "build"))
 
+        # Whether to use curl or urllib for downloading dependencies
+        # Use curl by default if it's available, otherwise fall back
+        # to built-in methods.
+        self.useCurl = find_executable("curl")
+
         # CMake generator
         self.cmakeGenerator = args.generator
+
+        # Number of jobs
+        self.numJobs = args.jobs
 
         # Build type
         self.buildShared = (args.build_type == SHARED_LIBS)
@@ -1021,6 +1141,7 @@ class InstallContext:
         # Optional components
         self.buildTests = args.build_tests
         self.buildDocs = args.build_docs
+        self.buildPython = args.build_python
 
         # - Imaging
         self.buildImaging = (args.build_imaging == IMAGING or
@@ -1053,12 +1174,20 @@ class InstallContext:
         self.buildHoudini = args.build_houdini
         self.houdiniLocation = (os.path.abspath(args.houdini_location)
                                 if args.houdini_location else None)
-        
-    def MustBuildDependency(self, dep):
+       
+    def ForceBuildDependency(self, dep):
+        # Never force building a Python dependency, since users are required
+        # to build these dependencies themselves.
+        if type(dep) is PythonDependency:
+            return False
         return self.forceBuildAll or dep.name.lower() in self.forceBuild
 
 context = InstallContext(args)
 verbosity = args.verbosity
+
+if context.numJobs <= 0:
+    PrintError("Number of jobs must be greater than 0")
+    sys.exit(1)
 
 # Augment PATH on Windows so that 3rd-party dependencies can find libraries
 # they depend on. In particular, this is needed for building IlmBase/OpenEXR.
@@ -1092,7 +1221,7 @@ if context.buildImaging:
     requiredDependencies += [JPEG, TIFF, PNG, OPENEXR, GLEW, 
                              OPENIMAGEIO, OPENSUBDIV]
                              
-    if context.buildUsdImaging:
+    if context.buildUsdImaging and context.buildPython:
         requiredDependencies += [PYOPENGL, PYSIDE]
 
 # Assume zlib already exists on Linux platforms and don't build
@@ -1101,6 +1230,21 @@ if context.buildImaging:
 # our libraries against.
 if Linux():
     requiredDependencies.remove(ZLIB)
+
+
+# Error out if we try to build any third party plugins with python disabled.
+if not context.buildPython:
+    pythonPluginErrorMsg = (
+        "%s plugin cannot be built when python support is disabled")
+    if context.buildMaya:
+        PrintError(pythonPluginErrorMsg % "Maya")
+        sys.exit(1)
+    if context.buildHoudini:
+        PrintError(pythonPluginErrorMsg % "Houdini")
+        sys.exit(1)
+    if context.buildKatana:
+        PrintError(pythonPluginErrorMsg % "Katana")
+        sys.exit(1)
 
 # Error out if we're building the Maya plugin and have enabled Ptex support
 # in imaging. Maya includes its own copy of Ptex, which we believe is 
@@ -1117,7 +1261,7 @@ if context.buildMaya and PTEX in requiredDependencies:
 
 dependenciesToBuild = []
 for dep in requiredDependencies:
-    if context.MustBuildDependency(dep) or not dep.Exists(context):
+    if context.ForceBuildDependency(dep) or not dep.Exists(context):
         if dep not in dependenciesToBuild:
             dependenciesToBuild.append(dep)
 
@@ -1148,25 +1292,25 @@ if context.buildDocs:
                    "PATH")
         sys.exit(1)
 
-if context.buildUsdImaging:
-    # The USD build will skip building usdview if pyside-uic is not found, 
-    # so check for it here to avoid confusing users. This list of PySide
-    # executable names comes from cmake/modules/FindPySide.cmake
+if PYSIDE in requiredDependencies:
+    # The USD build will skip building usdview if pyside-uic or pyside2-uic is 
+    # not found, so check for it here to avoid confusing users. This list of 
+    # PySide executable names comes from cmake/modules/FindPySide.cmake
     pysideUic = ["pyside-uic", "python2-pyside-uic", "pyside-uic-2.7"]
-    if not any([find_executable(p) for p in pysideUic]):
+    found_pysideUic = any([find_executable(p) for p in pysideUic])
+    pyside2Uic = ["pyside2-uic", "python2-pyside2-uic", "pyside2-uic-2.7"]
+    found_pyside2Uic = any([find_executable(p) for p in pyside2Uic])
+    if not found_pysideUic and not found_pyside2Uic:
         PrintError("pyside-uic not found -- please install PySide and adjust "
-                   "your PATH")
+                   "your PATH. (Note that this program may be named {0} "
+                   "depending on your platform)"
+                   .format(" or ".join(pysideUic)))
         sys.exit(1)
 
 if JPEG in requiredDependencies:
     # NASM is required to build libjpeg-turbo
     if (Windows() and not find_executable("nasm")):
         PrintError("nasm not found -- please install it and adjust your PATH")
-        sys.exit(1)
-
-if AnyPythonDependencies(dependenciesToBuild):
-    if not find_executable("pip"):
-        PrintError("pip not found -- please install it and adjust your PATH")
         sys.exit(1)
 
 # Summarize
@@ -1177,11 +1321,14 @@ Building with settings:
   3rd-party source directory    {srcDir}
   3rd-party install directory   {instDir}
   Build directory               {buildDir}
+  CMake generator               {cmakeGenerator}
+  Downloader                    {downloader}
 
   Building                      {buildType}
     Imaging                     {buildImaging}
       Ptex support:             {enablePtex}
     UsdImaging                  {buildUsdImaging}
+    Python support              {buildPython}
     Documentation               {buildDocs}
     Tests                       {buildTests}
     Alembic Plugin              {buildAlembic}
@@ -1197,6 +1344,9 @@ Building with settings:
     srcDir=context.srcDir,
     buildDir=context.buildDir,
     instDir=context.instDir,
+    cmakeGenerator=("Default" if not context.cmakeGenerator
+                    else context.cmakeGenerator),
+    downloader=("curl" if context.useCurl else "built-in"),
     dependencies=("None" if not dependenciesToBuild else 
                   ", ".join([d.name for d in dependenciesToBuild])),
     buildType=("Shared libraries" if context.buildShared
@@ -1205,6 +1355,7 @@ Building with settings:
     buildImaging=("On" if context.buildImaging else "Off"),
     enablePtex=("On" if context.enablePtex else "Off"),
     buildUsdImaging=("On" if context.buildUsdImaging else "Off"),
+    buildPython=("On" if context.buildPython else "Off"),
     buildDocs=("On" if context.buildDocs else "Off"),
     buildTests=("On" if context.buildTests else "Off"),
     buildAlembic=("On" if context.buildAlembic else "Off"),
@@ -1218,10 +1369,10 @@ if args.dry_run:
 
 # Scan for any dependencies that the user is required to install themselves
 # and print those instructions first.
-manualPythonDependencies = \
-    [dep for dep in dependenciesToBuild if type(dep) is ManualPythonDependency]
-if manualPythonDependencies:
-    for dep in manualPythonDependencies:
+pythonDependencies = \
+    [dep for dep in dependenciesToBuild if type(dep) is PythonDependency]
+if pythonDependencies:
+    for dep in pythonDependencies:
         Print(dep.getInstructions())
     sys.exit(1)
 
@@ -1245,7 +1396,7 @@ try:
     # Download and install 3rd-party dependencies
     for dep in dependenciesToBuild:
         PrintStatus("Installing {dep}...".format(dep=dep.name))
-        dep.installer(context, force=context.MustBuildDependency(dep))
+        dep.installer(context, force=context.ForceBuildDependency(dep))
 
     # Build USD
     PrintStatus("Installing USD...")
@@ -1273,16 +1424,18 @@ if Windows():
     ])
 
 Print("""
-Success! To use USD, please ensure that you have:
-  The following in your PYTHONPATH environment variable:
-    {requiredInPythonPath}
-    
-  The following in your PATH environment variable:
+Success! To use USD, please ensure that you have:""")
+
+if context.buildPython:
+    Print("""
+    The following in your PYTHONPATH environment variable:
+    {requiredInPythonPath}""".format(
+        requiredInPythonPath="\n    ".join(sorted(requiredInPythonPath))))
+
+Print("""
+    The following in your PATH environment variable:
     {requiredInPath}
-"""
-    .format(
-        requiredInPythonPath="\n    ".join(sorted(requiredInPythonPath)),
-        requiredInPath="\n    ".join(sorted(requiredInPath))))
+""".format(requiredInPath="\n    ".join(sorted(requiredInPath))))
 
 if context.buildMaya:
     Print("See documentation at http://openusd.org/docs/Maya-USD-Plugins.html "

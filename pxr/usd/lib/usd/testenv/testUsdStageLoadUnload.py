@@ -28,7 +28,8 @@ from pxr import Gf, Tf, Sdf, Usd
 allFormats = ['usd' + x for x in 'ac']
 
 class PayloadedScene(object):
-    def __init__(self, fmt):
+    def __init__(self, fmt, unload=True, loadSet=Usd.Stage.LoadAll,
+                 stageCreateFn=Usd.Stage.CreateInMemory):
         # Construct the following test case:
         #
         # stage.fmt         payload1.fmt
@@ -44,31 +45,49 @@ class PayloadedScene(object):
         ext = '.'+fmt
 
         # Create payload1.fmt
-        self.__payload1 = Usd.Stage.CreateInMemory("payload1"+ext)
+        self.__payload1 = stageCreateFn("payload1"+ext)
         p = self.__payload1.DefinePrim("/Sad/Panda", "Scope")
 
         # Create payload3.usda
-        self.__payload3 = Usd.Stage.CreateInMemory("payload3"+ext)
+        self.__payload3 = stageCreateFn("payload3"+ext)
         p = self.__payload3.DefinePrim("/Garply/Qux", "Scope")
 
         # Create payload2.usda
-        self.__payload2 = Usd.Stage.CreateInMemory("payload2"+ext)
+        self.__payload2 = stageCreateFn("payload2"+ext)
         p = self.__payload2.DefinePrim("/Baz/Garply", "Scope")
         p.SetPayload(self.__payload3.GetRootLayer(), "/Garply")
 
         #
         # Create the scene that references payload1 and payload2
         #
-        self.stage = Usd.Stage.CreateInMemory("scene"+ext)
+        self.stage = stageCreateFn("scene"+ext, loadSet)
         p = self.stage.DefinePrim("/Sad", "Scope")
         p.SetPayload(self.__payload1.GetRootLayer(), "/Sad")
 
         p = self.stage.DefinePrim("/Foo/Baz", "Scope")
         p.SetPayload(self.__payload2.GetRootLayer(), "/Baz")
 
-        # Test expects that the scene starts with everything unloaded.
-        self.stage.Unload()
+        # By default, tests expect that the scene starts 
+        # with everything unloaded, unless specified otherwise
+        if unload:
+            self.stage.Unload()
 
+    def CleanupOnDiskAssets(self, fmt):
+        import os
+        
+        del self.stage
+        del self.__payload1
+        del self.__payload2
+        del self.__payload3
+
+        ext = "." + fmt
+        for i in [1,2,3]:
+            fname = "payload" + str(i) + ext
+            if os.path.exists(fname):
+                os.unlink(fname)
+        fname = "scene"+ ext
+        if os.path.exists(fname):
+            os.unlink(fname)
 
     def PrintPaths(self, msg=""):
         print("    Paths: "+msg)
@@ -97,12 +116,39 @@ class TestUsdLoadUnload(unittest.TestCase):
             assert len(p.stage.FindLoadable()) == 2
             assert Sdf.Path("/Sad") in p.stage.FindLoadable()
             assert Sdf.Path("/Foo/Baz") in p.stage.FindLoadable()
-            assert not Sdf.Path("/Foo/Baz/Garply") in p.stage.FindLoadable()
+            assert Sdf.Path("/Foo/Baz/Garply") not in p.stage.FindLoadable()
+
+            #
+            # Load /Foo without descendants, which will pull in nothing new.
+            # 
+            p.stage.LoadAndUnload((Sdf.Path("/Foo"),), tuple(),
+                                  policy=Usd.LoadWithoutDescendants)
+            p.PrintPaths("/Foo loaded without descendants")
+            assert not p.stage.GetPrimAtPath("/Sad/Panda")
+            assert Sdf.Path("/Foo") not in p.stage.GetLoadSet()
+            assert Sdf.Path("/Foo/Baz") not in p.stage.GetLoadSet()
+            assert Sdf.Path("/Foo/Baz/Garply") not in p.stage.GetLoadSet()
+            assert len(p.stage.FindLoadable()) == 2
+            assert Sdf.Path("/Foo/Baz/Garply") not in p.stage.FindLoadable()
+
+            #
+            # Load /Foo/Baz without descendants, which will pull in /Foo/Baz but
+            # not /Foo/Baz/Garply
+            # 
+            p.stage.LoadAndUnload((Sdf.Path("/Foo/Baz"),), tuple(),
+                                  policy=Usd.LoadWithoutDescendants)
+            p.PrintPaths("/Foo/Baz loaded without descendants")
+            assert not p.stage.GetPrimAtPath("/Sad/Panda")
+            assert Sdf.Path("/Foo") not in p.stage.GetLoadSet()
+            assert Sdf.Path("/Foo/Baz") in p.stage.GetLoadSet()
+            assert Sdf.Path("/Foo/Baz/Garply") not in p.stage.GetLoadSet()
+            assert len(p.stage.FindLoadable()) == 3
+            assert Sdf.Path("/Foo/Baz/Garply") in p.stage.FindLoadable()
 
             #
             # Load /Foo which will pull in /Foo/Baz and /Foo/Baz/Garply
             # 
-            p.stage.LoadAndUnload((Sdf.Path("/Foo"),) ,tuple())
+            p.stage.LoadAndUnload((Sdf.Path("/Foo"),), tuple())
             p.PrintPaths("/Foo loaded")
             assert not p.stage.GetPrimAtPath("/Sad/Panda")
             assert Sdf.Path("/Foo") not in p.stage.GetLoadSet()
@@ -111,6 +157,22 @@ class TestUsdLoadUnload(unittest.TestCase):
             assert len(p.stage.FindLoadable()) == 3
             assert Sdf.Path("/Foo/Baz/Garply") in p.stage.FindLoadable()
 
+            #
+            # Unload /Foo/Baz/Garply and load /Foo/Baz without descendants,
+            # which should pull in just /Foo/Baz.
+            # 
+            p.stage.LoadAndUnload((Sdf.Path("/Foo/Baz"),),
+                                  (Sdf.Path("/Foo/Baz/Garply"),),
+                                  policy=Usd.LoadWithoutDescendants)
+            p.PrintPaths("/Foo/Baz/Garply unloaded, "
+                         "/Foo/Baz loaded w/o descendants")
+            assert not p.stage.GetPrimAtPath("/Sad/Panda")
+            assert Sdf.Path("/Foo") not in p.stage.GetLoadSet()
+            assert Sdf.Path("/Foo/Baz") in p.stage.GetLoadSet()
+            assert Sdf.Path("/Foo/Baz/Garply") not in p.stage.GetLoadSet()
+            assert len(p.stage.FindLoadable()) == 3
+            assert Sdf.Path("/Foo/Baz/Garply") in p.stage.FindLoadable()
+            
             #
             # Unload /Foo, unloading everything
             #
@@ -126,7 +188,7 @@ class TestUsdLoadUnload(unittest.TestCase):
             # Explicitly load /Foo/Baz, which will implicitly pull in
             # /Foo/Baz/Garply
             #
-            p.stage.LoadAndUnload((Sdf.Path("/Foo/Baz"),) ,tuple())
+            p.stage.LoadAndUnload((Sdf.Path("/Foo/Baz"),), tuple())
             p.PrintPaths("/Foo/Baz loaded")
             assert not p.stage.GetPrimAtPath("/Sad/Panda")
             assert p.stage.GetPrimAtPath("/Foo/Baz/Garply")
@@ -242,6 +304,58 @@ class TestUsdLoadUnload(unittest.TestCase):
                     set([Sdf.Path("/Sad"), 
                          Sdf.Path("/Foo/Baz"), 
                          Sdf.Path("/Foo/Baz/Garply")]))
+
+    def test_Create(self):
+        """Test the behavior of UsdStage::Create WRT load behavior"""
+        print sys._getframe().f_code.co_name
+
+        # Exercise creating an in memory stage
+        for fmt in allFormats:
+            # Try loading none
+            p = PayloadedScene(fmt, unload=False, loadSet=Usd.Stage.LoadNone)
+                
+            p.PrintPaths()
+            assert not p.stage.GetPrimAtPath("/Sad/Panda")
+            assert not p.stage.GetPrimAtPath("/Foo/Baz/Garply")
+            assert not p.stage.GetPrimAtPath("/Foo/Baz/Garply/Qux")
+            assert len(p.stage.GetLoadSet()) == 0
+            assert len(p.stage.FindLoadable()) == 2
+
+            # Try loading all
+            p = PayloadedScene(fmt, unload=False, loadSet=Usd.Stage.LoadAll)
+            p.PrintPaths()
+            assert p.stage.GetPrimAtPath("/Sad/Panda")
+            assert p.stage.GetPrimAtPath("/Foo/Baz/Garply")
+            assert p.stage.GetPrimAtPath("/Foo/Baz/Garply/Qux")
+            assert len(p.stage.GetLoadSet()) == 3, str(p.stage.GetLoadSet())
+            assert len(p.stage.FindLoadable()) == 3
+
+        # Exercise creating an on-disk stage
+        for fmt in allFormats:
+            # Try loading none
+            p = PayloadedScene(fmt, unload=False, loadSet=Usd.Stage.LoadNone,
+                               stageCreateFn=Usd.Stage.CreateNew)
+                
+            p.PrintPaths()
+            assert not p.stage.GetPrimAtPath("/Sad/Panda")
+            assert not p.stage.GetPrimAtPath("/Foo/Baz/Garply")
+            assert not p.stage.GetPrimAtPath("/Foo/Baz/Garply/Qux")
+            assert len(p.stage.GetLoadSet()) == 0
+            assert len(p.stage.FindLoadable()) == 2
+
+            p.CleanupOnDiskAssets(fmt) 
+
+            # Try loading all
+            p = PayloadedScene(fmt, unload=False, loadSet=Usd.Stage.LoadAll,
+                               stageCreateFn=Usd.Stage.CreateNew)
+            p.PrintPaths()
+            assert p.stage.GetPrimAtPath("/Sad/Panda")
+            assert p.stage.GetPrimAtPath("/Foo/Baz/Garply")
+            assert p.stage.GetPrimAtPath("/Foo/Baz/Garply/Qux")
+            assert len(p.stage.GetLoadSet()) == 3, str(p.stage.GetLoadSet())
+            assert len(p.stage.FindLoadable()) == 3
+
+            p.CleanupOnDiskAssets(fmt)
 
     def test_Open(self):
         """Test the behavior of UsdStage::Open WRT load behavior.
@@ -360,7 +474,6 @@ class TestUsdLoadUnload(unittest.TestCase):
             # Test the layer expiration behavior. Because we only have a weak ptr,
             # we expect it to expire when the stage goes away.
             assert lyr
-            s.Close()
             del s
             assert not lyr
 
@@ -372,7 +485,6 @@ class TestUsdLoadUnload(unittest.TestCase):
             with self.assertRaises(Tf.ErrorException):
                 Usd.Stage.CreateNew(layerName)
             assert s1.GetRootLayer()
-            s1.Close()
             del s1
 
             # Make sure session layers work
@@ -380,8 +492,6 @@ class TestUsdLoadUnload(unittest.TestCase):
             session.OverridePrim("/Foo")
             s = Usd.Stage.CreateNew(layerName, session.GetRootLayer())
             assert s.GetPrimAtPath("/Foo")
-            session.Close()
-            s.Close()
             del s, session
 
             assert os.path.exists(layerName)

@@ -182,7 +182,7 @@ public:
     /// Fills a {{ DIM }}x{{ DIM }} array of \c {{ SCL }} values with the values in
     /// the matrix, specified in row-major order.
     GF_API
-    {{ SCL }}* Get({{ SCL }} m[{{ DIM }}][{{ DIM }}]);
+    {{ SCL }}* Get({{ SCL }} m[{{ DIM }}][{{ DIM }}]) const;
 
     /// Returns vector components as an array of \c {{ SCL }} values.
     {{ SCL }}* GetArray()  {
@@ -364,6 +364,13 @@ private:
     friend class GfMatrix{{ DIM }}f;
 {% endif %}
 };
+
+
+/// Tests for equality within a given tolerance, returning \c true if the
+/// difference between each component of the matrix is less than or equal
+/// to \p tolerance, or false otherwise.
+GF_API 
+bool GfIsClose({{ MAT }} const &m1, {{ MAT }} const &m2, double tolerance);
 
 /// Output a {{ MAT }}
 /// \ingroup group_gf_DebuggingOutput

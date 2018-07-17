@@ -23,8 +23,11 @@
 //
 
 #include "pxr/imaging/hd/extCompCpuComputation.h"
+#include "pxr/imaging/hd/extComputation.h"
 #include "pxr/imaging/hd/extComputationContextInternal.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
+#include "pxr/imaging/hd/sceneExtCompInputSource.h"
+#include "pxr/imaging/hd/compExtCompInputSource.h"
 
 #include <limits>
 
@@ -49,6 +52,78 @@ HdExtCompCpuComputation::HdExtCompCpuComputation(
 {
     // TODO Auto-generated constructor stub
 
+}
+
+HdExtCompCpuComputationSharedPtr
+HdExtCompCpuComputation::CreateComputation(
+    HdSceneDelegate *sceneDelegate,
+    const HdExtComputation &computation,
+    HdBufferSourceVector *computationSources)
+{
+    HdRenderIndex &renderIndex = sceneDelegate->GetRenderIndex();
+
+    const SdfPath &id = computation.GetID();
+
+    Hd_ExtCompInputSourceSharedPtrVector inputs;
+    for (const TfToken &inputName: computation.GetSceneInputNames()) {
+        VtValue inputValue = sceneDelegate->Get(id, inputName);
+        Hd_ExtCompInputSourceSharedPtr inputSource(
+                         new Hd_SceneExtCompInputSource(inputName, inputValue));
+        computationSources->push_back(inputSource);
+        inputs.push_back(inputSource);
+    }
+
+    for (const HdExtComputationInputDescriptor & compInput:
+                computation.GetComputationInputs()) {
+
+        HdExtComputation const * sourceComp =
+            static_cast<HdExtComputation const *>(
+                renderIndex.GetSprim(HdPrimTypeTokens->extComputation,
+                                     compInput.sourceComputationId));
+
+        if (sourceComp != nullptr) {
+
+            // Computations acting as input aggregations should schedule
+            // input values for commit, but will have no Cpu computation
+            // to create.
+            if (sourceComp->IsInputAggregation()) {
+                VtValue inputValue =
+                    sceneDelegate->Get(compInput.sourceComputationId,
+                                       compInput.name);
+                Hd_ExtCompInputSourceSharedPtr inputSource(
+                        new Hd_SceneExtCompInputSource(compInput.name,
+                                                       inputValue));
+                computationSources->push_back(inputSource);
+                inputs.push_back(inputSource);
+                continue;
+            }
+
+            HdExtCompCpuComputationSharedPtr sourceComputation =
+                CreateComputation(sceneDelegate,
+                                  *sourceComp,
+                                  computationSources);
+
+            Hd_ExtCompInputSourceSharedPtr inputSource(
+                new Hd_CompExtCompInputSource(
+                        compInput.name,
+                        sourceComputation,
+                        compInput.sourceComputationOutputName));
+
+            computationSources->push_back(inputSource);
+            inputs.push_back(inputSource);
+        }
+    }
+
+    HdExtCompCpuComputationSharedPtr result(
+            new HdExtCompCpuComputation(id,
+                                        inputs,
+                                        computation.GetOutputNames(),
+                                        computation.GetElementCount(),
+                                        sceneDelegate));
+
+    computationSources->push_back(result);
+
+    return result;
 }
 
 TfToken const &

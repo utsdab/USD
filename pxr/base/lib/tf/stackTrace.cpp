@@ -30,8 +30,12 @@
 #include "pxr/base/arch/vsnprintf.h"
 #include "pxr/base/tf/callContext.h"
 #include "pxr/base/tf/iterator.h"
-#include "pxr/base/tf/pyUtils.h"
+#include "pxr/base/tf/scopeDescriptionPrivate.h"
 #include "pxr/base/tf/stringUtils.h"
+
+#ifdef PXR_PYTHON_SUPPORT_ENABLED
+#include "pxr/base/tf/pyUtils.h"
+#endif // PXR_PYTHON_SUPPORT_ENABLED
 
 #include <cstdio>
 #include <iostream>
@@ -59,11 +63,12 @@ void
 TfPrintStackTrace(std::ostream &out, const string &reason)
 {
     ArchPrintStackTrace(out, reason);
-    
+#ifdef PXR_PYTHON_SUPPORT_ENABLED 
     vector<string> trace = TfPyGetTraceback();
     TF_REVERSE_FOR_ALL(line, trace)
         out << *line;
     out << "=============================================================\n";
+#endif // PXR_PYTHON_SUPPORT_ENABLED
 }
 
 string
@@ -136,7 +141,9 @@ TfLogCrash(
         fullMessage += additionalInfo + "\n";
     }
 
-    ArchLogPostMortem(nullptr, fullMessage.c_str());
+    Tf_ScopeDescriptionStackReportLock descStackReport;
+    ArchLogPostMortem(
+        nullptr, fullMessage.c_str(), descStackReport.GetMessage());
 }
 
 time_t

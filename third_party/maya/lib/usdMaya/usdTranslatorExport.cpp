@@ -82,17 +82,17 @@ usdTranslatorExport::writer(const MFileObject &file,
                 jobArgs.exportDisplayColor = true;
                 jobArgs.shadingMode = PxrUsdMayaShadingModeTokens->none;
                 
-                if (theOption[1]=="None") {
+                if (theOption[1] == MString("None")) {
                     jobArgs.exportDisplayColor = false;
-                }else if (theOption[1]=="Material Colors") {
+                } else if (theOption[1] == MString("Material Colors")) {
                     jobArgs.shadingMode = PxrUsdMayaShadingModeTokens->displayColor;
-                } else if (theOption[1]=="RfM Shaders") {
+                } else if (theOption[1] == MString("RfM Shaders")) {
                     TfToken shadingMode("pxrRis");
                     if (PxrUsdMayaShadingModeRegistry::GetInstance().GetExporter(shadingMode)) {
                         jobArgs.shadingMode = shadingMode;
                     }
-                } else { 
-                    TfToken modeToken(theOption[1].asChar()); 
+                } else if (theOption[1] != MString("GPrim Colors")) { 
+                    TfToken modeToken(theOption[1].asChar());
                     if (PxrUsdMayaShadingModeRegistry::GetInstance().GetExporter(modeToken)) { 
                         jobArgs.shadingMode = modeToken; 
                     } else { 
@@ -105,6 +105,15 @@ usdTranslatorExport::writer(const MFileObject &file,
             if (theOption[0] == MString("exportUVs")) {
                 jobArgs.exportMeshUVs = theOption[1].asInt();
                 jobArgs.exportNurbsExplicitUV = theOption[1].asInt();
+            }
+            if (theOption[0] == MString("exportMaterialCollections")) {
+                jobArgs.exportMaterialCollections = theOption[1].asInt();
+            }
+            if (theOption[0] == MString("materialCollectionsPath")) {
+                jobArgs.materialCollectionsPath = theOption[1].asChar();
+            }
+            if (theOption[0] == MString("exportCollectionBasedBindings")) {
+                jobArgs.exportCollectionBasedBindings= theOption[1].asInt();
             }
             if (theOption[0] == MString("normalizeUVs")) {
                 jobArgs.normalizeMeshUVs = theOption[1].asInt();
@@ -148,6 +157,17 @@ usdTranslatorExport::writer(const MFileObject &file,
             if (theOption[0] == MString("exportVisibility")) {
                 jobArgs.exportVisibility = theOption[1].asInt();
             }
+            if (theOption[0] == MString("exportSkin")) {
+                if (theOption[1] == "All (Automatically Create SkelRoots)") {
+                    jobArgs.exportSkin = true;
+                    jobArgs.autoSkelRoots = true;
+                } else if (theOption[1] == "Only Under SkelRoots") {
+                    jobArgs.exportSkin = true;
+                    jobArgs.autoSkelRoots = false;
+                } else {
+                    jobArgs.exportSkin = false;
+                }
+            }
             if (theOption[0] == MString("animation")) {
                 jobArgs.exportAnimation = theOption[1].asInt();
             }
@@ -160,6 +180,9 @@ usdTranslatorExport::writer(const MFileObject &file,
             if (theOption[0] == MString("frameSample")) {
                 frameSamples.insert(theOption[1].asDouble());
             }
+            if (theOption[0] == MString("parentScope")) {
+                jobArgs.setParentScope(theOption[1].asChar());
+            }            
         }
         // Now resync start and end frame based on animation mode
         if (jobArgs.exportAnimation) {
@@ -192,18 +215,23 @@ usdTranslatorExport::writer(const MFileObject &file,
     }
     
     if (jobArgs.dagPaths.size()) {
-        MTime oldCurTime = MAnimControl::currentTime();
         usdWriteJob writeJob(jobArgs);
         if (writeJob.beginJob(fileName, append, startTime, endTime)) {
-            for (double i=startTime;i<(endTime+1);i++) {
-                for (double sampleTime : frameSamples) {
-                    double actualTime = i + sampleTime;
-                    MGlobal::viewFrame(actualTime);
-                    writeJob.evalJob(actualTime);
+            if (jobArgs.exportAnimation) {
+                const MTime oldCurTime = MAnimControl::currentTime();
+                for (double i = startTime; i < (endTime + 1.0); ++i) {
+                    for (double sampleTime : frameSamples) {
+                        const double actualTime = i + sampleTime;
+                        MGlobal::viewFrame(actualTime);
+                        writeJob.evalJob(actualTime);
+                    }
                 }
+
+                // Set the time back.
+                MGlobal::viewFrame(oldCurTime);
             }
+
             writeJob.endJob();
-            MGlobal::viewFrame(oldCurTime);
         } else {
             return MS::kFailure;
         }

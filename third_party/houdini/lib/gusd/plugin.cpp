@@ -49,7 +49,6 @@
 
 #include <GT/GT_PrimitiveTypes.h>
 #include <OP/OP_OperatorTable.h>
-#include <UT/UT_DSOVersion.h>
 #include <UT/UT_IOTable.h>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -162,5 +161,23 @@ GusdGetAssetKind()
 {
     return gusdAssetKind;
 }
+
+static GusdUsdPrimFunc gusdUsdPrimFunc;
+
+void 
+GusdRegisterOperateOnUsdPrimFunc( const GusdUsdPrimFunc &func )
+{
+    gusdUsdPrimFunc = func;
+}
+
+bool
+GusdOperateOnUsdPrim( const UsdPrim &prim  ) 
+{
+    if( gusdUsdPrimFunc ) {
+        return gusdUsdPrimFunc( prim );
+    }
+    return false;
+}
+
 
 PXR_NAMESPACE_CLOSE_SCOPE

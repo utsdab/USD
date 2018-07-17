@@ -68,7 +68,7 @@ public:
 
     // Overrides for MayaTransformWriter
     PXRUSDMAYA_API
-    virtual void write(const UsdTimeCode &usdTime);
+    virtual void write(const UsdTimeCode &usdTime) override;
     
     PXRUSDMAYA_API
     virtual bool exportsGprims() const override;
@@ -78,6 +78,9 @@ public:
 
     PXRUSDMAYA_API
     virtual bool shouldPruneChildren() const override;    
+
+    PXRUSDMAYA_API
+    virtual bool getAllAuthoredUsdPaths(SdfPathVector* outPaths) const override;
 
     PXRUSDMAYA_API
     static MayaPrimWriterPtr Create(
@@ -100,6 +103,7 @@ private:
     bool _exportsGprims;
     bool _exportsReferences;
     bool _pruneChildren;
+    SdfPathVector _authoredPaths;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

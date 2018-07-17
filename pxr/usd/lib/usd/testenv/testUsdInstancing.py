@@ -73,7 +73,7 @@ def ValidateExpectedInstances(stage, expectedInstances):
                     "Found unexpected instance prim <%s> with master <%s>" % \
                     (prim.GetPath(), prim.GetMaster().GetPath())
 
-def ValidateExpectedChanges(noticeListener, expectedResyncs, 
+def ValidateExpectedChanges(noticeListener, expectedResyncs = [], 
                             expectedChangedInfo = []):
     """
     Validate the expected changes received by the noticeListener.
@@ -87,7 +87,7 @@ def ValidateExpectedChanges(noticeListener, expectedResyncs,
     assert set(noticeListener.changedInfoPaths) == \
         set([Sdf.Path(p) for p in expectedChangedInfo]), \
         "Expected changed info for %s, got %s" % \
-        (set(expectedChangedInfo), noticeListener.expectedChangedInfo)
+        (set(expectedChangedInfo), noticeListener.changedInfoPaths)
 
 def ValidateAndDumpUsdStage(stage):
     """
@@ -154,9 +154,13 @@ class NoticeListener:
         self.changedInfoPaths = []
 
     def _HandleNotice(self, notice, sender):
-        print "Resynced:\n  ", [str(p) for p in notice.GetResyncedPaths()]
-        print "Changed Info:\n  ", \
-            [str(p) for p in notice.GetChangedInfoOnlyPaths()]
+        resyncChanges = dict([(str(p), notice.GetChangedFields(p))
+                              for p in notice.GetResyncedPaths()])
+        infoChanges = dict([(str(p), notice.GetChangedFields(p))
+                            for p in notice.GetChangedInfoOnlyPaths()])
+        print "Resynced:\n  ", resyncChanges.items()
+        print "Changed Info:\n  ", infoChanges.items()
+
         self.resyncedPrimPaths = notice.GetResyncedPaths()
         self.changedInfoPaths = notice.GetChangedInfoOnlyPaths()
         ValidateAndDumpUsdStage(notice.GetStage())
@@ -650,6 +654,41 @@ class TestUsdInstancing(unittest.TestCase):
             { '/__Master_2': ['/Instance_1', '/Instance_2'] })
         ValidateExpectedChanges(nl, ['/Instance_2'])
 
+    def test_Deactivated2(self):
+        """Test more complex instancing case involving deactivation."""
+        nl = NoticeListener()
+
+        s = OpenStage('deactivated_2/root.usda')
+
+        ValidateExpectedInstances(s,
+            { '/__Master_1': ['/World/Set_1/Instance_1', 
+                              '/World/Set_2/Instance_2'] })
+
+        # Deactivate the parent of the prim on the stage that corresponds 
+        # to the source prim index for the master. This will cause the
+        # other instance to be assigned as the master's source index.
+        primPathToDeactivate = \
+            (s.GetPrimAtPath('/__Master_1')._GetSourcePrimIndex()
+             .rootNode.path.GetParentPath())
+
+        if primPathToDeactivate == '/World/Set_1':
+            expectedInstance = '/World/Set_2/Instance_2'
+        elif primPathToDeactivate == '/World/Set_2':
+            expectedInstance = '/World/Set_1/Instance_1'
+
+        s.GetPrimAtPath(primPathToDeactivate).SetActive(False)
+
+        ValidateExpectedInstances(s, { '/__Master_1' : [expectedInstance] })
+        ValidateExpectedChanges(nl, [primPathToDeactivate, '/__Master_1'])
+
+        # Now author a significant change to the prim referenced by both
+        # instances. This should cause a new master to be created and the
+        # old master to be removed.
+        s.GetPrimAtPath('/Reference').GetInherits().AddInherit('/Class')
+        ValidateExpectedInstances(s, { '/__Master_2' : [expectedInstance] })
+        ValidateExpectedChanges(nl, ['/Reference', expectedInstance, 
+                                     '/__Master_1', '/__Master_2'])
+
     def test_VariantSelections(self):
         """Test instancing and change processing with variant selections."""
         nl = NoticeListener()
@@ -723,6 +762,195 @@ class TestUsdInstancing(unittest.TestCase):
 
         assert s.GetPrimAtPath('/__Master_1/Child_1')
         assert s.GetPrimAtPath('/__Master_2/Child_2')
+
+    def test_Inherits(self):
+        """Test expected instancing behavior for prims with inherits"""
+        nl = NoticeListener()
+
+        s = OpenStage('inherits/root.usda')
+
+        # The Model prim being referenced into the stage inherits from
+        # _class_Model, but there are no oveerrides for that class in
+        # either SetA or SetB. Because of this, /Set/SetA/Model and
+        # /Set/SetB/Model can share the same master prim initially.
+        ValidateExpectedInstances(s,
+            { '/__Master_1': ['/Set/SetA/Model', '/Set/SetB/Model'] })
+
+        # Overriding _class_Model in the local layer stack causes
+        # the instancing key to change, so a new master prim is
+        # generated. However, this override would affect both Model
+        # prims on the stage in the same way, so /Set/SetA/Model and
+        # /Set/SetB/Model still share the same master prim.
+        print "-" * 60
+        print "Overriding class in local layer stack"
+        s.OverridePrim('/_class_Model')
+
+        ValidateExpectedInstances(s,
+            { '/__Master_2': ['/Set/SetA/Model', '/Set/SetB/Model'] })
+
+        # Overriding _class_Model in SetA means that SetA/Model may
+        # have name children or other opinions that SetB/Model would
+        # not. So, /Set/SetA/Model and /Set/SetB/Model can no longer
+        # share the same master prim.
+        print "-" * 60
+        print "Overriding class in SetA only"
+        s2 = OpenStage('inherits/setA.usda')
+        s2.OverridePrim('/_class_Model')
+
+        ValidateExpectedInstances(s,
+            { '/__Master_2': ['/Set/SetB/Model'],
+              '/__Master_3': ['/Set/SetA/Model'] })
+
+    def test_Specializes(self):
+        """Test expected instancing behavior for prims with specializes"""
+        nl = NoticeListener()
+
+        s = OpenStage('specializes/root.usda')
+
+        # The Model prim being referenced into the stage specializes
+        # _class_Model, but there are no oveerrides for that class in
+        # either SetA or SetB. Because of this, /Set/SetA/Model and
+        # /Set/SetB/Model can share the same master prim initially.
+        ValidateExpectedInstances(s,
+            { '/__Master_1': ['/Set/SetA/Model', '/Set/SetB/Model'] })
+
+        # Overriding _class_Model in the local layer stack causes
+        # the instancing key to change, so a new master prim is
+        # generated. However, this override would affect both Model
+        # prims on the stage in the same way, so /Set/SetA/Model and
+        # /Set/SetB/Model still share the same master prim.
+        print "-" * 60
+        print "Overriding class in local layer stack"
+        s.OverridePrim('/_class_Model')
+
+        ValidateExpectedInstances(s,
+            { '/__Master_2': ['/Set/SetA/Model', '/Set/SetB/Model'] })
+
+        # Overriding _class_Model in SetA means that SetA/Model may
+        # have name children or other opinions that SetB/Model would
+        # not. So, /Set/SetA/Model and /Set/SetB/Model can no longer
+        # share the same master prim.
+        print "-" * 60
+        print "Overriding class in SetA only"
+        s2 = OpenStage('specializes/setA.usda')
+        s2.OverridePrim('/_class_Model')
+
+        ValidateExpectedInstances(s,
+            { '/__Master_2': ['/Set/SetB/Model'],
+              '/__Master_3': ['/Set/SetA/Model'] })
+    
+    def test_SubrootReferences(self):
+        """Test expected instancing behavior for prims with subroot
+        references"""
+        nl = NoticeListener()
+
+        s = OpenStage('subroot_refs/root.usda')
+
+        # The SubrootRef_1 and SubrootRef_2 prims should share the 
+        # same master, as they both have the same sub-root reference. 
+        # However, note that they do *not* share the same master as 
+        # the nested instance /__Master_1/Ref1_Child, even though
+        # they ultimately have the same child prims. This is something
+        # that could be examined for further optimization in the future.
+        ValidateExpectedInstances(s,
+            { '/__Master_1': ['/Ref_1'],
+              '/__Master_2': ['/__Master_1/Ref1_Child'],
+              '/__Master_3': ['/SubrootRef_1', '/SubrootRef_2'] })
+
+    def test_PropertyChanges(self):
+        """Test that changes to properties that affect masters cause the
+        correct notifications to be sent."""
+        s = OpenStage('basic/root.usda')
+        nl = NoticeListener()
+
+        ValidateExpectedInstances(s,
+            { '/__Master_1': ['/World/sets/Set_1/Prop_1', 
+                              '/World/sets/Set_1/Prop_2'] })
+
+        instancedPropLayer = Sdf.Layer.Find('basic/prop.usda')
+
+        # Author to an attribute on a child of the referenced prop asset.
+        # This should cause change notices for the corresponding attribute
+        # on the master prim as well as any other un-instanced prim that
+        # references that prop.
+        print "-" * 60
+        print "Adding new attribute spec to child of referenced prop"
+        primSpec = instancedPropLayer.GetPrimAtPath('/Prop/geom/Scope')
+        attrSpec = Sdf.AttributeSpec(primSpec, "attr", Sdf.ValueTypeNames.Int)
+
+        ValidateExpectedChanges(nl,
+            ['/World/sets/Set_1/Prop_3/geom/Scope.attr', 
+             '/__Master_1/geom/Scope.attr'])
+
+        print "-" * 60
+        print "Changing value for attribute spec on child of referenced prop"
+        attrSpec.default = 1
+
+        ValidateExpectedChanges(nl,
+            expectedChangedInfo = [
+                '/World/sets/Set_1/Prop_3/geom/Scope.attr', 
+                '/__Master_1/geom/Scope.attr'])
+
+        # Author to an attribute on the referenced prop asset. This should
+        # *not* cause change notices on the master prim, since master prims
+        # don't have any properties. Instead, these should cause change
+        # notices on all of the affected instances.
+        print "-" * 60
+        print "Adding new attribute spec to referenced prop"
+        primSpec = instancedPropLayer.GetPrimAtPath('/Prop')
+        attrSpec = Sdf.AttributeSpec(primSpec, "attr", Sdf.ValueTypeNames.Int)
+
+        ValidateExpectedChanges(nl,
+            ['/World/sets/Set_1/Prop_1.attr',
+             '/World/sets/Set_1/Prop_2.attr', 
+             '/World/sets/Set_1/Prop_3.attr'])
+
+        print "-" * 60
+        print "Changing value for attribute spec on referenced prop"
+        attrSpec.default = 1
+
+        ValidateExpectedChanges(nl,
+            expectedChangedInfo = [
+                '/World/sets/Set_1/Prop_1.attr',
+                '/World/sets/Set_1/Prop_2.attr', 
+                '/World/sets/Set_1/Prop_3.attr'])
+
+    def test_MetadataChanges(self):
+        """Test that metadata changes to prims that affect masters cause
+        the correct notifications to be sent."""
+        s = OpenStage('basic/root.usda')
+        nl = NoticeListener()
+        
+        instancedPropLayer = Sdf.Layer.Find('basic/prop.usda')
+
+        # Author metadata on a child of the referenced prop asset.
+        # This should cause change notices for the corresponding child prim
+        # of the master prim as well as any other un-instanced prim that
+        # references that prop.
+        print "-" * 60
+        print "Changing metadata on child of referenced prop"
+        primSpec = instancedPropLayer.GetPrimAtPath('/Prop/geom/Scope')
+        primSpec.documentation = "Test metadata change"
+
+        ValidateExpectedChanges(nl,
+            expectedChangedInfo = [
+                '/World/sets/Set_1/Prop_3/geom/Scope', 
+                '/__Master_1/geom/Scope'])
+
+        # Author metadata on the referenced prop asset. This should
+        # *not* cause change notices on the master prim, since master prims
+        # don't have any metadata. Instead, these should cause change
+        # notices on all of the affected instances.
+        print "-" * 60
+        print "Changing metadata on prop"
+        primSpec = instancedPropLayer.GetPrimAtPath('/Prop')
+        primSpec.documentation = "Test metadata change"
+
+        ValidateExpectedChanges(nl,
+            expectedChangedInfo = [
+                '/World/sets/Set_1/Prop_1',
+                '/World/sets/Set_1/Prop_2', 
+                '/World/sets/Set_1/Prop_3'])
 
     def test_Editing(self):
         """Test that edits cannot be made on objects in masters"""

@@ -24,6 +24,7 @@
 #include "pxr/usd/usdLux/shadowAPI.h"
 #include "pxr/usd/usd/schemaRegistry.h"
 #include "pxr/usd/usd/typed.h"
+#include "pxr/usd/usd/tokens.h"
 
 #include "pxr/usd/sdf/types.h"
 #include "pxr/usd/sdf/assetPath.h"
@@ -34,9 +35,14 @@ PXR_NAMESPACE_OPEN_SCOPE
 TF_REGISTRY_FUNCTION(TfType)
 {
     TfType::Define<UsdLuxShadowAPI,
-        TfType::Bases< UsdSchemaBase > >();
+        TfType::Bases< UsdAPISchemaBase > >();
     
 }
+
+TF_DEFINE_PRIVATE_TOKENS(
+    _schemaTokens,
+    (ShadowAPI)
+);
 
 /* virtual */
 UsdLuxShadowAPI::~UsdLuxShadowAPI()
@@ -54,6 +60,20 @@ UsdLuxShadowAPI::Get(const UsdStagePtr &stage, const SdfPath &path)
     return UsdLuxShadowAPI(stage->GetPrimAtPath(path));
 }
 
+/*virtual*/
+bool 
+UsdLuxShadowAPI::_IsAppliedAPISchema() const 
+{
+    return true;
+}
+
+/* static */
+UsdLuxShadowAPI
+UsdLuxShadowAPI::Apply(const UsdPrim &prim)
+{
+    return UsdAPISchemaBase::_ApplyAPISchema<UsdLuxShadowAPI>(
+            prim, _schemaTokens->ShadowAPI);
+}
 
 /* static */
 const TfType &
@@ -214,7 +234,7 @@ UsdLuxShadowAPI::GetSchemaAttributeNames(bool includeInherited)
     };
     static TfTokenVector allNames =
         _ConcatenateAttributeNames(
-            UsdSchemaBase::GetSchemaAttributeNames(true),
+            UsdAPISchemaBase::GetSchemaAttributeNames(true),
             localNames);
 
     if (includeInherited)

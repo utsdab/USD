@@ -27,7 +27,9 @@
 #include "pxr/pxr.h"
 #include "pxr/imaging/hdSt/api.h"
 #include "pxr/imaging/hd/version.h"
-#include "pxr/imaging/hd/sprim.h"
+#include "pxr/imaging/hd/light.h"
+
+#include "pxr/imaging/glf/simpleLight.h"
 
 #include "pxr/base/tf/staticTokens.h"
 #include "pxr/base/vt/dictionary.h"
@@ -40,14 +42,6 @@
 PXR_NAMESPACE_OPEN_SCOPE
 
 
-#define HDST_LIGHT_TOKENS                        \
-    (params)                                    \
-    (shadowCollection)                          \
-    (shadowParams)                              \
-    (transform)
-
-TF_DECLARE_PUBLIC_TOKENS(HdStLightTokens, HDST_API, HDST_LIGHT_TOKENS);
-
 class HdSceneDelegate;
 typedef boost::shared_ptr<class HdStLight> HdStLightSharedPtr;
 typedef std::vector<class HdStLight const *> HdStLightPtrConstVector;
@@ -56,25 +50,12 @@ typedef std::vector<class HdStLight const *> HdStLightPtrConstVector;
 ///
 /// A light model, used in conjunction with HdRenderPass.
 ///
-class HdStLight final : public HdSprim {
+class HdStLight final : public HdLight {
 public:
     HDST_API
-    HdStLight(SdfPath const & id);
+    HdStLight(SdfPath const & id, TfToken const &lightType);
     HDST_API
     virtual ~HdStLight();
-
-    // change tracking for HdStLight
-    enum DirtyBits {
-        Clean                 = 0,
-        DirtyTransform        = 1 << 0,
-        DirtyParams           = 1 << 1,
-        DirtyShadowParams     = 1 << 2,
-        DirtyCollection       = 1 << 3,
-        AllDirty              = (DirtyTransform
-                                 |DirtyParams
-                                 |DirtyShadowParams
-                                 |DirtyCollection)
-    };
 
     /// Synchronizes state from the delegate to this object.
     HDST_API
@@ -93,7 +74,17 @@ public:
     virtual HdDirtyBits GetInitialDirtyBitsMask() const override;
 
 private:
-    // cached states
+    /// Converts area lights (sphere lights and distant lights) into
+    /// glfSimpleLights and inserts them in the dictionary so 
+    /// SimpleLightTask can use them later on as if they were regular lights.
+    GlfSimpleLight _ApproximateAreaLight(SdfPath const &id, 
+                                         HdSceneDelegate *sceneDelegate);
+
+private:
+    // Stores the internal light type of this light.
+    TfToken _lightType;
+
+    // Cached states.
     TfHashMap<TfToken, VtValue, TfToken::HashFunctor> _params;
 };
 

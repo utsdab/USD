@@ -91,51 +91,22 @@ public:
     /// Returns the raw pointer to the underlying data.
     virtual void const* GetData() const = 0;
 
-    /// OpenGL data type; GL_UNSIGNED_INT, etc
-    virtual int GetGLComponentDataType() const = 0;
-
-    /// OpenGL data type; GL_FLOAT_VEC3, etc
-    virtual int GetGLElementDataType() const = 0;
+    /// Returns the data type and count (array size) for this buffer source.
+    virtual HdTupleType GetTupleType() const = 0;
 
     /// Returns the number of elements (e.g. VtVec3dArray().GetLength()) from
     /// the source array.
     virtual int GetNumElements() const = 0;
-
-    /// Returns the number of components in a single element.
-    ///
-    /// For example, for a VtBufferSource created from a VtIntArray, this method
-    /// would return 1, but for a VtVec3dArray this method would return 3.
-    ///
-    /// This value is always in the range [1,4] or 16 (GfMatrix4d).
-    virtual short GetNumComponents() const = 0;
-
-
-    // Following interfaces have default implementations, can be
-    // overriden for efficiency.
-
-    /// The size of a single element in the array, e.g. sizeof(GLuint)
-    HD_API
-    virtual size_t GetElementSize() const;
-
-    /// Returns the size of a single component.
-    /// For example: sizeof(GLuint)
-    HD_API
-    virtual size_t GetComponentSize() const;
-
-    /// Returns the flat array size in bytes.
-    HD_API
-    virtual size_t GetSize() const;
 
     /// Returns true it this computation has already been resolved.
     bool IsResolved() const {
         return _state >= RESOLVED;
     }
 
-    /// Returns true if an error occured during resolve.
+    /// Returns true if an error occurred during resolve.
     bool HasResolveError() const {
         return _state == RESOLVE_ERROR;
     }
-
 
     /// \name Chained Buffers
     /// Buffer sources may be daisy-chained together.
@@ -160,13 +131,13 @@ public:
     HD_API
     virtual HdBufferSourceSharedPtr GetPreChainedBuffer() const;
 
-    /// Returns true if this buffer has a chained buffer.
+    /// Returns true if this buffer has any chained buffer(s)
     HD_API
     virtual bool HasChainedBuffer() const;
 
-    /// Returns the chained buffer.
+    /// Returns the vector of chained buffers.
     HD_API
-    virtual HdBufferSourceSharedPtr GetChainedBuffer() const;
+    virtual HdBufferSourceVector GetChainedBuffers() const;
 
     /// @}
 
@@ -219,8 +190,7 @@ protected:
     ///   - If the buffer would produce an invalid BufferSpec
     ///   - If a required dependent buffer is invalid
     /// For example, return false when:
-    ///   The GL Type or Number of components is invalid causing an invalid
-    ///   BufferSpec.
+    ///   The data type is invalid, causing an invalid BufferSpec.
     ///
     ///   The resolve step requires a 'source' buffer and that buffer is invalid.
     ///
@@ -244,19 +214,15 @@ private:
 class HdComputedBufferSource : public HdBufferSource {
 public:
     HD_API
-    virtual TfToken const &GetName() const;
+    virtual TfToken const &GetName() const override;
     HD_API
-    virtual size_t ComputeHash() const;
+    virtual size_t ComputeHash() const override;
     HD_API
-    virtual void const* GetData() const;
+    virtual void const* GetData() const override;
     HD_API
-    virtual int GetGLComponentDataType() const;
+    virtual HdTupleType GetTupleType() const override;
     HD_API
-    virtual int GetGLElementDataType() const;
-    HD_API
-    virtual int GetNumElements() const;
-    HD_API
-    virtual short GetNumComponents() const;
+    virtual int GetNumElements() const override;
 
 protected:
     void _SetResult(HdBufferSourceSharedPtr const &result) {
@@ -273,21 +239,17 @@ private:
 class HdNullBufferSource : public HdBufferSource {
 public:
     HD_API
-    virtual TfToken const &GetName() const;
+    virtual TfToken const &GetName() const override;
     HD_API
-    virtual size_t ComputeHash() const;
+    virtual void const* GetData() const override;
     HD_API
-    virtual void const* GetData() const;
+    virtual size_t ComputeHash() const override;
     HD_API
-    virtual int GetGLComponentDataType() const;
+    virtual int GetNumElements() const override;
     HD_API
-    virtual int GetGLElementDataType() const;
+    virtual HdTupleType GetTupleType() const override;
     HD_API
-    virtual int GetNumElements() const;
-    HD_API
-    virtual short GetNumComponents() const;
-    HD_API
-    virtual void AddBufferSpecs(HdBufferSpecVector *specs) const;
+    virtual void AddBufferSpecs(HdBufferSpecVector *specs) const override;
 };
 
 

@@ -24,6 +24,7 @@
 #include "pxr/usd/usdRi/lightPortalAPI.h"
 #include "pxr/usd/usd/schemaRegistry.h"
 #include "pxr/usd/usd/typed.h"
+#include "pxr/usd/usd/tokens.h"
 
 #include "pxr/usd/sdf/types.h"
 #include "pxr/usd/sdf/assetPath.h"
@@ -34,9 +35,14 @@ PXR_NAMESPACE_OPEN_SCOPE
 TF_REGISTRY_FUNCTION(TfType)
 {
     TfType::Define<UsdRiLightPortalAPI,
-        TfType::Bases< UsdSchemaBase > >();
+        TfType::Bases< UsdAPISchemaBase > >();
     
 }
+
+TF_DEFINE_PRIVATE_TOKENS(
+    _schemaTokens,
+    (RiLightPortalAPI)
+);
 
 /* virtual */
 UsdRiLightPortalAPI::~UsdRiLightPortalAPI()
@@ -54,6 +60,20 @@ UsdRiLightPortalAPI::Get(const UsdStagePtr &stage, const SdfPath &path)
     return UsdRiLightPortalAPI(stage->GetPrimAtPath(path));
 }
 
+/*virtual*/
+bool 
+UsdRiLightPortalAPI::_IsAppliedAPISchema() const 
+{
+    return true;
+}
+
+/* static */
+UsdRiLightPortalAPI
+UsdRiLightPortalAPI::Apply(const UsdPrim &prim)
+{
+    return UsdAPISchemaBase::_ApplyAPISchema<UsdRiLightPortalAPI>(
+            prim, _schemaTokens->RiLightPortalAPI);
+}
 
 /* static */
 const TfType &
@@ -134,7 +154,7 @@ UsdRiLightPortalAPI::GetSchemaAttributeNames(bool includeInherited)
     };
     static TfTokenVector allNames =
         _ConcatenateAttributeNames(
-            UsdSchemaBase::GetSchemaAttributeNames(true),
+            UsdAPISchemaBase::GetSchemaAttributeNames(true),
             localNames);
 
     if (includeInherited)

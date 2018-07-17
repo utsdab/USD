@@ -54,6 +54,7 @@ struct AnimChannel
     UsdGeomXformOp::Precision precision;
     std::string opName;
     bool isInverse;
+    UsdGeomXformOp op;
 };
 
 // Writes an MFnTransform
@@ -62,7 +63,11 @@ class MayaTransformWriter : public MayaPrimWriter
 public:
 
     PXRUSDMAYA_API
-    MayaTransformWriter(const MDagPath & iDag, const SdfPath& uPath, bool instanceSource, usdWriteJobCtx& jobCtx);
+    MayaTransformWriter(
+            const MDagPath& iDag,
+            const SdfPath& uPath,
+            bool instanceSource,
+            usdWriteJobCtx& jobCtx);
     virtual ~MayaTransformWriter() {};
 
     PXRUSDMAYA_API
@@ -72,9 +77,15 @@ public:
             bool writeAnim);
     
     PXRUSDMAYA_API
-    virtual void write(const UsdTimeCode &usdTime);
+    virtual void write(const UsdTimeCode &usdTime) override;
 
-    virtual bool isShapeAnimated()     const { return mIsShapeAnimated; };
+    PXRUSDMAYA_API
+    virtual bool exportsGprims() const override;
+    
+    PXRUSDMAYA_API
+    virtual bool exportsReferences() const override;
+
+    virtual bool isShapeAnimated() const override { return mIsShapeAnimated; };
 
     const MDagPath& getTransformDagPath() { return mXformDagPath; };
 
@@ -84,17 +95,14 @@ protected:
             const UsdTimeCode& usdTime, 
             UsdGeomXformable& primSchema);
 
+    PXRUSDMAYA_API
+    bool isInstance() const;
+
 private:
-    bool mWriteTransformAttrs;
     MDagPath mXformDagPath;
     bool mIsShapeAnimated;
     std::vector<AnimChannel> mAnimChanList;
     bool mIsInstanceSource;
-
-    size_t mJointOrientOpIndex[3];
-    size_t mRotateOpIndex[3];
-    size_t mRotateAxisOpIndex[3];
-
 };
 
 typedef std::shared_ptr<MayaTransformWriter> MayaTransformWriterPtr;

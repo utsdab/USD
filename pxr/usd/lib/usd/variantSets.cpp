@@ -24,8 +24,10 @@
 #include "pxr/pxr.h"
 #include "pxr/usd/usd/variantSets.h"
 
+#include "pxr/usd/usd/common.h"
 #include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/stage.h"
+#include "pxr/usd/usd/valueUtils.h"
 
 #include "pxr/usd/sdf/changeBlock.h"
 #include "pxr/usd/sdf/layer.h"
@@ -49,9 +51,10 @@ using std::vector;
 // ---------------------------------------------------------------------- //
 
 bool
-UsdVariantSet::AppendVariant(const std::string& variantName)
+UsdVariantSet::AddVariant(const std::string& variantName,
+                          UsdListPosition position)
 {
-    if (SdfVariantSetSpecHandle varSet = _AppendVariantSet()){
+    if (SdfVariantSetSpecHandle varSet = _AddVariantSet(position)) {
         // If the variant spec already exists, we don't need to create it
         for (const auto& variant : varSet->GetVariants()) {
             if (variant->GetName() == variantName){
@@ -188,26 +191,24 @@ UsdVariantSet::_CreatePrimSpecForEditing()
 }
 
 SdfVariantSetSpecHandle
-UsdVariantSet::_AppendVariantSet()
+UsdVariantSet::_AddVariantSet(UsdListPosition position)
 {
     SdfVariantSetSpecHandle result;
     SdfPrimSpecHandle primSpec = _CreatePrimSpecForEditing(); 
     if (primSpec){
-        // One can only create a VariantSet on a primPath.  If our current
-        // EditTarget has us sitting right on a VariantSet, 
-        // AppendVariantSelection() will fail with a coding error and return
-        // the empty path
         SdfPath varSetPath = primSpec->GetPath()
             .AppendVariantSelection(_variantSetName, string());
-        if (!varSetPath.IsEmpty()) {
-            SdfLayerHandle layer = primSpec->GetLayer();
-            if (SdfSpecHandle spec = layer->GetObjectAtPath(varSetPath)){
-                result = TfDynamic_cast<SdfVariantSetSpecHandle>(spec);
-            } else {
-                result = SdfVariantSetSpec::New(primSpec, _variantSetName);
-                primSpec->GetVariantSetNameList().Add(_variantSetName);
-            }
+        if (varSetPath.IsEmpty()) {
+            return result;
         }
+        SdfLayerHandle layer = primSpec->GetLayer();
+        if (SdfSpecHandle spec = layer->GetObjectAtPath(varSetPath)){
+            result = TfDynamic_cast<SdfVariantSetSpecHandle>(spec);
+        } else {
+            result = SdfVariantSetSpec::New(primSpec, _variantSetName);
+        }
+        Usd_InsertListItem( primSpec->GetVariantSetNameList(), _variantSetName,
+                            position );
     }
     return result;
 }
@@ -230,11 +231,12 @@ UsdVariantSets::GetVariantSet(const std::string& variantSetName) const
 }
 
 UsdVariantSet
-UsdVariantSets::AppendVariantSet(const std::string& variantSetName)
+UsdVariantSets::AddVariantSet(const std::string& variantSetName,
+                              UsdListPosition position)
 {
     UsdVariantSet varSet = GetVariantSet(variantSetName);
 
-    varSet._AppendVariantSet();
+    varSet._AddVariantSet(position);
 
     // If everything went well, this will return a valid VariantSet.  If not,
     // you'll get an error when you try to use it, which seems good.

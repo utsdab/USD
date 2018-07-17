@@ -27,10 +27,8 @@
 #include "pxr/pxr.h"
 #include "pxr/imaging/hdx/api.h"
 #include "pxr/imaging/hdx/version.h"
-#include "pxr/imaging/hdSt/light.h"
 
 #include "pxr/imaging/hd/changeTracker.h"
-#include "pxr/imaging/hd/rprimCollection.h"
 #include "pxr/imaging/hd/task.h"
 
 #include "pxr/imaging/glf/simpleLight.h"
@@ -38,6 +36,7 @@
 
 #include "pxr/base/gf/matrix4d.h"
 #include "pxr/base/gf/vec3f.h"
+#include "pxr/base/tf/declarePtrs.h"
 
 #include <boost/shared_ptr.hpp>
 
@@ -46,7 +45,6 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 class HdRenderIndex;
 class HdSceneDelegate;
-class HdStCamera;
 
 typedef boost::shared_ptr<class HdRenderPass> HdRenderPassSharedPtr;
 typedef boost::shared_ptr<class HdxSimpleLightingShader> HdxSimpleLightingShaderSharedPtr;
@@ -70,12 +68,21 @@ protected:
     virtual void _Sync(HdTaskContext* ctx);
 
 private:
-    const HdStCamera *_camera;
-    HdStLightPtrConstVector _lights;
+    size_t _AppendLightsOfType(HdRenderIndex &renderIndex,
+                               std::vector<TfToken> const &lightTypes, 
+                               SdfPathVector const &lightIncludePaths,
+                               SdfPathVector const &lightExcludePaths,
+                               std::map<TfToken, SdfPathVector> *lights);
+
+private:
+    SdfPath _cameraId;
+    std::map<TfToken, SdfPathVector> _lightIds;
+    SdfPathVector _lightIncludePaths;
+    SdfPathVector _lightExcludePaths;
+    size_t _numLights;
 
     // Should be weak ptrs
     HdxSimpleLightingShaderSharedPtr _lightingShader;
-    int _collectionVersion;
     bool _enableShadows;
     GfVec4f _viewport;
 

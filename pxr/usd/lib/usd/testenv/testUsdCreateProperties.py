@@ -131,12 +131,12 @@ class TestUsdCreateProperties(unittest.TestCase):
             assert rel.IsCustom()
             self.assertEqual(rel.GetName(), rel.GetPath().name)
             self.assertEqual(rel.GetTargets(), [])
-            rel.AppendTarget("/Parent")
+            rel.AddTarget("/Parent")
             assert rel.HasAuthoredTargets()
             self.assertEqual(rel.GetTargets(), ['/Parent'])
 
             # Test relative path
-            rel.AppendTarget("../../Sibling1")
+            rel.AddTarget("../../Sibling1", position=Usd.ListPositionBackOfAppendList)
             self.assertEqual(rel.GetTargets(), ['/Parent', '/Parent/Sibling1'])
 
             rel.SetCustom(False)
@@ -144,7 +144,7 @@ class TestUsdCreateProperties(unittest.TestCase):
 
             stage = Usd.Stage.Open(strongLayer.identifier);
             p = stage.OverridePrim("/Parent")
-            p.GetReferences().AppendReference(Sdf.Reference(weakLayer.identifier, "/Parent"))
+            p.GetReferences().AddReference(Sdf.Reference(weakLayer.identifier, "/Parent"))
 
             # make sure our reference worked
             strongPrim = stage.GetPrimAtPath("/Parent/Nested/Child")
@@ -180,7 +180,7 @@ class TestUsdCreateProperties(unittest.TestCase):
                 "Expected to be able to SetMetadata <" + str(strongPrim.GetPath())
                 + ".attr2>, but failed.")
             _AssertTrue(
-                strongPrim.GetRelationship("rel1").AppendTarget("/Foo/Bar"),
+                strongPrim.GetRelationship("rel1").AddTarget("/Foo/Bar"),
                 "Expected to be able to AppendTarget to <" + str(strongPrim.GetPath())
                 + ".rel1>, but failed.")
             _AssertTrue(
@@ -204,7 +204,6 @@ class TestUsdCreateProperties(unittest.TestCase):
                         "Expected to be able to create an override relationship at <"
                         + str(prim.GetPath()) + "> but failed")
 
-            stage.Close()
             strongLayer._WriteDataFile("strong.txt")
 
             # print "============================================================="
@@ -241,7 +240,7 @@ class TestUsdCreateProperties(unittest.TestCase):
 
             stage = Usd.Stage.Open(strongLayer.identifier);
             p = stage.OverridePrim("/Parent")
-            p.GetReferences().AppendReference(Sdf.Reference(weakLayer.identifier, "/Parent"))
+            p.GetReferences().AddReference(Sdf.Reference(weakLayer.identifier, "/Parent"))
             assert p.GetAttribute("attr1").IsDefined()
             assert p.GetAttribute("attr1").IsAuthoredAt(weakLayer)
             assert not p.GetAttribute("attr1").IsAuthoredAt(strongLayer)
@@ -373,12 +372,24 @@ class TestUsdCreateProperties(unittest.TestCase):
         self.assertEqual(len(prim.GetProperties()), 2*len(rels))
         self.assertEqual(len(prim.GetPropertiesInNamespace('')), 2*len(rels))
         self.assertEqual(len(prim.GetPropertiesInNamespace([])), 2*len(rels))
+
         # Not 6, because property 'foo' is NOT in the namespace 'foo'
         self.assertEqual(len(prim.GetPropertiesInNamespace('foo')), 5)
         self.assertEqual(len(prim.GetPropertiesInNamespace('foo:')), 5)
+
+        # Try passing in a predicate that does the same thing.
+        fooPred = lambda name: name.startswith("foo:")
+        self.assertEqual(len(prim.GetProperties(predicate=fooPred)), 5)
+
         self.assertEqual(len(prim.GetPropertiesInNamespace(['foo'])), 5)
         # Make sure prefix match works, i.e. foo:bar2 is not in foo:bar namespace
         self.assertEqual(len(prim.GetPropertiesInNamespace('foo:bar')), 2)
+        self.assertEqual(len(prim.GetPropertiesInNamespace(['foo', 'bar'])), 2)
+
+        # Try passing in a predicate that does the same thing.
+        fooBarPred = lambda name: name.startswith("foo:bar:")
+        self.assertEqual(len(prim.GetProperties(predicate=fooBarPred)), 2)
+
         # And try a fail/empty case...
         self.assertEqual(len(prim.GetPropertiesInNamespace('graphica')), 0)
 
@@ -514,12 +525,12 @@ class TestUsdCreateProperties(unittest.TestCase):
             stage = Usd.Stage.Open(layerB.identifier)
             over = stage.OverridePrim(primPath)
             over.CreateAttribute(propName, Sdf.ValueTypeNames.String)
-            over.GetReferences().AppendReference(Sdf.Reference(layerA.identifier, primPath))
+            over.GetReferences().AddReference(Sdf.Reference(layerA.identifier, primPath))
 
             stage = Usd.Stage.Open(layerC.identifier)
             over = stage.OverridePrim(primPath)
             over.CreateAttribute(propName, Sdf.ValueTypeNames.String)
-            over.GetReferences().AppendReference(Sdf.Reference(layerB.identifier, primPath))
+            over.GetReferences().AddReference(Sdf.Reference(layerB.identifier, primPath))
 
             attr = over.GetAttribute(propName)
             expectedPropertyStack = [l.GetPropertyAtPath(propPath) for l in
@@ -571,7 +582,7 @@ class TestUsdCreateProperties(unittest.TestCase):
             # Add a reference to our topology layer
             rootPath = Sdf.Path('/root')
             rootPrim = stage.GetPrimAtPath(rootPath)
-            rootPrim.GetReferences().AppendReference(
+            rootPrim.GetReferences().AddReference(
                 Sdf.Reference(topologyLayer.identifier, rootPath))
 
             clipTime = 102.0

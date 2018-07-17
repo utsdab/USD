@@ -25,6 +25,7 @@
 //
 
 #define TF_MAX_ARITY 7
+#include "pxr/pxr.h"
 #include "pxr/base/arch/defines.h"
 #if defined(ARCH_OS_DARWIN)
 #include <mach/mach_time.h>
@@ -39,6 +40,7 @@
 
 #include <intrin.h>
 #include <boost/preprocessor/variadic/size.hpp>
+#include <boost/vmd/is_empty.hpp>
 #include <boost/vmd/is_tuple.hpp>
 #endif
 #include <algorithm>
@@ -62,6 +64,7 @@
 #include <iterator>
 #include <limits>
 #include <list>
+#include <locale>
 #include <map>
 #include <math.h>
 #include <memory>
@@ -83,7 +86,6 @@
 #include <boost/aligned_storage.hpp>
 #include <boost/any.hpp>
 #include <boost/assign/list_of.hpp>
-#include <boost/bind.hpp>
 #include <boost/call_traits.hpp>
 #include <boost/compressed_pair.hpp>
 #include <boost/container/vector.hpp>
@@ -143,6 +145,7 @@
 #include <boost/preprocessor/tuple/elem.hpp>
 #include <boost/preprocessor/tuple/to_list.hpp>
 #include <boost/preprocessor/tuple/to_seq.hpp>
+#ifdef PXR_PYTHON_SUPPORT_ENABLED
 #include <boost/python.hpp>
 #include <boost/python/class.hpp>
 #include <boost/python/converter/from_python.hpp>
@@ -160,7 +163,6 @@
 #include <boost/python/object_fwd.hpp>
 #include <boost/python/object_operators.hpp>
 #include <boost/python/operators.hpp>
-#include <boost/python/pointee.hpp>
 #include <boost/python/refcount.hpp>
 #include <boost/python/scope.hpp>
 #include <boost/python/to_python_converter.hpp>
@@ -170,6 +172,7 @@
 #undef tolower
 #undef toupper
 #endif
+#endif // PXR_PYTHON_SUPPORT_ENABLED
 #include <boost/range/iterator_range.hpp>
 #include <boost/scoped_ptr.hpp>
 #include <boost/shared_array.hpp>
@@ -188,12 +191,12 @@
 #include <boost/type_traits/is_const.hpp>
 #include <boost/type_traits/is_convertible.hpp>
 #include <boost/type_traits/is_enum.hpp>
+#include <boost/type_traits/is_polymorphic.hpp>
 #include <boost/type_traits/is_same.hpp>
 #include <boost/type_traits/remove_const.hpp>
 #include <boost/type_traits/remove_cv.hpp>
 #include <boost/type_traits/remove_reference.hpp>
 #include <boost/unordered_map.hpp>
-#include <boost/unordered_set.hpp>
 #include <boost/utility.hpp>
 #include <boost/utility/enable_if.hpp>
 #include <boost/utility/value_init.hpp>
@@ -207,4 +210,7 @@
 #include <tbb/spin_mutex.h>
 #include <tbb/spin_rw_mutex.h>
 #include <tbb/task.h>
+#include <tbb/task_arena.h>
+#ifdef PXR_PYTHON_SUPPORT_ENABLED
 #include <Python.h>
+#endif // PXR_PYTHON_SUPPORT_ENABLED

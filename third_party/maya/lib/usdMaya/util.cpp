@@ -22,6 +22,7 @@
 // language governing permissions and limitations under the Apache License.
 //
 #include "pxr/pxr.h"
+#include "usdMaya/colorSpace.h"
 #include "usdMaya/util.h"
 
 #include "pxr/base/gf/gamma.h"
@@ -38,6 +39,7 @@
 #include <maya/MFnEnumAttribute.h>
 #include <maya/MFnExpression.h>
 #include <maya/MFnLambertShader.h>
+#include <maya/MFnMatrixData.h>
 #include <maya/MFnNumericAttribute.h>
 #include <maya/MFnTypedAttribute.h>
 #include <maya/MFnSet.h>
@@ -45,11 +47,14 @@
 #include <maya/MItDependencyNodes.h>
 #include <maya/MItMeshFaceVertex.h>
 #include <maya/MItMeshPolygon.h>
+#include <maya/MMatrix.h>
 #include <maya/MObject.h>
+#include <maya/MPlug.h>
 #include <maya/MPlugArray.h>
 #include <maya/MSelectionList.h>
 #include <maya/MStatus.h>
 #include <maya/MString.h>
+#include <maya/MStringArray.h>
 #include <maya/MTime.h>
 
 #include <string>
@@ -89,6 +94,36 @@ PxrUsdMayaUtil::GetDagPathByName(const std::string& nodeName, MDagPath& dagPath)
 
     status = selectionList.getDagPath(0, dagPath);
 
+    return status;
+}
+
+MStatus
+PxrUsdMayaUtil::GetPlugByName(const std::string& attrPath, MPlug& plug)
+{
+    std::vector<std::string> comps = TfStringSplit(attrPath, ".");
+    if (comps.size() != 2) {
+        TF_RUNTIME_ERROR("'%s' is not a valid Maya attribute path",
+                attrPath.c_str());
+        return MStatus::kFailure;
+    }
+
+    MObject object;
+    MStatus status = GetMObjectByName(comps[0], object);
+    if (!status) {
+        return status;
+    }
+
+    MFnDependencyNode depNode(object, &status);
+    if (!status) {
+        return status;
+    }
+
+    MPlug tmpPlug = depNode.findPlug(comps[1].c_str(), true, &status);
+    if (!status) {
+        return status;
+    }
+
+    plug = tmpPlug;
     return status;
 }
 
@@ -413,6 +448,23 @@ bool PxrUsdMayaUtil::isAnimated(MObject & object, bool checkParent)
     return false;
 }
 
+bool PxrUsdMayaUtil::isPlugAnimated(const MPlug& plug)
+{
+    if (plug.isNull()) {
+        return false;
+    }
+    if (plug.isKeyable() && MAnimUtil::isAnimated(plug)) {
+        return true;
+    }
+    if (plug.isDestination()) {
+        const MPlug source(GetConnected(plug));
+        if (!source.isNull() && MAnimUtil::isAnimated(source.node())) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool PxrUsdMayaUtil::isIntermediate(const MObject & object)
 {
     MStatus stat;
@@ -612,7 +664,7 @@ _GetColorAndTransparencyFromLambert(
             for (int j=0;j<3;j++) {
                 displayColor[j] = color[j];
             }
-            *rgb = GfConvertDisplayToLinear(displayColor);
+            *rgb = PxrUsdMayaColorSpace::ConvertMayaToLinear(displayColor);
         }
         if (alpha) {
             MColor trn = lambertFn.transparency();
@@ -648,7 +700,7 @@ _GetColorAndTransparencyFromDepNode(
         for (int j=0; j<3; j++) {
             colorPlug.child(j).getValue(displayColor[j]);
         }
-        *rgb = GfConvertDisplayToLinear(displayColor);
+        *rgb = PxrUsdMayaColorSpace::ConvertMayaToLinear(displayColor);
     }
 
     if (alpha) {
@@ -731,21 +783,21 @@ _GetLinearShaderColor(
         VtArray<int> *assignmentIndices)
 {
     MObjectArray shaderObjs;
-    if (_getAttachedMayaShaderObjects(node, numComponents, &shaderObjs, assignmentIndices)) {
-        if (assignmentIndices && interpolation) {
-            if (assignmentIndices->empty()) {
-                *interpolation = UsdGeomTokens->constant;
-            } else {
-                *interpolation = UsdGeomTokens->uniform;
-            }
-        }
-
+    bool hasAttachedShader = _getAttachedMayaShaderObjects(
+            node, numComponents, &shaderObjs, assignmentIndices);
+    if (hasAttachedShader) {
         _getMayaShadersColor(shaderObjs, RGBData, AlphaData);
-
-        return true;
     }
 
-    return false;
+    if (assignmentIndices && interpolation) {
+        if (assignmentIndices->empty()) {
+            *interpolation = UsdGeomTokens->constant;
+        } else {
+            *interpolation = UsdGeomTokens->uniform;
+        }
+    }
+
+    return hasAttachedShader;
 }
 
 bool
@@ -1051,6 +1103,33 @@ PxrUsdMayaUtil::AddUnassignedColorAndAlphaIfNeeded(
     return true;
 }
 
+bool
+PxrUsdMayaUtil::IsAuthored(MPlug& plug)
+{
+    MStatus status;
+
+    if (plug.isNull(&status) || status != MS::kSuccess) {
+        return false;
+    }
+
+    // Plugs with connections are considered authored.
+    if (plug.isConnected(&status)) {
+        return true;
+    }
+
+    MStringArray setAttrCmds;
+    status = plug.getSetAttrCmds(setAttrCmds, MPlug::kChanged);
+    CHECK_MSTATUS_AND_RETURN(status, false);
+
+    for (unsigned int i = 0u; i < setAttrCmds.length(); ++i) {
+        if (setAttrCmds[i].numChars() > 0u) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 MPlug
 PxrUsdMayaUtil::GetConnected(const MPlug& plug)
 {
@@ -1083,6 +1162,31 @@ PxrUsdMayaUtil::Connect(
     // Execute the disconnect/connect
     status = dgMod.connect(srcPlug, dstPlug);
     dgMod.doIt();
+}
+
+MPlug
+PxrUsdMayaUtil::FindChildPlugByName(const MPlug& plug, const MString& name)
+{
+    unsigned int numChildren = plug.numChildren();
+    for(unsigned int i = 0; i < numChildren; ++i) {
+        MPlug child = plug.child(i);
+
+        // We can't get at the name of just the *component*
+        // plug.name() gives us node.plug[index].compound, etc.
+        // partialName() also has no form that just gives us the name.
+        MString childName = child.name();
+        if(childName.length() > name.length()) {
+            int index = childName.rindex('.');
+            if(index >= 0) {
+                MString childSuffix = 
+                    childName.substring(index+1, childName.length());
+                if(childSuffix == name) {
+                    return child;
+                }
+            }
+        }
+    }
+    return MPlug();
 }
 
 // XXX: see logic in MayaTransformWriter.  It's unfortunate that this
@@ -1146,10 +1250,66 @@ _GetVec(
 {
     T ret = val.UncheckedGet<T>();
     if (attr.GetRoleName() == SdfValueRoleNames->Color)  {
-        return GfConvertLinearToDisplay(ret);
+        return PxrUsdMayaColorSpace::ConvertMayaToLinear(ret);
     }   
     return ret;
 
+}
+
+MMatrix
+PxrUsdMayaUtil::GfMatrixToMMatrix(const GfMatrix4d& mx)
+{
+    MMatrix mayaMx;
+    std::copy(mx.GetArray(), mx.GetArray()+16, mayaMx[0]);
+    return mayaMx;
+}
+
+bool
+PxrUsdMayaUtil::getPlugMatrix(
+        const MFnDependencyNode& depNode,
+        const MString& attr,
+        MMatrix* outVal)
+{
+    MStatus status;
+    MPlug plug = depNode.findPlug(attr, &status);
+    if (!status) {
+        return false;
+    }
+
+    MObject plugObj = plug.asMObject(MDGContext::fsNormal, &status);
+    if (!status) {
+        return false;
+    }
+
+    MFnMatrixData plugMatrixData(plugObj, &status);
+    if (!status) {
+        return false;
+    }
+
+    *outVal = plugMatrixData.matrix();
+    return true;
+}
+
+bool
+PxrUsdMayaUtil::setPlugMatrix(const MFnDependencyNode& depNode,
+                              const MString& attr,
+                              const GfMatrix4d& mx)
+{
+    MStatus status;
+    MPlug plug = depNode.findPlug(attr, &status);
+    CHECK_MSTATUS_AND_RETURN(status, false);
+    return setPlugMatrix(mx, plug);
+}
+
+bool
+PxrUsdMayaUtil::setPlugMatrix(const GfMatrix4d& mx, MPlug& plug)
+{
+    MStatus status;
+    MObject mxObj = MFnMatrixData().create(GfMatrixToMMatrix(mx), &status);
+    CHECK_MSTATUS_AND_RETURN(status, false);
+    status = plug.setValue(mxObj);
+    CHECK_MSTATUS_AND_RETURN(status, false);
+    return true;
 }
 
 bool
@@ -1249,4 +1409,43 @@ PxrUsdMayaUtil::createNumericAttribute(
     CHECK_MSTATUS_AND_RETURN(status, false);
     
     return true;
+}
+
+PxrUsdMayaUtil::MDataHandleHolder::MDataHandleHolder(
+    const MPlug& plug, MDataHandle dataHandle)
+    : _plug(plug), _dataHandle(dataHandle)
+{
+}
+
+PxrUsdMayaUtil::MDataHandleHolder::~MDataHandleHolder()
+{
+    if (!_plug.isNull()) {
+        _plug.destructHandle(_dataHandle);
+    }
+}
+
+TfRefPtr<PxrUsdMayaUtil::MDataHandleHolder>
+PxrUsdMayaUtil::MDataHandleHolder::New(const MPlug& plug)
+{
+    MStatus status;
+
+#if MAYA_API_VERSION >= 20180000
+    MDataHandle dataHandle = plug.asMDataHandle(&status);
+#else
+    MDataHandle dataHandle = plug.asMDataHandle(MDGContext::fsNormal, &status);
+#endif
+
+    if (!status.error()) {
+        return TfCreateRefPtr(
+                new PxrUsdMayaUtil::MDataHandleHolder(plug, dataHandle));
+    }
+    else {
+        return nullptr;
+    }
+}
+
+TfRefPtr<PxrUsdMayaUtil::MDataHandleHolder>
+PxrUsdMayaUtil::GetPlugDataHandle(const MPlug& plug)
+{
+    return PxrUsdMayaUtil::MDataHandleHolder::New(plug);
 }

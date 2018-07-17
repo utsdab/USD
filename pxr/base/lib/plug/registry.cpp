@@ -43,6 +43,8 @@
 #include <tbb/concurrent_vector.h>
 #include <tbb/spin_mutex.h>
 
+#include <functional>
+
 using std::pair;
 using std::string;
 using std::vector;
@@ -58,7 +60,6 @@ PlugRegistry::GetInstance()
 }
 
 PlugRegistry::PlugRegistry()
-    : _dispatcher(new Plug_TaskArena)
 {
     TfSingleton< This >::SetInstanceConstructed(*this);
 }
@@ -86,31 +87,15 @@ PlugRegistry::_RegisterPlugin(
         break;
 
     case Plug_RegistrationMetadata::LibraryType:
-        newPlugin =
-            PlugPlugin::_NewDynamicLibraryPlugin(
-                metadata.pluginPath,
-                metadata.pluginName,
-                metadata.libraryPath,
-                metadata.resourcePath,
-                metadata.plugInfo);
+        newPlugin = PlugPlugin::_NewDynamicLibraryPlugin(metadata);
         break;
-
+#ifdef PXR_PYTHON_SUPPORT_ENABLED
     case Plug_RegistrationMetadata::PythonType:
-        newPlugin =
-            PlugPlugin::_NewPythonModulePlugin(
-                metadata.pluginPath,
-                metadata.pluginName,
-                metadata.resourcePath,
-                metadata.plugInfo);
+        newPlugin = PlugPlugin::_NewPythonModulePlugin(metadata);
         break;
-
+#endif // PXR_PYTHON_SUPPORT_ENABLED
     case Plug_RegistrationMetadata::ResourceType:
-        newPlugin =
-            PlugPlugin::_NewResourcePlugin(
-                metadata.pluginPath,
-                metadata.pluginName,
-                metadata.resourcePath,
-                metadata.plugInfo);
+        newPlugin = PlugPlugin::_NewResourcePlugin(metadata);
         break;
     }
 
@@ -144,16 +129,17 @@ PlugRegistry::_RegisterPlugins(const std::vector<std::string>& pathsToPlugInfo)
     typedef tbb::concurrent_vector<PlugPluginPtr> NewPluginsVec;
     NewPluginsVec newPlugins;
     {
+        Plug_TaskArena taskArena;
         // XXX -- Is this mutex really needed?
         std::lock_guard<std::mutex> lock(_mutex);
         Plug_ReadPlugInfo(pathsToPlugInfo,
-                          boost::bind(
+                          std::bind(
                               &PlugRegistry::_InsertRegisteredPluginPath,
-                              this, _1),
-                          boost::bind(
+                              this, std::placeholders::_1),
+                          std::bind(
                               &PlugRegistry::_RegisterPlugin<NewPluginsVec>,
-                              this, _1, &newPlugins),
-                          _dispatcher.get());
+                              this, std::placeholders::_1, &newPlugins),
+                          &taskArena);
     }
 
     if (!newPlugins.empty()) {

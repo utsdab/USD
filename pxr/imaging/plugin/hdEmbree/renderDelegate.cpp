@@ -33,7 +33,7 @@
 
 #include "pxr/imaging/hdEmbree/mesh.h"
 //XXX: Add other Rprim types later
-#include "pxr/imaging/hdSt/camera.h"
+#include "pxr/imaging/hd/camera.h"
 //XXX: Add other Sprim types later
 #include "pxr/imaging/hd/bprim.h"
 //XXX: Add bprim types
@@ -54,6 +54,7 @@ const TfTokenVector HdEmbreeRenderDelegate::SUPPORTED_BPRIM_TYPES =
 {
 };
 
+std::mutex HdEmbreeRenderDelegate::_mutexResourceRegistry;
 std::atomic_int HdEmbreeRenderDelegate::_counterResourceRegistry;
 HdResourceRegistrySharedPtr HdEmbreeRenderDelegate::_resourceRegistry;
 
@@ -119,6 +120,8 @@ HdEmbreeRenderDelegate::HdEmbreeRenderDelegate()
         std::make_shared<HdEmbreeRenderParam>(_rtcDevice, _rtcScene);
 
     // Initialize one resource registry for all embree plugins
+    std::lock_guard<std::mutex> guard(_mutexResourceRegistry);
+
     if (_counterResourceRegistry.fetch_add(1) == 0) {
         _resourceRegistry.reset( new HdResourceRegistry() );
     }
@@ -127,6 +130,8 @@ HdEmbreeRenderDelegate::HdEmbreeRenderDelegate()
 HdEmbreeRenderDelegate::~HdEmbreeRenderDelegate()
 {
     // Clean the resource registry only when it is the last Embree delegate
+    std::lock_guard<std::mutex> guard(_mutexResourceRegistry);
+
     if (_counterResourceRegistry.fetch_sub(1) == 1) {
         _resourceRegistry.reset();
     }
@@ -185,8 +190,8 @@ HdRenderPassSharedPtr
 HdEmbreeRenderDelegate::CreateRenderPass(HdRenderIndex *index,
                             HdRprimCollection const& collection)
 {
-    return HdRenderPassSharedPtr(
-        new HdEmbreeRenderPass(index, collection, _rtcScene));
+    return HdRenderPassSharedPtr(new HdEmbreeRenderPass(
+        index, collection, _rtcScene, _renderParam.get()));
 }
 
 HdInstancer *
@@ -228,7 +233,7 @@ HdEmbreeRenderDelegate::CreateSprim(TfToken const& typeId,
                                     SdfPath const& sprimId)
 {
     if (typeId == HdPrimTypeTokens->camera) {
-        return new HdStCamera(sprimId);
+        return new HdCamera(sprimId);
     } else {
         TF_CODING_ERROR("Unknown Sprim Type %s", typeId.GetText());
     }
@@ -242,7 +247,7 @@ HdEmbreeRenderDelegate::CreateFallbackSprim(TfToken const& typeId)
     // For fallback sprims, create objects with an empty scene path.
     // They'll use default values and won't be updated by a scene delegate.
     if (typeId == HdPrimTypeTokens->camera) {
-        return new HdStCamera(SdfPath::EmptyPath());
+        return new HdCamera(SdfPath::EmptyPath());
     } else {
         TF_CODING_ERROR("Unknown Sprim Type %s", typeId.GetText());
     }

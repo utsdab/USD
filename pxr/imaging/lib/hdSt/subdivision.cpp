@@ -82,17 +82,33 @@ HdSt_OsdIndexComputation::AddBufferSpecs(HdBufferSpecVector *specs) const
 {
     if (HdSt_Subdivision::RefinesToTriangles(_topology->GetScheme())) {
         // triangles (loop)
-        specs->push_back(HdBufferSpec(HdTokens->indices, GL_INT, 3));
-        specs->push_back(HdBufferSpec(HdTokens->primitiveParam, GL_INT, 3));
+        specs->emplace_back(HdTokens->indices,
+                            HdTupleType {HdTypeInt32Vec3, 1});
+        specs->emplace_back(HdTokens->primitiveParam,
+                            HdTupleType {HdTypeInt32Vec3, 1});
+        // vec3 will suffice, but this unifies it for all the cases
+        specs->emplace_back(HdTokens->edgeIndices,
+                            HdTupleType {HdTypeInt32Vec4, 1});
     } else if (_topology->RefinesToBSplinePatches()) {
         // bi-cubic bspline patches
-        specs->push_back(HdBufferSpec(HdTokens->indices, GL_INT, 16));
+        // Note that we don't have an HdType corresponding to
+        // Hd_BSplinePatchIndex; instead, we use its underlying
+        // in-memory representation as an array of 16 int32 values.
+        specs->emplace_back(HdTokens->indices,
+                            HdTupleType {HdTypeInt32, 16});
         // 3+1 (includes sharpness)
-        specs->push_back(HdBufferSpec(HdTokens->primitiveParam, GL_INT, 4));
+        specs->emplace_back(HdTokens->primitiveParam,
+                            HdTupleType {HdTypeInt32Vec4, 1});
+        specs->emplace_back(HdTokens->edgeIndices,
+                            HdTupleType {HdTypeInt32Vec4, 1});
     } else {
         // quads (catmark, bilinear)
-        specs->push_back(HdBufferSpec(HdTokens->indices, GL_INT, 4));
-        specs->push_back(HdBufferSpec(HdTokens->primitiveParam, GL_INT, 3));
+        specs->emplace_back(HdTokens->indices,
+                            HdTupleType {HdTypeInt32Vec4, 1});
+        specs->emplace_back(HdTokens->primitiveParam,
+                            HdTupleType {HdTypeInt32Vec3, 1});
+        specs->emplace_back(HdTokens->edgeIndices,
+                            HdTupleType {HdTypeInt32Vec4, 1});
     }
 }
 
@@ -104,10 +120,10 @@ HdSt_OsdIndexComputation::HasChainedBuffer() const
 }
 
 /*virtual*/
-HdBufferSourceSharedPtr
-HdSt_OsdIndexComputation::GetChainedBuffer() const
+HdBufferSourceVector
+HdSt_OsdIndexComputation::GetChainedBuffers() const
 {
-    return _primitiveBuffer;
+    return { _primitiveBuffer, _edgeIndicesBuffer };
 }
 
 /*virtual*/
@@ -125,10 +141,8 @@ HdSt_OsdIndexComputation::_CheckValid() const
 HdSt_OsdRefineComputationGPU::HdSt_OsdRefineComputationGPU(
                                                     HdSt_MeshTopology *topology,
                                                     TfToken const &name,
-                                                    GLenum dataType,
-                                                    int numComponents)
-    : _topology(topology), _name(name),
-      _dataType(dataType), _numComponents(numComponents)
+                                                    HdType type)
+    : _topology(topology), _name(name), _type(type)
 {
 }
 

@@ -42,14 +42,13 @@ PXR_NAMESPACE_OPEN_SCOPE
 typedef std::vector<HdBufferSourceSharedPtr> HdBufferSourceSharedPtrVector;
 
 HdxSelectionTask::HdxSelectionTask(HdSceneDelegate* delegate,
-                                                   SdfPath const& id)
+                                   SdfPath const& id)
     : HdSceneTask(delegate, id)
     , _lastVersion(-1)
     , _offsetMin(0)
     , _offsetMax(-1)
     , _hasSelection(false)
-    , _selOffsetBar(nullptr)
-    , _selValueBar(nullptr)
+    , _selUniformBar(nullptr)
 {
     _params = {false, GfVec4f(), GfVec4f(), GfVec4f()};
 }
@@ -86,29 +85,38 @@ HdxSelectionTask::_Sync(HdTaskContext* ctx)
         sel->Sync(&index);
     }
 
+    // If the resource registry doesn't support uniform or single bars,
+    // there's nowhere to put selection state, so don't compute it.
+    if (!(resourceRegistry->HasSingleStorageAggregationStrategy()) ||
+        !(resourceRegistry->HasUniformAggregationStrategy())) {
+        return;
+    }
+
     if (sel && (paramsChanged || sel->GetVersion() != _lastVersion)) {
 
         _lastVersion = sel->GetVersion();
         VtIntArray offsets;
         VtIntArray values;
         
-        _hasSelection = sel->GetBuffers(&index, &offsets);
+        _hasSelection = sel->GetSelectionOffsetBuffer(&index, &offsets);
         if (!_selOffsetBar) {
 
             HdBufferSpecVector offsetSpecs;
-            offsetSpecs.push_back(HdBufferSpec(
-                                    HdxTokens->hdxSelectionBuffer, GL_INT, 1));
+            offsetSpecs.emplace_back(HdxTokens->hdxSelectionBuffer,
+                                     HdTupleType { HdTypeInt32, 1 });
             _selOffsetBar = resourceRegistry->AllocateSingleBufferArrayRange(
                                                 /*role*/HdxTokens->selection,
                                                 offsetSpecs);
+        }
 
+        if (!_selUniformBar) {
             HdBufferSpecVector uniformSpecs;
-            uniformSpecs.push_back(
-                        HdBufferSpec(HdxTokens->selColor, GL_FLOAT, 4));
-            uniformSpecs.push_back(
-                        HdBufferSpec(HdxTokens->selLocateColor, GL_FLOAT, 4));
-            uniformSpecs.push_back(
-                        HdBufferSpec(HdxTokens->selMaskColor, GL_FLOAT, 4));
+            uniformSpecs.emplace_back(HdxTokens->selColor,
+                                      HdTupleType { HdTypeFloatVec4, 1 });
+            uniformSpecs.emplace_back(HdxTokens->selLocateColor,
+                                      HdTupleType { HdTypeFloatVec4, 1 });
+            uniformSpecs.emplace_back(HdxTokens->selMaskColor,
+                                      HdTupleType { HdTypeFloatVec4, 1 });
             _selUniformBar = resourceRegistry->AllocateUniformBufferArrayRange(
                                                 /*role*/HdxTokens->selection,
                                                 uniformSpecs);

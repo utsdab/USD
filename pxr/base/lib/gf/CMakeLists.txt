@@ -32,7 +32,6 @@ pxr_library(gf
         matrix4d
         multiInterval
         plane
-        pyBufferUtils
         quatd
         quatf
         quath
@@ -62,9 +61,13 @@ pxr_library(gf
         vec4h
         vec4i
 
+    PYTHON_PUBLIC_CLASSES
+        pyBufferUtils
+
     PUBLIC_HEADERS
         api.h
         declare.h
+        ilmbase_halfLimits.h
         limits.h
         traits.h
 
@@ -75,7 +78,7 @@ pxr_library(gf
         ilmbase_eLut.h
         ilmbase_toFloat.h
 
-    CPPFILES
+    PYTHON_CPPFILES
         moduleDeps.cpp
 
     PYMODULE_CPPFILES
@@ -128,7 +131,7 @@ pxr_library(gf
         wrapVec4h.cpp
         wrapVec4i.cpp
 
-    PYTHON_FILES
+    PYMODULE_FILES
         __init__.py
 )
 

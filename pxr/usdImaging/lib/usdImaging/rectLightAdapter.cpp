@@ -23,13 +23,15 @@
 //
 #include "pxr/usdImaging/usdImaging/rectLightAdapter.h"
 #include "pxr/usdImaging/usdImaging/delegate.h"
+#include "pxr/usdImaging/usdImaging/indexProxy.h"
 #include "pxr/usdImaging/usdImaging/tokens.h"
 
-#include "pxr/imaging/hd/renderIndex.h"
 #include "pxr/imaging/hd/tokens.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
+
+bool _IsEnabledSceneLights();
 
 TF_REGISTRY_FUNCTION(TfType)
 {
@@ -43,9 +45,10 @@ UsdImagingRectLightAdapter::~UsdImagingRectLightAdapter()
 }
 
 bool
-UsdImagingRectLightAdapter::IsSupported(HdRenderIndex* renderIndex)
+UsdImagingRectLightAdapter::IsSupported(UsdImagingIndexProxy const* index) const
 {
-    return renderIndex->IsSprimTypeSupported(HdPrimTypeTokens->rectLight);
+    return _IsEnabledSceneLights() &&
+           index->IsSprimTypeSupported(HdPrimTypeTokens->rectLight);
 }
 
 SdfPath
@@ -53,10 +56,18 @@ UsdImagingRectLightAdapter::Populate(UsdPrim const& prim,
                             UsdImagingIndexProxy* index,
                             UsdImagingInstancerContext const* instancerContext)
 {
-    index->InsertLight(prim.GetPath(), HdPrimTypeTokens->rectLight);
+    index->InsertSprim(HdPrimTypeTokens->rectLight, prim.GetPath(), prim);
     HD_PERF_COUNTER_INCR(UsdImagingTokens->usdPopulatedPrimCount);
 
     return prim.GetPath();
 }
+
+void
+UsdImagingRectLightAdapter::_RemovePrim(SdfPath const& cachePath,
+                                         UsdImagingIndexProxy* index)
+{
+    index->RemoveSprim(HdPrimTypeTokens->rectLight, cachePath);
+}
+
 
 PXR_NAMESPACE_CLOSE_SCOPE

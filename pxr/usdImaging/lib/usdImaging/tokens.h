@@ -39,12 +39,14 @@ PXR_NAMESPACE_OPEN_SCOPE
     (ptexFaceOffset)        \
     (usdPopulatedPrimCount) \
     (usdVaryingExtent)      \
-    (usdVaryingPrimVar)     \
+    (usdVaryingPrimvar)     \
     (usdVaryingTopology)    \
     (usdVaryingVisibility)  \
     (usdVaryingWidths)      \
     (usdVaryingNormals)     \
     (usdVaryingXform)       \
+    (bxdf)                  \
+    (displacement)          \
     (uvPrimvar)
 
 TF_DECLARE_PUBLIC_TOKENS(UsdImagingTokens, USDIMAGING_API, USDIMAGING_TOKENS);

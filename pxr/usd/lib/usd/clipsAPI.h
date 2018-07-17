@@ -28,7 +28,7 @@
 
 #include "pxr/pxr.h"
 #include "pxr/usd/usd/api.h"
-#include "pxr/usd/usd/schemaBase.h"
+#include "pxr/usd/usd/apiSchemaBase.h"
 #include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/stage.h"
 
@@ -101,7 +101,7 @@ class SdfAssetPath;
 /// For further information, see \ref Usd_Page_ValueClips
 /// 
 ///
-class UsdClipsAPI : public UsdSchemaBase
+class UsdClipsAPI : public UsdAPISchemaBase
 {
 public:
     /// Compile-time constant indicating whether or not this class corresponds
@@ -110,12 +110,28 @@ public:
     /// a non-empty typeName.
     static const bool IsConcrete = false;
 
+    /// Compile-time constant indicating whether or not this class inherits from
+    /// UsdTyped. Types which inherit from UsdTyped can impart a typename on a
+    /// UsdPrim.
+    static const bool IsTyped = false;
+
+    /// Compile-time constant indicating whether or not this class represents an 
+    /// applied API schema, i.e. an API schema that has to be applied to a prim
+    /// with a call to auto-generated Apply() method before any schema 
+    /// properties are authored.
+    static const bool IsApplied = false;
+    
+    /// Compile-time constant indicating whether or not this class represents a 
+    /// multiple-apply API schema. Mutiple-apply API schemas can be applied 
+    /// to the same prim multiple times with different instance names. 
+    static const bool IsMultipleApply = false;
+
     /// Construct a UsdClipsAPI on UsdPrim \p prim .
     /// Equivalent to UsdClipsAPI::Get(prim.GetStage(), prim.GetPath())
     /// for a \em valid \p prim, but will not immediately throw an error for
     /// an invalid \p prim
     explicit UsdClipsAPI(const UsdPrim& prim=UsdPrim())
-        : UsdSchemaBase(prim)
+        : UsdAPISchemaBase(prim)
     {
     }
 
@@ -123,7 +139,7 @@ public:
     /// Should be preferred over UsdClipsAPI(schemaObj.GetPrim()),
     /// as it preserves SchemaBase state.
     explicit UsdClipsAPI(const UsdSchemaBase& schemaObj)
-        : UsdSchemaBase(schemaObj)
+        : UsdAPISchemaBase(schemaObj)
     {
     }
 
@@ -428,6 +444,30 @@ public:
     USD_API
     bool GetClipTemplateStride(double* clipTemplateStride) const;
 
+    /// Set the clip template offset for the clip set named \p clipSet.
+    /// \sa GetClipTemplateActiveOffset
+    USD_API
+    bool SetClipTemplateActiveOffset(const double clipTemplateActiveOffset,
+                                     const std::string& clipSet);
+
+    /// \overload
+    /// This function operates on the default clip set.
+    /// \sa \ref UsdClipsAPISetNames
+    USD_API
+    bool SetClipTemplateActiveOffset(const double clipTemplateActiveOffset);
+
+    /// A double representing the offset value used by USD when
+    /// determining the active period for each clip. 
+    USD_API
+    bool GetClipTemplateActiveOffset(double* clipTemplateActiveOffset,
+                                     const std::string& clipSet) const;
+
+    /// \overload
+    /// This function operates on the default clip set.
+    /// \sa \ref UsdClipsAPISetNames
+    USD_API
+    bool GetClipTemplateActiveOffset(double* clipTemplateActiveOffset) const;
+
     /// Set the template stride for the clip set named \p clipSet.
     /// \sa GetClipTemplateStride()
     USD_API
@@ -490,7 +530,7 @@ public:
     /// Return true if the setter functions that do not take a clip set author
     /// values to legacy metadata fields (e.g. clipAssetPaths, clipTimes, etc.),
     /// or false if values are authored to the default clip set. 
-    /// 
+    ///
     /// This is controlled by the USD_AUTHOR_LEGACY_CLIPS environment variable
     /// and is intended to be an aid for transitioning.
     USD_API
@@ -510,6 +550,7 @@ public:
     (templateEndTime)       \
     (templateStartTime)     \
     (templateStride)        \
+    (templateActiveOffset)  \
     (times)                 \
 
 /// \anchor UsdClipsAPIInfoKeys
@@ -529,6 +570,7 @@ public:
 /// \li <b>templateEndTime</b> - see UsdClipsAPI::GetClipTemplateEndTime
 /// \li <b>templateStartTime</b> - see UsdClipsAPI::GetClipTemplateStartTime
 /// \li <b>templateStride</b> - see UsdClipsAPI::GetClipTemplateStride
+/// \li <b>templateActiveOffset</b> - see UsdClipsAPI::GetClipTemplateActiveOffset
 /// \li <b>times</b> - see UsdClipsAPI::GetClipTimes
 TF_DECLARE_PUBLIC_TOKENS(UsdClipsAPIInfoKeys, USD_API, USDCLIPS_INFO_KEYS);
 

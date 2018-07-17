@@ -70,6 +70,19 @@ struct PxrUsdMayaTranslatorUtil
             MStatus* status,
             MObject* mayaNodeObj);
 
+    /// \brief Helper to create a node for \p usdPath of type \p
+    /// nodeTypeName under \p parentNode. If \p context is non-NULL,
+    /// the new Maya node will be registered to the path of \p usdPrim.
+    PXRUSDMAYA_API
+    static bool
+    CreateNode(
+            const SdfPath& usdPath,
+            const MString& nodeTypeName,
+            MObject& parentNode,
+            PxrUsdMayaPrimReaderContext* context,
+            MStatus* status,
+            MObject* mayaNodeObj);
+
     /// \brief Helper to create a node named \p nodeName of type \p
     /// nodeTypeName under \p parentNode. Note that this version does
     /// NOT take a context and cannot register the newly created Maya node
@@ -83,7 +96,7 @@ struct PxrUsdMayaTranslatorUtil
             MStatus* status,
             MObject* mayaNodeObj);
 
-    template<typename T>
+    template <typename T>
     static bool
     GetTimeSamples(
             const T& source,
@@ -105,6 +118,21 @@ struct PxrUsdMayaTranslatorUtil
             return source.GetTimeSamples(outSamples);
         }
     }
+
+    /// Gets an API schema of the requested type for the given \p usdPrim.
+    ///
+    /// This ensures that the USD prim has the API schema applied to it if it
+    /// does not already.
+    template <typename APISchemaType>
+    static APISchemaType GetAPISchemaForAuthoring(const UsdPrim& usdPrim)
+    {
+        if (!usdPrim.HasAPI<APISchemaType>()) {
+            return APISchemaType::Apply(usdPrim);
+        }
+
+        return APISchemaType(usdPrim);
+    }
+
 };
 
 

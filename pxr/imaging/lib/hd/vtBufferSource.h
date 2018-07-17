@@ -28,6 +28,7 @@
 #include "pxr/imaging/hd/api.h"
 #include "pxr/imaging/hd/version.h"
 #include "pxr/imaging/hd/bufferSource.h"
+#include "pxr/imaging/hd/types.h"
 
 #include "pxr/base/tf/token.h"
 #include "pxr/base/gf/matrix4d.h"
@@ -43,90 +44,74 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 /// \class HdVtBufferSource
 ///
-/// A transient buffer of data that has not yet been committed to the GPU.
-///
-/// This class is primarily used in the interaction between HdRprim and the
-/// HdSceneDelegate. The buffer source holds raw data that is either 
-/// topological or a shader input (PrimVar data), so it gets attached to either
-/// an HdTopologySubset or an HdPrimVarLayout. The buffer source will be 
-/// inserted into these objects at the offset specified or appended to the end.
-/// 
-/// The public interface provided is intended to be convenient for OpenGL API
-/// calls.
+/// An implementation of HdBufferSource where the source data value is a
+/// VtValue.
 ///
 class HdVtBufferSource : public HdBufferSource {
 public:
-
-    /// Constructs a new buffer from an existing VtValue, the data is fully
-    /// copied into a new internal buffer.
+    /// Constructs a new buffer from a VtValue.
     ///
-    /// We may be able to map this to GPU memory in the glorious future.
+    /// \param arraySize indicates how many values are provided per element.
     HD_API
     HdVtBufferSource(TfToken const &name, VtValue const& value,
-                     bool staticArray=false);
+                     size_t arraySize=1);
 
-    /// Constructs a new buffer from a matrix, the data is copied using default
-    /// matrix type.
-    /// (GL_FLOAT by default, GL_DOUBLE when HD_ENABLE_DOUBLE_MATRIX=1)
+    /// Constructs a new buffer from a matrix.
+    /// The data is convert to the default type (see GetDefaultMatrixType()).
+    ///
     /// note that if we use above VtValue taking constructor, we can use
     /// either float or double matrix regardless the default type.
     HD_API
     HdVtBufferSource(TfToken const &name, GfMatrix4d const &matrix);
 
-    /// Constructs a new buffer from matrix array. The data is copied
-    /// using default matrix type.
-    /// (GL_FLOAT by default, GL_DOUBLE when HD_ENABLE_DOUBLE_MATRIX=1)
+    /// Constructs a new buffer from a matrix.
+    /// The data is convert to the default type (see GetDefaultMatrixType()).
+    ///
     /// note that if we use above VtValue taking constructor, we can use
     /// either float or double matrix regardless the default type.
+    ///
+    /// \param arraySize indicates how many values are provided per element.
     HD_API
     HdVtBufferSource(TfToken const &name, VtArray<GfMatrix4d> const &matrices,
-                     bool staticArray=false);
+                     size_t arraySize=1);
 
-    /// Returns the default matrix type (GL_FLOAT or GL_DOUBLE)
+    /// Returns the default matrix type.
+    /// The default is HdTypeFloatMat4, but if HD_ENABLE_DOUBLEMATRIX is true,
+    /// then HdTypeDoubleMat4 is used instead.
     HD_API
-    static GLenum GetDefaultMatrixType();
+    static HdType GetDefaultMatrixType();
 
     /// Destructor deletes the internal storage.
     HD_API
     ~HdVtBufferSource();
 
     /// Return the name of this buffer source.
-    virtual TfToken const &GetName() const {return _name;}
+    virtual TfToken const &GetName() const override {
+        return _name;
+    }
 
     /// Returns the raw pointer to the underlying data.
-    virtual void const* GetData() const {return _data;}
+    virtual void const* GetData() const override {
+        return HdGetValueData(_value);
+    }
 
-    /// OpenGL data type; GL_UNSIGNED_INT, etc
-    virtual int GetGLComponentDataType() const {return _glComponentDataType;}
-
-    /// OpenGL data type; GL_FLOAT_VEC3, etc
-    virtual int GetGLElementDataType() const {return _glElementDataType;}
-
-    /// Returns the flat array size in bytes.
-    virtual size_t GetSize() const {return _size;}
+    /// Returns the data type and count of this buffer source.
+    virtual HdTupleType GetTupleType() const override {
+        return _tupleType;
+    }
 
     /// Returns the number of elements (e.g. VtVec3dArray().GetLength()) from
     /// the source array.
     HD_API
-    virtual int GetNumElements() const;
-
-    /// Returns the number of components in a single element.
-    ///
-    /// For example, for a BufferSource created from a VtIntArray, this method
-    /// would return 1, but for a VtVec3dArray this method would return 3.
-    ///
-    /// This value is always in the range [1,4] or 16 (GfMatrix4d).
-    virtual short GetNumComponents() const {return _numComponents;}
+    virtual int GetNumElements() const override;
 
     /// Add the buffer spec for this buffer source into given bufferspec vector.
-    virtual void AddBufferSpecs(HdBufferSpecVector *specs) const {
-        specs->push_back(
-            HdBufferSpec(_name, _glComponentDataType, _numComponents,
-                         _staticArray ? GetNumElements() : 1));
+    virtual void AddBufferSpecs(HdBufferSpecVector *specs) const override {
+        specs->push_back(HdBufferSpec(_name, _tupleType));
     }
 
     /// Prepare the access of GetData().
-    virtual bool Resolve() {
+    virtual bool Resolve() override {
         if (!_TryLock()) return false;
 
         // nothing. just marks as resolved, and returns _data in GetData()
@@ -134,15 +119,14 @@ public:
         return true;
     }
 
-    HD_API
-    friend std::ostream &operator <<(std::ostream &out,
-                                     const HdVtBufferSource& self);
-
 protected:
     HD_API
     virtual bool _CheckValid() const;
 
 private:
+    // Constructor helper.
+    void _SetValue(const VtValue &v, size_t arraySize);
+
     TfToken _name;
 
     // We hold the source value to avoid making unnecessary copies of the data: if
@@ -153,15 +137,13 @@ private:
     // should never surface in the public API and for the same reason, this
     // class should remain noncopyable.
     VtValue _value;
-
-    void const* _data;
-    int _glComponentDataType;
-    int _glElementDataType;
-    size_t _size;
-    short _numComponents;
-    bool _staticArray;
+    HdTupleType _tupleType;
+    size_t _numElements;
 };
 
+/// Diagnostic output.
+HD_API
+std::ostream &operator <<(std::ostream &out, const HdVtBufferSource& self);
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

@@ -28,9 +28,12 @@
 #include "usdKatana/utils.h"
 
 #include "pxr/usd/usdGeom/pointInstancer.h"
+#include "pxr/usd/usdGeom/motionAPI.h"
 #include "pxr/usd/usd/modelAPI.h"
 #include "pxr/usd/usdShade/material.h"
+#include "pxr/usd/kind/registry.h"
 
+#include "pxr/base/gf/transform.h"
 #include "pxr/base/gf/matrix4d.h"
 
 #include <FnGeolibServices/FnBuiltInOpArgsUtil.h>
@@ -53,7 +56,7 @@ namespace
     typedef std::map<TfToken, GfRange3d, TfTokenFastArbitraryLessThan>
         _PurposeToRangeMap;
 
-    // Log an error and set attrs to create a Katana error location.
+    // Log an error and set attrs to show an error message in the Scene Graph.
     //
     void
     _LogAndSetError(
@@ -61,36 +64,41 @@ namespace
         const std::string message)
     {
         FnLogError(message);
-        attrs.set("type", FnKat::StringAttribute("error"));
         attrs.set("errorMessage",
                   FnKat::StringAttribute(
                       "[ERROR PxrUsdKatanaReadPointInstancer]: " + message));
     }
 
+    // Log a warning and set attrs to show a warning message in the Scene Graph.
+    void
+    _LogAndSetWarning(
+        PxrUsdKatanaAttrMap &attrs,
+        const std::string message)
+    {
+        FnLogWarn(message);
+        attrs.set("warningMessage",
+                  FnKat::StringAttribute(
+                      "[WARNING PxrUsdKatanaReadPointInstancer]: " + message));
+    }
+
     // XXX This is based on UsdGeomPointInstancer::ComputeExtentAtTime. Ideally,
-    // we would just use UsdGeomPointInstancer, however it will compute the
-    // bounds of its prototypes if it can't use their extentsHints, which is an
-    // expensive operation we want to avoid here (see bug 147526).
+    // we would just use UsdGeomPointInstancer, however it does not account for
+    // multi-sampled transforms (see bug 147526).
     //
     bool
     _ComputeExtentAtTime(
         VtVec3fArray& extent,
-        const UsdGeomPointInstancer& instancer,
-        const UsdTimeCode baseTime,
+        PxrUsdKatanaUsdInArgsRefPtr usdInArgs,
+        const std::vector<VtArray<GfMatrix4d>>& xforms,
+        const std::vector<double>& motionSampleTimes,
         const VtIntArray& protoIndices,
         const SdfPathVector& protoPaths,
         const _PathToPrimMap& primCache,
-        const std::vector<bool> mask,
-        const FnKat::DoubleAttribute& instanceMatrixAttr)
+        const std::vector<bool> mask)
     {
-        const TfTokenVector purposes{UsdGeomTokens->default_,
-                                     UsdGeomTokens->proxy,
-                                     UsdGeomTokens->render};
-        _PathToRangeMap rangeCache;
         GfRange3d extentRange;
 
-        const size_t numSampleTimes =
-            instanceMatrixAttr.getNumberOfTimeSamples();
+        const size_t numSampleTimes = motionSampleTimes.size();
 
         for (size_t i = 0; i < protoIndices.size(); ++i) {
             if (!mask.empty() && !mask[i]) {
@@ -100,79 +108,32 @@ namespace
             const int protoIndex = protoIndices[i];
             const SdfPath &protoPath = protoPaths[protoIndex];
 
-            GfRange3d thisRange;
-
-            // Check to see if this prototype's range was already computed. If
-            // not, use its extents hint to compute one.
-            _PathToRangeMap::const_iterator rcIt = rangeCache.find(protoPath);
-            if (rcIt != rangeCache.end()) {
-                thisRange = rcIt->second;
-            } else {
-                _PathToPrimMap::const_iterator pcIt = primCache.find(protoPath);
-                const UsdPrim &protoPrim = pcIt->second;
-                if (!protoPrim) {
-                    continue;
-                }
-
-                VtVec3fArray extents;
-                UsdAttribute extentsAttr =
-                    protoPrim.GetAttribute(TfToken("extentsHint"));
-                if (extentsAttr and extentsAttr.Get(&extents, baseTime)) {
-
-                    // Get the ranges associated with each purpose.
-                    _PurposeToRangeMap ranges;
-                    for (size_t i = 0; i < purposes.size(); ++i) {
-                        size_t idx = i * 2;
-                        // If extents are not available for this purpose, it
-                        // implies that the rest of the bounds are empty. Hence,
-                        // we can break.
-                        if ((idx + 2) > extents.size()) {
-                            break;
-                        }
-                        ranges[purposes[i]] =
-                            GfRange3d(extents[idx], extents[idx + 1]);
-                    }
-
-                    // Combine ranges for each purpose in order to generate the
-                    // final range.
-                    for (auto purpose : purposes) {
-                        _PurposeToRangeMap::const_iterator rIt =
-                            ranges.find(purpose);
-                        if (rIt != ranges.end()) {
-                            const GfRange3d &rangeForPurpose = rIt->second;
-                            if (!rangeForPurpose.IsEmpty()) {
-                                thisRange = GfRange3d::GetUnion(
-                                    thisRange, rangeForPurpose);
-                            }
-                        }
-                    }
-                }
-
-                // Store the result so we don't have to compute it again.
-                rangeCache[protoPath] = thisRange;
-            }
-
-            // If a range could not be computed using extents, simply move on.
-            if (thisRange.IsEmpty()) {
+            _PathToPrimMap::const_iterator pcIt = primCache.find(protoPath);
+            const UsdPrim &protoPrim = pcIt->second;
+            if (!protoPrim) {
                 continue;
             }
 
+            // Leverage usdInArgs for calculating the proto prim's bound. Note
+            // that we apply the prototype's local transform to account for any
+            // offsets.
+            //
+            std::vector<GfBBox3d> sampledBounds = usdInArgs->ComputeBounds(
+                protoPrim, motionSampleTimes, /* applyLocalTransform */ true);
+
             for (size_t a = 0; a < numSampleTimes; ++a) {
-                // Get the prototype bounding box with the instance transform
-                // applied. We don't apply the parent transform here, as the
+                // Apply the instance transform to the bounding box for this
+                // time sample. We don't apply the parent transform here, as the
                 // bounds need to be in parent-local space.
-                float sampleTime = instanceMatrixAttr.getSampleTime(a);
-                FnKat::DoubleAttribute::array_type instanceXforms =
-                    instanceMatrixAttr.getNearestSample(sampleTime);
-                GfMatrix4d instanceXform;
-                double *matArray = instanceXform.GetArray();
-                for (int j = 0; j < 16; j++)
-                {
-                    matArray[j] = instanceXforms[i * 16 + j];
-                }
-                GfBBox3d thisBounds(thisRange, instanceXform);
+                //
+                GfBBox3d thisBounds(sampledBounds[a]);
+                thisBounds.Transform(xforms[a][i]);
                 extentRange.UnionWith(thisBounds.ComputeAlignedRange());
             }
+        }
+
+        if (extentRange.IsEmpty()) {
+            return false;
         }
 
         const GfVec3d extentMin = extentRange.GetMin();
@@ -232,7 +193,8 @@ PxrUsdKatanaReadPointInstancer(
     // Validate instancer data.
     //
 
-    const std::string instancerPath = instancer.GetPath().GetString();
+    const auto instancerSdfPath = instancer.GetPath();
+    const std::string instancerPath = instancerSdfPath.GetString();
 
     UsdStageWeakPtr stage = instancer.GetPrim().GetStage();
 
@@ -257,13 +219,15 @@ PxrUsdKatanaReadPointInstancer(
     VtIntArray protoIndices;
     if (!instancer.GetProtoIndicesAttr().Get(&protoIndices, currentTime))
     {
-        _LogAndSetError(instancerAttrMap, "Instancer has no prototype indices");
+        _LogAndSetWarning(instancerAttrMap,
+                          "Instancer has no prototype indices");
         return;
     }
     const size_t numInstances = protoIndices.size();
     if (numInstances == 0)
     {
-        _LogAndSetError(instancerAttrMap, "Instancer has no prototype indices");
+        _LogAndSetWarning(instancerAttrMap,
+                          "Instancer has no prototype indices");
         return;
     }
     for (auto protoIndex : protoIndices)
@@ -287,17 +251,69 @@ PxrUsdKatanaReadPointInstancer(
         return;
     }
 
+    // Positions (required)
+    //
+    UsdAttribute positionsAttr = instancer.GetPositionsAttr();
+    if (!positionsAttr.HasValue())
+    {
+        _LogAndSetError(instancerAttrMap, "Instancer has no positions");
+        return;
+    }
+
     //
     // Compute instance transform matrices.
     //
 
-    // XXX At some point, we'll use
-    // UsdGeomPointInstancer::ComputeInstanceTransformsAtTime to compute the
-    // instance transform matrix; until then, extract this information from the
-    // input attrs.
+    // Get velocityScale from the opArgs.
     //
-    FnKat::DoubleAttribute instanceMatrixAttr =
-            inputAttrs.getChildByName("instanceMatrix");
+    float opArgVelocityScale = FnKat::FloatAttribute(
+        inputAttrs.getChildByName("opArgs.velocityScale")).getValue(1.0f, false);
+    if (opArgVelocityScale != 1.0f)
+    {
+        // Print deprecation warning:
+        //
+        FnLogWarn("velocityScale is deprecated. Use PxrUsdInAttributeSet to "
+            "author the UsdGeomPointInstancer's motion:velocityScale attribute "
+            "instead.");
+
+        // To support the old behavior, we only apply the opArg velocityScale if
+        // there is no velocityScale authored on the point instancer.
+        //
+        UsdGeomMotionAPI motionAPI(instancer.GetPrim());
+        UsdAttribute velocityScaleAttr = motionAPI.GetVelocityScaleAttr();
+        if (velocityScaleAttr and velocityScaleAttr.HasAuthoredValueOpinion())
+        {
+            opArgVelocityScale = 1.0f;
+        }
+    }
+    
+    // Gather frame-relative sample times and add them to the current time to
+    // generate absolute sample times.
+    //
+    const std::vector<double> &motionSampleTimes =
+        data.GetMotionSampleTimes(positionsAttr);
+    const size_t sampleCount = motionSampleTimes.size();
+    std::vector<UsdTimeCode> sampleTimes(sampleCount);
+    for (size_t a = 0; a < sampleCount; ++a)
+    {
+        sampleTimes[a] = UsdTimeCode(
+            currentTime + opArgVelocityScale * motionSampleTimes[a]);
+    }
+
+    std::vector<VtArray<GfMatrix4d>> xformSamples(sampleCount);
+
+    instancer.ComputeInstanceTransformsAtTimes(
+            &xformSamples,
+            sampleTimes,
+            UsdTimeCode(currentTime));
+    const size_t numXformSamples = xformSamples.size();
+
+    if (numXformSamples == 0) {
+        _LogAndSetError(instancerAttrMap, "Could not compute "
+                                          "sample/topology-invarying instance "
+                                          "transform matrix");
+        return;
+    }
 
     //
     // Compute prototype bounds.
@@ -310,8 +326,9 @@ PxrUsdKatanaReadPointInstancer(
     //
     VtVec3fArray aggregateExtent;
     if (_ComputeExtentAtTime(
-            aggregateExtent, instancer, UsdTimeCode(currentTime), protoIndices,
-            protoPaths, primCache, pruneMaskValues, instanceMatrixAttr)) {
+            aggregateExtent, data.GetUsdInArgs(), xformSamples,
+            motionSampleTimes, protoIndices, protoPaths, primCache,
+            pruneMaskValues)) {
         aggregateBoundsValid = true;
         aggregateBounds.resize(6);
         aggregateBounds[0] = aggregateExtent[0][0]; // min x
@@ -379,47 +396,76 @@ PxrUsdKatanaReadPointInstancer(
             //
             SdfPathVector commonPrefixes;
 
-            UsdRelationship materialBindingsRel =
-                    UsdShadeMaterial::GetBindingRel(protoPrim);
-
-            auto assetAPI = UsdModelAPI(protoPrim);
-            std::string assetName;
-            bool isReferencedModelPrim =
-                    assetAPI.IsModel() and assetAPI.GetAssetName(&assetName);
-
-            if (!materialBindingsRel or isReferencedModelPrim)
+            // If the proto prim itself doesn't have any bindings or isn't a
+            // (sub)component, we'll walk upwards until we find a prim that
+            // does/is. Stop walking if we reach the instancer or the usdInArgs
+            // root.
+            //
+            UsdPrim prim = protoPrim;
+            while (prim and prim != instancer.GetPrim() and
+                   prim != data.GetUsdInArgs()->GetRootPrim())
             {
-                // The prim has no material bindings or is a referenced model
-                // prim (meaning that materials are defined below it); start
-                // building at the prototype path.
-                //
-                commonPrefixes.push_back(protoPath);
-            }
-            else
-            {
+                UsdRelationship materialBindingsRel =
+                        UsdShadeMaterial::GetBindingRel(prim);
                 SdfPathVector materialPaths;
-                materialBindingsRel.GetForwardedTargets(&materialPaths);
-                for (auto materialPath : materialPaths)
+                bool hasMaterialBindings = (materialBindingsRel and
+                        materialBindingsRel.GetForwardedTargets(
+                            &materialPaths) and !materialPaths.empty());
+
+                TfToken kind;
+                std::string assetName;
+                auto assetAPI = UsdModelAPI(prim);
+                // If the prim is a (sub)component, it should have materials
+                // defined below it.
+                bool hasMaterialChildren = (
+                        assetAPI.GetAssetName(&assetName) and
+                        assetAPI.GetKind(&kind) and (
+                            KindRegistry::IsA(kind, KindTokens->component) or
+                            KindRegistry::IsA(kind, KindTokens->subcomponent)));
+
+                if (hasMaterialChildren)
                 {
-                    const SdfPath &commonPrefix =
-                            protoPath.GetCommonPrefix(materialPath);
-                    if (commonPrefix.GetString() == "/")
-                    {
-                        // XXX Unhandled case.
-                        // The prototype prim and its material are not under the
-                        // same parent; start building at the prototype path
-                        // (although it is likely that bindings will be broken).
-                        //
-                        commonPrefixes.push_back(protoPath);
-                    }
-                    else
-                    {
-                        // Start building at the common ancestor between the
-                        // prototype prim and its material.
-                        //
-                        commonPrefixes.push_back(commonPrefix);
-                    }
+                    // The prim has material children, so start building at the
+                    // prim's path.
+                    //
+                    commonPrefixes.push_back(prim.GetPath());
+                    break;
                 }
+
+                if (hasMaterialBindings)
+                {
+                    for (auto materialPath : materialPaths)
+                    {
+                        const SdfPath &commonPrefix =
+                                protoPath.GetCommonPrefix(materialPath);
+                        if (commonPrefix.GetString() == "/" || instancerSdfPath.HasPrefix(commonPrefix))
+                        {
+                            // XXX Unhandled case.
+                            // The prim and its material are not under the same
+                            // parent; start building at the prim's path
+                            // (although it is likely that bindings will be
+                            // broken).
+                            //
+                            commonPrefixes.push_back(prim.GetPath());
+                        }
+                        else
+                        {
+                            // Start building at the common ancestor between the
+                            // prim and its material.
+                            //
+                            commonPrefixes.push_back(commonPrefix);
+                        }
+                    }
+                    break;
+                }
+
+                prim = prim.GetParent();
+            }
+
+            // Fail-safe in case no common prefixes were found.
+            if (commonPrefixes.empty())
+            {
+                commonPrefixes.push_back(protoPath);
             }
 
             // XXX Unhandled case.
@@ -509,8 +555,31 @@ PxrUsdKatanaReadPointInstancer(
                     FnKat::IntAttribute(&instanceIndices[0],
                             instanceIndices.size(), 1));
 
+    FnKat::DoubleBuilder instanceMatrixBldr(16);
+    for (size_t a = 0; a < numXformSamples; ++a) {
+
+        double relSampleTime = motionSampleTimes[a];
+
+        // Shove samples into the builder at the frame-relative sample time. If
+        // motion is backwards, make sure to reverse time samples.
+        std::vector<double> &matVec = instanceMatrixBldr.get(
+            data.IsMotionBackward()
+                ? PxrUsdKatanaUtils::ReverseTimeSample(relSampleTime)
+                : relSampleTime);
+
+        matVec.reserve(16 * numInstances);
+        for (size_t i = 0; i < numInstances; ++i) {
+
+            GfMatrix4d instanceXform = xformSamples[a][i];
+            const double *matArray = instanceXform.GetArray();
+
+            for (int j = 0; j < 16; ++j) {
+                matVec.push_back(matArray[j]);
+            }
+        }
+    }
     instancesBldr.setAttrAtLocation("instances",
-            "geometry.instanceMatrix", instanceMatrixAttr);
+            "geometry.instanceMatrix", instanceMatrixBldr.build());
 
     if (!omitList.empty())
     {

@@ -21,72 +21,96 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#ifndef PXRUSDMAYAGL_PROXYDRAWOVERRIDE_H
-#define PXRUSDMAYAGL_PROXYDRAWOVERRIDE_H
+#ifndef PXRUSDMAYAGL_PROXY_DRAW_OVERRIDE_H
+#define PXRUSDMAYAGL_PROXY_DRAW_OVERRIDE_H
+
+/// \file pxrUsdMayaGL/proxyDrawOverride.h
 
 #include "pxr/pxr.h"
 #include "pxrUsdMayaGL/api.h"
-#include "pxr/usd/usd/stage.h"
-#include "pxrUsdMayaGL/batchRenderer.h"
-
-#include "usdMaya/proxyShape.h"
+#include "pxrUsdMayaGL/usdProxyShapeAdapter.h"
 
 #include <maya/MBoundingBox.h>
 #include <maya/MDagPath.h>
 #include <maya/MDrawContext.h>
 #include <maya/MFrameContext.h>
+#include <maya/MMatrix.h>
 #include <maya/MObject.h>
+#include <maya/MPoint.h>
 #include <maya/MPxDrawOverride.h>
+#include <maya/MSelectionContext.h>
 #include <maya/MString.h>
 #include <maya/MUserData.h>
+#include <maya/MViewport2Renderer.h>
+
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 
-
 class UsdMayaProxyDrawOverride : public MHWRender::MPxDrawOverride
 {
-public:
-    PXRUSDMAYAGL_API
-    static MHWRender::MPxDrawOverride* Creator(const MObject& obj);
+    public:
+        PXRUSDMAYAGL_API
+        static MString sm_drawDbClassification;
+        PXRUSDMAYAGL_API
+        static MString sm_drawRegistrantId;
 
-    PXRUSDMAYAGL_API
-    virtual ~UsdMayaProxyDrawOverride();
+        PXRUSDMAYAGL_API
+        static MHWRender::MPxDrawOverride* Creator(const MObject& obj);
 
-    PXRUSDMAYAGL_API
-    virtual bool isBounded(
-        const MDagPath& objPath,
-        const MDagPath& cameraPath) const;
+        PXRUSDMAYAGL_API
+        virtual ~UsdMayaProxyDrawOverride() override;
 
-    PXRUSDMAYAGL_API
-    virtual MBoundingBox boundingBox(
-        const MDagPath& objPath,
-        const MDagPath& cameraPath) const;
+        PXRUSDMAYAGL_API
+        virtual MHWRender::DrawAPI supportedDrawAPIs() const override;
 
-    PXRUSDMAYAGL_API
-    virtual MUserData* prepareForDraw(
-        const MDagPath& objPath,
-        const MDagPath& cameraPath,
-        const MHWRender::MFrameContext& frameContext,
-        MUserData* oldData);
+        PXRUSDMAYAGL_API
+        virtual MMatrix transform(
+                const MDagPath& objPath,
+                const MDagPath& cameraPath) const override;
 
-    PXRUSDMAYAGL_API
-    static MString sm_drawDbClassification;
-    PXRUSDMAYAGL_API
-    static MString sm_drawRegistrantId;
+        PXRUSDMAYAGL_API
+        virtual MBoundingBox boundingBox(
+                const MDagPath& objPath,
+                const MDagPath& cameraPath) const override;
 
-    PXRUSDMAYAGL_API
-    static void draw(const MHWRender::MDrawContext& context, const MUserData* data);
+        PXRUSDMAYAGL_API
+        virtual bool isBounded(
+                const MDagPath& objPath,
+                const MDagPath& cameraPath) const override;
 
-    PXRUSDMAYAGL_API
-    static UsdMayaProxyShape* getShape(const MDagPath& objPath);
+        PXRUSDMAYAGL_API
+        virtual MUserData* prepareForDraw(
+                const MDagPath& objPath,
+                const MDagPath& cameraPath,
+                const MHWRender::MFrameContext& frameContext,
+                MUserData* oldData) override;
 
-private:
-    UsdMayaProxyDrawOverride(const MObject& obj);
+#if MAYA_API_VERSION >= 201800
+        PXRUSDMAYAGL_API
+        virtual bool wantUserSelection() const override;
+
+        PXRUSDMAYAGL_API
+        virtual bool userSelect(
+                MHWRender::MSelectionInfo& selectInfo,
+                const MHWRender::MDrawContext& context,
+                MPoint& hitPoint,
+                const MUserData* data) override;
+#endif
+
+        PXRUSDMAYAGL_API
+        static void draw(
+                const MHWRender::MDrawContext& context,
+                const MUserData* data);
+
+    private:
+        UsdMayaProxyDrawOverride(const MObject& obj);
+
+        PxrMayaHdUsdProxyShapeAdapter _shapeAdapter;
 };
-
 
 
 PXR_NAMESPACE_CLOSE_SCOPE
 
-#endif // PXRUSDMAYAGL_PROXYDRAWOVERRIDE_H
+
+#endif // PXRUSDMAYAGL_PROXY_DRAW_OVERRIDE_H

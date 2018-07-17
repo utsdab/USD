@@ -46,6 +46,24 @@ enum HdCompareFunction
     HdCmpFuncLast
 };
 
+/// \enum HdStencilOp
+///
+/// Abstraction of the Graphics stencil test operations.
+///
+enum HdStencilOp
+{
+    HdStencilOpKeep,
+    HdStencilOpZero,
+    HdStencilOpReplace,
+    HdStencilOpIncrement,
+    HdStencilOpIncrementWrap,
+    HdStencilOpDecrement,
+    HdStencilOpDecrementWrap,
+    HdStencilOpInvert,
+
+    HdStencilOpLast
+};
+
 /// \enum HdCullStyle
 ///
 /// Face culling options.
@@ -89,8 +107,8 @@ enum HdMeshGeomStyle {
 
 enum HdBasisCurvesGeomStyle {
     HdBasisCurvesGeomStyleInvalid,
-    HdBasisCurvesGeomStyleLine,
-    HdBasisCurvesGeomStyleRefined,
+    HdBasisCurvesGeomStyleWire,
+    HdBasisCurvesGeomStylePatch,
     HdBasisCurvesGeomStylePoints
 };
 
@@ -105,7 +123,7 @@ enum HdPointsGeomStyle {
 /// of a gprim is to be rendered.
 ///
 /// Unspecified indicates this gprim does not indicate how it should be drawn
-/// (ie, it will always be overriden by another opinion).
+/// (ie, it will always be overridden by another opinion).
 /// The actual geomstyle must come from somewhere else, such as the viewer.
 ///
 /// The polygons/triangles of a gprim can be drawn as Lines or Polygons.
@@ -164,6 +182,7 @@ enum HdComplexity
 ///     <li>\b HdWrapClamp               Clamp coordinate to range [1/(2N),1-1/(2N)] where N is the size of the texture in the direction of clamping</li>
 ///     <li>\b HdWrapRepeat              Creates a repeating pattern</li>
 ///     <li>\b HdWrapBlack</c></b>       Clamp coordinate to range [-1/(2N),1+1/(2N)] where N is the size of the texture in the direction of clamping</li>
+///     <li>\b HdWrapUseMetaDict</c></b> Texture can define its own wrap mode, if not defined by the texture it will use HdWrapRepeat</li>
 /// </ul>
 ///
 enum HdWrap 
@@ -171,6 +190,7 @@ enum HdWrap
     HdWrapClamp,
     HdWrapRepeat,
     HdWrapBlack,
+    HdWrapUseMetaDict,
 };
 
 /// \enum HdMinFilter
@@ -251,7 +271,7 @@ enum HdFormat
 ///
 /// \enum HdInterpolation
 ///
-/// Enumerates Hydra's primVar interpolation modes.
+/// Enumerates Hydra's primvar interpolation modes.
 ///
 /// Constant:    One value remains constant over the entire surface primitive.
 ///
@@ -270,6 +290,8 @@ enum HdFormat
 ///              interpolated over each face of the mesh. Bilinear interpolation
 ///              is used for interpolation between the four values.
 ///
+/// Instance:    One value remains constant across each instance.
+///
 enum HdInterpolation
 {
     HdInterpolationConstant = 0,
@@ -277,25 +299,9 @@ enum HdInterpolation
     HdInterpolationVarying,
     HdInterpolationVertex,
     HdInterpolationFaceVarying,
+    HdInterpolationInstance,
 
     HdInterpolationCount
-};
-
-///
-/// \enum HdExtComputationInputType
-///
-/// Identifies the type of the source of an input to an ExtComputation.
-///
-/// Scene:       The input should be sourced from the Scene Delegate
-///
-/// Computation: The input should be sourced from another ExtComputation.
-///
-enum HdExtComputationInputType
-{
-    HdExtComputationInputTypeScene   = 0,
-    HdExtComputationInputTypeComputation,
-
-    HdExtComputationInputTypeCount
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

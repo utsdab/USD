@@ -50,21 +50,6 @@ HfPluginRegistry::~HfPluginRegistry()
 {
 }
 
-TfToken
-HfPluginRegistry::GetDefaultPluginId()
-{
-    if (!_pluginCachePopulated) {
-        _DiscoverPlugins();
-    }
-
-    if (!TF_VERIFY(!_pluginEntries.empty())) {
-        return TfToken();
-    }
-
-
-    return _pluginEntries[0].GetId();
-}
-
 void
 HfPluginRegistry::GetPluginDescs(HfPluginDescVector *plugins)
 {
@@ -84,6 +69,24 @@ HfPluginRegistry::GetPluginDescs(HfPluginDescVector *plugins)
 
         entry.GetDesc(desc);
     }
+}
+
+bool
+HfPluginRegistry::GetPluginDesc(const TfToken &pluginId, HfPluginDesc *desc)
+{
+    if (!_pluginCachePopulated) {
+        _DiscoverPlugins();
+    }
+
+    _TokenMap::const_iterator it = _pluginIndex.find(pluginId);
+    if (it == _pluginIndex.end()) {
+        return false;
+    }
+
+    Hf_PluginEntry &entry = _pluginEntries[it->second];
+    entry.GetDesc(desc);
+
+    return true;
 }
 
 void

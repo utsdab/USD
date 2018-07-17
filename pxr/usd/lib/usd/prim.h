@@ -33,7 +33,7 @@
 #include "pxr/usd/usd/primFlags.h"
 
 #include "pxr/usd/sdf/schema.h"
-#include "pxr/base/tracelite/trace.h"
+#include "pxr/base/trace/trace.h"
 
 #include "pxr/base/tf/declarePtrs.h"
 #include "pxr/base/tf/refBase.h"
@@ -43,11 +43,10 @@
 #include "pxr/usd/sdf/path.h"
 
 #include <boost/iterator/iterator_adaptor.hpp>
-#include <boost/mpl/assert.hpp>
 #include <boost/range/iterator_range.hpp>
-#include <boost/type_traits/is_base_of.hpp>
 
 #include <string>
+#include <type_traits>
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -60,6 +59,7 @@ class UsdAttribute;
 class UsdRelationship;
 class UsdReferences;
 class UsdSchemaBase;
+class UsdAPISchemaBase;
 class UsdInherits;
 class UsdSpecializes;
 class UsdVariantSets;
@@ -235,30 +235,59 @@ public:
         return _Prim()->HasDefiningSpecifier(); 
     }
 
+    /// Return a vector containing the names of API schemas which have
+    /// been applied to this prim, using the Apply() method on
+    /// the particular schema class. 
+    USD_API
+    TfTokenVector GetAppliedSchemas() const;
+
+    /// Alias for the "predicate" function parameter passed into the various
+    /// Get{Authored}{PropertyNames,Properties} methods.
+    using PropertyPredicateFunc = 
+        std::function<bool (const TfToken &propertyName)>;
+
     /// Return all of this prim's property names (attributes and relationships),
-    /// including all builtin properties, ordered according to the strongest
-    /// propertyOrder statement in scene description if one exists, otherwise
-    /// ordered according to TfDictionaryLessThan.
-    ///
+    /// including all builtin properties.
+    /// 
+    /// If a valid \p predicate is passed in, then only properties whose names 
+    /// pass the predicate are included in the result. This is useful if the 
+    /// client is interested only in a subset of properties on the prim. For 
+    /// example, only the ones in a given namespace or only the ones needed to 
+    /// compute a value.
+    /// 
     /// \sa GetAuthoredPropertyNames()
     /// \sa UsdProperty::IsAuthored()
     USD_API
-    TfTokenVector GetPropertyNames() const;
+    TfTokenVector GetPropertyNames(
+        const PropertyPredicateFunc &predicate={}) const;
 
     /// Return this prim's property names (attributes and relationships) that
     /// have authored scene description, ordered according to the strongest
     /// propertyOrder statement in scene description if one exists, otherwise
     /// ordered according to TfDictionaryLessThan.
+    /// 
+    /// If a valid \p predicate is passed in, then only the authored properties 
+    /// whose names pass the predicate are included in the result. This is 
+    /// useful if the client is interested only in a subset of authored 
+    /// properties on the prim. For example, only the ones in a given namespace 
+    /// or only the ones needed to compute a value.
     ///
     /// \sa GetPropertyNames()
     /// \sa UsdProperty::IsAuthored() 
     USD_API
-    TfTokenVector GetAuthoredPropertyNames() const;
+    TfTokenVector GetAuthoredPropertyNames(
+        const PropertyPredicateFunc &predicate={}) const;
 
     /// Return all of this prim's properties (attributes and relationships),
     /// including all builtin properties, ordered by name according to the
     /// strongest propertyOrder statement in scene description if one exists,
     /// otherwise ordered according to TfDictionaryLessThan.
+    ///
+    /// If a valid \p predicate is passed in, then only properties whose names  
+    /// pass the predicate are included in the result. This is useful if the 
+    /// client is interested only in a subset of properties on the prim. For 
+    /// example, only the ones in a given namespace or only the ones needed to 
+    /// compute a value.
     ///
     /// To obtain only either attributes or relationships, use either
     /// GetAttributes() or GetRelationships().
@@ -293,17 +322,25 @@ public:
     /// \sa GetAuthoredProperties()
     /// \sa UsdProperty::IsAuthored()
     USD_API
-    std::vector<UsdProperty> GetProperties() const;
+    std::vector<UsdProperty> GetProperties(
+        const PropertyPredicateFunc &predicate={}) const;
 
     /// Return this prim's properties (attributes and relationships) that have
     /// authored scene description, ordered by name according to the strongest
     /// propertyOrder statement in scene description if one exists, otherwise
     /// ordered according to TfDictionaryLessThan.
     ///
+    /// If a valid \p predicate is passed in, then only authored properties 
+    /// whose names pass the predicate are included in the result. This is 
+    /// useful if the client is interested only in a subset of authored 
+    /// properties on the prim. For example, only the ones in a given namespace 
+    /// or only the ones needed to compute a value.
+    ///
     /// \sa GetProperties()
     /// \sa UsdProperty::IsAuthored()
     USD_API
-    std::vector<UsdProperty> GetAuthoredProperties() const;
+    std::vector<UsdProperty> GetAuthoredProperties(
+        const PropertyPredicateFunc &predicate={}) const;
 
     /// Return this prim's properties that are inside the given property
     /// namespace ordered according to the strongest propertyOrder statement in
@@ -384,10 +421,26 @@ public:
 
 private:
     friend bool Usd_PrimIsA(const UsdPrim&, const TfType& schemaType);
-    /// The non-templated implementation of UsdPrim::IsA using the
-    /// TfType system.
+    friend bool Usd_PrimHasAPI(const UsdPrim &, const TfType& schemaType,
+                               const TfToken &instanceName);
+
+    // The non-templated implementation of UsdPrim::IsA using the
+    // TfType system. \p validateSchemaType is provided for python clients
+    // because they can't use compile time assertions on the input type.
     USD_API
-    bool _IsA(const TfType& schemaType) const;
+    bool _IsA(const TfType& schemaType, bool validateSchemaType) const;
+
+    // The non-templated implementation of UsdPrim::HasAPI using the
+    // TfType system. 
+    // 
+    // \p validateSchemaType is provided for python clients
+    // because they can't use compile time assertions on the input type.
+    // 
+    // \p instanceName is used to determine whether a particular instance 
+    // of a multiple-apply API schema has been applied to the prim.
+    USD_API
+    bool _HasAPI(const TfType& schemaType, bool validateSchemaType,
+                 const TfToken &instanceName) const;
 
 public:
     /// Return true if the UsdPrim is/inherits a Schema of type T.
@@ -396,11 +449,70 @@ public:
     /// from schema \c T.
     template <typename T>
     bool IsA() const {
-        BOOST_MPL_ASSERT_MSG((boost::is_base_of<UsdSchemaBase, T>::value),
-                             Provided_type_must_derive_UsdSchemaBase,
-                             (T));
-        return _IsA(TfType::Find<T>());
+        static_assert(std::is_base_of<UsdSchemaBase, T>::value,
+                      "Provided type must derive UsdSchemaBase.");
+        return _IsA(TfType::Find<T>(), /*validateSchemaType=*/false);
     };
+
+    /// Return true if the UsdPrim has had an API schema represented by the C++ 
+    /// class type <b>T</b> applied to it through the Apply() method provided 
+    /// on the API schema class. 
+    /// 
+    /// \p instanceName, if non-empty is used to determine if a particular 
+    /// instance of a multiple-apply API schema (eg. UsdCollectionAPI) has been 
+    /// applied to the prim. A coding error is issued if a non-empty 
+    /// \p instanceName is passed in and <b>T</b> represents a single-apply API 
+    /// schema.
+    /// 
+    /// <b>Using HasAPI in C++</b>
+    /// \code 
+    /// UsdPrim prim = stage->OverridePrim("/path/to/prim");
+    /// UsdModelAPI modelAPI = UsdModelAPI::Apply(prim);
+    /// assert(prim.HasAPI<UsdModelAPI>());
+    /// 
+    /// UsdCollectionAPI collAPI = UsdCollectionAPI::Apply(prim, 
+    ///         /*instanceName*/ TfToken("geom"))
+    /// assert(prim.HasAPI<UsdCollectionAPI>()
+    /// assert(prim.HasAPI<UsdCollectionAPI>(/*instanceName*/ TfToken("geom")))
+    /// \endcode
+    /// 
+    /// The python version of this method takes as an argument the TfType
+    /// of the API schema class. Similar validation of the schema type is 
+    /// performed in python at run-time and a coding error is issued if 
+    /// the given type is not a valid applied API schema.
+    /// 
+    /// <b>Using HasAPI in Python</b>
+    /// \code{.py}
+    /// prim = stage.OverridePrim("/path/to/prim")
+    /// modelAPI = Usd.ModelAPI.Apply(prim)
+    /// assert prim.HasAPI(Usd.ModelAPI)
+    /// 
+    /// collAPI = Usd.CollectionAPI.Apply(prim, "geom")
+    /// assert(prim.HasAPI(Usd.CollectionAPI))
+    /// assert(prim.HasAPI(Usd.CollectionAPI, instanceName="geom"))
+    /// \endcode
+    template <typename T>
+    bool HasAPI(const TfToken &instanceName=TfToken()) const {
+        static_assert(std::is_base_of<UsdAPISchemaBase, T>::value,
+                      "Provided type must derive UsdAPISchemaBase.");
+        static_assert(!std::is_same<UsdAPISchemaBase, T>::value,
+                      "Provided type must not be UsdAPISchemaBase.");
+        static_assert(!T::IsTyped,
+                      "Provided schema type must not be typed.");
+        static_assert(T::IsApplied,
+                      "Provided schema type must be an applied API schema.");
+
+        if (!T::IsMultipleApply && !instanceName.IsEmpty()) {
+            TF_CODING_ERROR("HasAPI: single application API schemas like %s do "
+                "not contain an application instanceName ( %s ).",
+                TfType::GetCanonicalTypeName(typeid(T)).c_str(),
+                instanceName.GetText());
+            return false;
+        }
+
+        return _HasAPI(TfType::Find<T>(), /*validateSchemaType=*/false, 
+                       instanceName);
+    }
 
     // --------------------------------------------------------------------- //
     /// \name Prim Children
@@ -532,6 +644,15 @@ public:
     USD_API
     UsdPrim GetFilteredNextSibling(
         const Usd_PrimFlagsPredicate &predicate) const;
+        
+    /// Returns true if the prim is the pseudo root.  
+    ///
+    /// Equivalent to 
+    /// \code
+    /// prim.GetPath() == SdfPath::AbsoluteRootPath()
+    /// \endcode
+    USD_API
+    bool IsPseudoRoot() const;
 
     // --------------------------------------------------------------------- //
     /// \name Variants 
@@ -800,16 +921,18 @@ public:
     bool SetPayload(
         const std::string& assetPath, const SdfPath& primPath) const;
     
-    /// Shorthand for SetPayload(SdfPayload(layer->GetIdentifer(),
+    /// Shorthand for SetPayload(SdfPayload(layer->GetIdentifier(),
     /// primPath)).
     USD_API
     bool SetPayload(const SdfLayerHandle& layer, const SdfPath& primPath) const;
 
-    /// Loads this prim, all its ancestors, and all its descendants.
+    /// Load this prim, all its ancestors, and by default all its descendants.
+    /// If \p loadPolicy is UsdLoadWithoutDescendants, then load only this prim
+    /// and its ancestors.
     ///
     /// See UsdStage::Load for additional details.
     USD_API
-    void Load() const;
+    void Load(UsdLoadPolicy policy = UsdLoadWithDescendants) const;
 
     /// Unloads this prim and all its descendants.
     ///
@@ -1001,11 +1124,12 @@ private:
     friend class UsdPrimSubtreeIterator;
     friend class UsdProperty;
     friend class UsdSchemaBase;
+    friend class UsdAPISchemaBase;
     friend class UsdStage;
     friend class UsdPrimRange;
     friend class Usd_PrimData;
     friend class Usd_PrimFlagsPredicate;
-    friend class UsdPrim_RelTargetFinder;
+    friend struct UsdPrim_RelTargetFinder;
     friend struct UsdPrim_AttrConnectionFinder;
 
     // Prim constructor.
@@ -1032,9 +1156,11 @@ private:
     std::vector<UsdProperty>
     _MakeProperties(const TfTokenVector &names) const;
 
-    // Helper for Get(Authored)Properties.
-    TfTokenVector _GetPropertyNames(bool onlyAuthored,
-                                    bool applyOrder=true) const;
+    // Helper for Get{Authored}{PropertyNames,Properties} 
+    TfTokenVector _GetPropertyNames(
+        bool onlyAuthored,
+        bool applyOrder=true,
+        const PropertyPredicateFunc &predicate={}) const;
 
     // Helper for Get(Authored)PropertiesInNamespace.
     std::vector<UsdProperty>
@@ -1236,7 +1362,7 @@ UsdPrim::GetFilteredChildren(const Usd_PrimFlagsPredicate &pred) const
 UsdPrimSiblingRange
 UsdPrim::GetAllChildren() const
 {
-    return GetFilteredChildren(Usd_PrimFlagsPredicate::Tautology());
+    return GetFilteredChildren(UsdPrimAllPrimsPredicate);
 }
 
 UsdPrimSiblingRange
@@ -1433,7 +1559,7 @@ UsdPrim::GetFilteredDescendants(const Usd_PrimFlagsPredicate &pred) const
 UsdPrimSubtreeRange
 UsdPrim::GetAllDescendants() const
 {
-    return GetFilteredDescendants(Usd_PrimFlagsPredicate::Tautology());
+    return GetFilteredDescendants(UsdPrimAllPrimsPredicate);
 }
 
 UsdPrimSubtreeRange

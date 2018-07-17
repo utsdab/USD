@@ -34,7 +34,6 @@
 #include "pxr/base/tf/stl.h"
 #include "pxr/base/tf/stringUtils.h"
 #include "pxr/base/tf/pathUtils.h"
-#include "pxr/base/tf/iterator.h"
 
 #include <boost/functional/hash.hpp>
 #include <boost/unordered_map.hpp>
@@ -44,6 +43,7 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
+TF_DEFINE_PUBLIC_TOKENS(GlfGLSLFXTokens, GLF_GLSLFX_TOKENS);
 
 #define CURRENT_VERSION 0.1
 
@@ -58,7 +58,6 @@ TF_DEFINE_PRIVATE_TOKENS(
     _tokens,
     ((sectionDelimiter, "--"))
     ((commentDelimiter, "---"))
-    (glslfx)
     (version)
     (configuration)
     (glsl)
@@ -104,9 +103,7 @@ ShaderResourceRegistry::ShaderResourceRegistry()
     PlugRegistry& plugReg = PlugRegistry::GetInstance();
     PlugPluginPtrVector plugins = plugReg.GetAllPlugins();
 
-    TF_FOR_ALL(plugIt, plugins) {
-        PlugPluginPtr const & plugin = *plugIt;
-
+    for (PlugPluginPtr const& plugin : plugins) {
         std::string packageName = plugin->GetName();
         JsObject metadata = plugin->GetMetadata();
 
@@ -238,7 +235,8 @@ bool
 GlfGLSLFX::_ProcessFile(string const & filePath, _ParseContext & context)
 {
     if (!TfPathExists(filePath)) {
-        TF_RUNTIME_ERROR("GlfGLSLFX::_ProcessFile. File doesn't exist: \"%s\"\n", filePath.c_str());
+        // XXX:validation
+        TF_WARN("File doesn't exist: \"%s\"\n", filePath.c_str());
         return false;
     }
 
@@ -259,6 +257,9 @@ GlfGLSLFX::_ProcessInput(std::istream * input,
                          _ParseContext & context)
 {
     while (getline(*input, context.currentLine)) {
+        // trim to avoid issues with cross-platform line endings
+        context.currentLine = TfStringTrimRight(context.currentLine);
+
         // increment the line number
         ++context.lineNo;
 
@@ -288,7 +289,7 @@ GlfGLSLFX::_ProcessInput(std::istream * input,
                 context.currentLine.c_str());
 
         } else
-        if (context.currentSectionType == _tokens->glslfx && 
+        if (context.currentSectionType == GlfGLSLFXTokens->glslfx && 
                 context.currentLine.find(_tokens->import.GetText()) == 0) {
             if (!_ProcessImport(context)) {
                 return false;
@@ -307,8 +308,7 @@ GlfGLSLFX::_ProcessInput(std::istream * input,
         }
     }
 
-    TF_FOR_ALL(it, context.imports) {
-        string importFile = *it;
+    for (std::string const& importFile : context.imports) {
         TF_DEBUG(GLF_DEBUG_GLSLFX).Msg(" Importing File : %s\n",
                                         importFile.c_str());
 
@@ -364,7 +364,7 @@ GlfGLSLFX::_ParseSectionLine(_ParseContext & context)
     context.currentSectionType = tokens[1];
     context.currentSectionId.clear();
 
-    if (context.currentSectionType == _tokens->glslfx.GetText()) {
+    if (context.currentSectionType == GlfGLSLFXTokens->glslfx.GetText()) {
         return _ParseVersionLine(tokens, context);
     }
     if (context.currentSectionType == _tokens->configuration.GetText()) {
@@ -489,19 +489,18 @@ GlfGLSLFX::_ComposeConfiguration(std::string *reason)
     // there is an opportunity to do more powerful dictionary composition here
 
 
-    TF_FOR_ALL(it, _configOrder) {
-
-        TF_AXIOM(_configMap.find(*it) != _configMap.end());
+    for (std::string const& item : _configOrder) {
+        TF_AXIOM(_configMap.find(item) != _configMap.end());
         TF_DEBUG(GLF_DEBUG_GLSLFX).Msg("    Parsing config for %s\n",
-                                        TfGetBaseName(*it).c_str());
+                                        TfGetBaseName(item).c_str());
 
         string errorStr;
-        _config.reset(GlfGLSLFXConfig::Read(_configMap[*it], *it, &errorStr));
+        _config.reset(GlfGLSLFXConfig::Read(_configMap[item], item, &errorStr));
 
         if (!errorStr.empty()) {
             *reason = 
                 TfStringPrintf("Error parsing configuration section of %s: %s.",
-                             it->c_str(), errorStr.c_str());
+                               item.c_str(), errorStr.c_str());
             return false;
         }
     }
@@ -561,16 +560,15 @@ GlfGLSLFX::_GetSource(const TfToken &shaderStageKey) const
 
     string ret;
 
-    TF_FOR_ALL(it, sourceKeys) {
-
+    for (std::string const& key : sourceKeys) {
         // now look up the keys and concatenate them together..
-        _SourceMap::const_iterator cit = _sourceMap.find(*it);
+        _SourceMap::const_iterator cit = _sourceMap.find(key);
 
         if (cit == _sourceMap.end()) {
             TF_RUNTIME_ERROR("Can't find shader source for <%s> with the key "
                              "<%s>",
                              shaderStageKey.GetText(),
-                             it->c_str());
+                             key.c_str());
             return string();
         }
 

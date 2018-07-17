@@ -41,8 +41,12 @@ class PayloadedScene(object):
         #   |                   
         #   /Foo                payload2.fmt
         #   /Foo/Baz ---(P)---> /Baz                   payload3.fmt
-        #                       /Baz/Garply ---(P)---> /Garply
-        #                                              /Garply/Qux
+        #   |                   /Baz/Garply ---(P)---> /Garply
+        #   |                                          /Garply/Qux
+        #   |               payload4.fmt
+        #   |                /Corge
+        #   /Bar ---(P)--->  /Corge/Waldo
+        #                    /Corge/Waldo/Fred
 
         # Create payload1.fmt
         self.payload1 = Usd.Stage.CreateInMemory("payload1."+fmt)
@@ -60,6 +64,10 @@ class PayloadedScene(object):
                       Sdf.Payload(self.payload3.GetRootLayer().identifier,
                                   "/Garply"))
 
+        # Create payload4.fmt
+        self.payload4 = Usd.Stage.CreateInMemory("payload4."+fmt)
+        p = self.payload4.DefinePrim("/Corge/Waldo/Fred", "Scope")
+
         #
         # Create the scene that references payload1 and payload2
         #
@@ -71,6 +79,10 @@ class PayloadedScene(object):
         # Intentionally using the overloaded prim-payload API.
         p = self.stage.DefinePrim("/Foo/Baz", "Scope")
         p.SetPayload(self.payload2.GetRootLayer().identifier, "/Baz")
+
+        # Create a sub-root payload.
+        p = self.stage.DefinePrim("/Bar", "Scope")
+        p.SetPayload(self.payload4.GetRootLayer().identifier, "/Corge/Waldo")
 
         # Test expects initial state to be all unloaded.
         self.stage.Unload()
@@ -96,7 +108,12 @@ class InstancedAndPayloadedScene(PayloadedScene):
         #   |
         #   |                         payload3.fmt
         #   /__Master_<#C> ---(P)---> /Garply
-        #   |                         /Qux
+        #   |                         /Garply/Qux
+        #   |
+        #   |                         payload4.fmt
+        #   |                         /Corge
+        #   /__Master_<#D> ---(P)---> /Corge/Waldo
+        #   |                         /Corge/Waldo/Fred
         #   |
         #   /Sad   ---(instance)---> /__Master_<#A>
         #   /Sad_1 ---(instance)---> /__Master_<#A>
@@ -104,6 +121,9 @@ class InstancedAndPayloadedScene(PayloadedScene):
         #   /Foo
         #   /Foo/Baz   ---(instance)---> /__Master_<#B>
         #   /Foo/Baz_1 ---(instance)---> /__Master_<#B>
+        #   |
+        #   /Bar   ---(instance)---> /__Master<#D>
+        #   /Bar_1 ---(instance)---> /__Master<#D>
 
         super(InstancedAndPayloadedScene, self).__init__(fmt)
 
@@ -125,6 +145,12 @@ class InstancedAndPayloadedScene(PayloadedScene):
         baz.SetInstanceable(True)
         baz1.SetInstanceable(True)
 
+        bar = self.stage.GetPrimAtPath("/Bar")
+        bar1 = self.stage.DefinePrim("/Bar_1", "Scope")
+        bar1.SetPayload(self.payload4.GetRootLayer().identifier, "/Corge/Waldo")
+        bar.SetInstanceable(True)
+        bar1.SetInstanceable(True)
+
         # Declare /Baz/Garply as instanceable within the payload
         # itself.
         self.payload2.GetPrimAtPath("/Baz/Garply").SetInstanceable(True)
@@ -137,25 +163,37 @@ class TestUsdPayloads(unittest.TestCase):
         for fmt in allFormats:
             p = InstancedAndPayloadedScene(fmt)
 
-            self.assertTrue(set(p.stage.FindLoadable()) == \
-                set([Sdf.Path("/Sad"), Sdf.Path("/Sad_1"), 
-                     Sdf.Path("/Foo/Baz"), Sdf.Path("/Foo/Baz_1")]))
+            self.assertEqual(set(p.stage.FindLoadable()),
+                             set([Sdf.Path("/Sad"), Sdf.Path("/Sad_1"), 
+                                  Sdf.Path("/Foo/Baz"), Sdf.Path("/Foo/Baz_1"),
+                                  Sdf.Path("/Bar"), Sdf.Path("/Bar_1")]))
 
             sad = p.stage.GetPrimAtPath("/Sad")
             sad_1 = p.stage.GetPrimAtPath("/Sad_1")
 
-            # Both instances should report that they have payloads authored
+            bar = p.stage.GetPrimAtPath("/Bar")
+            bar_1 = p.stage.GetPrimAtPath("/Bar_1")
+
+            # All instances should report that they have payloads authored
             # directly on them, but have not yet been loaded.
             self.assertTrue(sad.HasPayload())
             self.assertTrue(sad_1.HasPayload())
             self.assertTrue(not sad.IsLoaded())
             self.assertTrue(not sad_1.IsLoaded())
 
+            self.assertTrue(bar.HasPayload())
+            self.assertTrue(bar_1.HasPayload())
+            self.assertTrue(not bar.IsLoaded())
+            self.assertTrue(not bar_1.IsLoaded())
+
             # Since there is no composition arc to instanceable data
-            # (due to the payloads not being loaded), both prims have no
+            # (due to the payloads not being loaded), these prims have no
             # master.
             self.assertTrue(not sad.GetMaster())
             self.assertTrue(not sad_1.GetMaster())
+
+            self.assertTrue(not bar.GetMaster())
+            self.assertTrue(not bar_1.GetMaster())
 
             # Instances should be independently loadable. This should
             # cause a master to be created for the loaded prim.
@@ -165,17 +203,30 @@ class TestUsdPayloads(unittest.TestCase):
             self.assertTrue(sad.GetMaster())
             self.assertTrue(not sad_1.GetMaster())
 
+            bar.Load()
+            self.assertTrue(bar.IsLoaded())
+            self.assertTrue(not bar_1.IsLoaded())
+            self.assertTrue(bar.GetMaster())
+            self.assertTrue(not bar_1.GetMaster())
+
             # The master prim should not report that it has a loadable
             # payload. Its load state cannot be independently controlled.
             master = sad.GetMaster()
             self.assertTrue(not master.HasPayload())
             self.assertTrue(master not in p.stage.FindLoadable())
-            self.assertTrue([prim.GetName() for prim in master.GetChildren()] == ["Panda"])
+            self.assertEqual([prim.GetName() for prim in master.GetChildren()],
+                             ["Panda"])
+
+            master2 = bar.GetMaster()
+            self.assertTrue(not master2.HasPayload())
+            self.assertTrue(master2 not in p.stage.FindLoadable())
+            self.assertEqual([prim.GetName() for prim in master2.GetChildren()],
+                             ["Fred"])
 
             # Loading the second instance will cause Usd to assign it to the
             # first instance's master.
             sad_1.Load()
-            self.assertTrue(sad.GetMaster() == sad_1.GetMaster())
+            self.assertEqual(sad.GetMaster(), sad_1.GetMaster())
 
             sad.Unload()
             sad_1.Unload()
@@ -185,19 +236,30 @@ class TestUsdPayloads(unittest.TestCase):
             self.assertTrue(not sad_1.GetMaster())
             self.assertTrue(not master)
 
+            bar_1.Load()
+            self.assertEqual(bar.GetMaster(), bar_1.GetMaster())
+
+            bar.Unload()
+            bar_1.Unload()
+            self.assertTrue(not bar.IsLoaded())
+            self.assertTrue(not bar_1.IsLoaded())
+            self.assertTrue(not bar.GetMaster())
+            self.assertTrue(not bar_1.GetMaster())
+            self.assertTrue(not master2)
+
             # Loading the payload for an instanceable prim will cause
             # payloads nested in descendants of that prim's master to be 
             # loaded as well.
             baz = p.stage.GetPrimAtPath("/Foo/Baz")
             baz_1 = p.stage.GetPrimAtPath("/Foo/Baz_1")
 
-            print '0'*72
             baz.Load()
             self.assertTrue(baz.IsLoaded())
             self.assertTrue(baz.GetMaster())
 
             master = baz.GetMaster()
-            self.assertTrue([prim.GetName() for prim in master.GetChildren()] == ["Garply"])
+            self.assertEqual(
+                [prim.GetName() for prim in master.GetChildren()], ["Garply"])
 
             garply = master.GetChild("Garply")
             self.assertTrue(garply.HasPayload())
@@ -205,19 +267,18 @@ class TestUsdPayloads(unittest.TestCase):
             self.assertTrue(garply.GetMaster())
 
             master = garply.GetMaster()
-            self.assertTrue([prim.GetName() for prim in master.GetChildren()] == ["Qux"])
+            self.assertEqual([prim.GetName() for prim in master.GetChildren()],
+                             ["Qux"])
 
-            print '1'*72 
             baz_1.Load()
-            self.assertTrue(baz.GetMaster() == baz_1.GetMaster())
+            self.assertEqual(baz.GetMaster(), baz_1.GetMaster())
 
             # Nested payloads in masters can be individually unloaded. This
             # affects all instances.
-            print '2'*72
             garply.Unload()
             self.assertTrue(not garply.IsLoaded())
             self.assertTrue(not garply.GetMaster())
-            self.assertTrue(baz.GetMaster() == baz_1.GetMaster())
+            self.assertEqual(baz.GetMaster(), baz_1.GetMaster())
 
     def test_Payloads(self):
         for fmt in allFormats:
@@ -228,9 +289,11 @@ class TestUsdPayloads(unittest.TestCase):
                 self.assertTrue(not p.stage.GetPrimAtPath("/").HasPayload())
                 self.assertTrue(p.stage.GetPrimAtPath("/Sad").HasPayload())
                 self.assertTrue(p.stage.GetPrimAtPath("/Foo/Baz").HasPayload())
-                self.assertTrue(p.stage.GetPrimAtPath("/Foo/Baz").GetMetadata("payload") == \
+                self.assertEqual(
+                    p.stage.GetPrimAtPath("/Foo/Baz").GetMetadata("payload"),
                     Sdf.Payload(p.payload2.GetRootLayer().identifier, "/Baz"))
-                self.assertTrue(p.stage.GetPrimAtPath("/Sad").GetMetadata("payload") == \
+                self.assertEqual(
+                    p.stage.GetPrimAtPath("/Sad").GetMetadata("payload"),
                     Sdf.Payload(p.payload1.GetRootLayer().identifier, "/Sad"))
 
             AssertBaseAssumptions()
@@ -241,7 +304,8 @@ class TestUsdPayloads(unittest.TestCase):
             p.stage.Load()
             self.assertTrue(not p.stage.GetPrimAtPath("/Sad/Panda").HasPayload())
             self.assertTrue(p.stage.GetPrimAtPath("/Foo/Baz/Garply").HasPayload())
-            self.assertTrue(p.stage.GetPrimAtPath("/Foo/Baz/Garply").GetMetadata("payload") == \
+            self.assertEqual(
+                p.stage.GetPrimAtPath("/Foo/Baz/Garply").GetMetadata("payload"),
                 Sdf.Payload(p.payload3.GetRootLayer().identifier, "/Garply"))
 
             #
@@ -276,7 +340,7 @@ class TestUsdPayloads(unittest.TestCase):
             self.assertTrue(not sad.IsLoaded())
             self.assertTrue(sad.ClearPayload())
             self.assertTrue(not sad.HasPayload())
-            self.assertTrue(sad.GetMetadata("payload") == None)
+            self.assertEqual(sad.GetMetadata("payload"), None)
             # Assert that it's loaded because anything without a payload is
             # considered loaded.
             self.assertTrue(sad.IsLoaded())
@@ -288,7 +352,7 @@ class TestUsdPayloads(unittest.TestCase):
             self.assertTrue(baz.GetMetadata("payload"))
             self.assertTrue(baz.ClearPayload())
             self.assertTrue(not baz.HasPayload())
-            self.assertTrue(baz.GetMetadata("payload") == None)
+            self.assertEqual(baz.GetMetadata("payload"), None)
             # Again, assert that it's loaded because anything without a payload is
             # considered loaded.
             self.assertTrue(baz.IsLoaded())

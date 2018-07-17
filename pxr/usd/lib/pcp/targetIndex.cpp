@@ -35,9 +35,11 @@
 #include "pxr/usd/sdf/propertySpec.h"
 #include "pxr/usd/sdf/types.h"
 
-#include "pxr/base/tracelite/trace.h"
+#include "pxr/base/trace/trace.h"
 
 #include <boost/optional.hpp>
+
+#include <functional>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -504,14 +506,13 @@ PcpBuildFilteredTargetIndex(
             }
 
             SdfPathListOp::ApplyCallback pathTranslationCallback = 
-                boost::bind(&_PathTranslateCallback, 
-                            _1, boost::ref(propSite),
-                            propIt.base().GetNode(), _2,
-                            boost::ref(property), relOrAttrType,
-                            cacheForValidation, 
-                            &targetPathErrors, allErrors);
-            pathListOps.ApplyOperations(&paths,
-                                        pathTranslationCallback);
+                std::bind(&_PathTranslateCallback, 
+                          std::placeholders::_1, std::ref(propSite),
+                          propIt.base().GetNode(), std::placeholders::_2,
+                          std::ref(property), relOrAttrType,
+                          cacheForValidation, 
+                          &targetPathErrors, allErrors);
+            pathListOps.ApplyOperations(&paths, pathTranslationCallback);
         }
         if (property == stopProperty) {
             break;

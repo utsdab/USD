@@ -70,33 +70,34 @@ HdEmbreeInstancer::_SyncPrimvars()
     HF_MALLOC_TAG_FUNCTION();
 
     HdChangeTracker &changeTracker = 
-        _GetDelegate()->GetRenderIndex().GetChangeTracker();
+        GetDelegate()->GetRenderIndex().GetChangeTracker();
     SdfPath const& id = GetId();
 
     // Use the double-checked locking pattern to check if this instancer's
     // primvars are dirty.
     int dirtyBits = changeTracker.GetInstancerDirtyBits(id);
-    if (HdChangeTracker::IsAnyPrimVarDirty(dirtyBits, id)) {
+    if (HdChangeTracker::IsAnyPrimvarDirty(dirtyBits, id)) {
         std::lock_guard<std::mutex> lock(_instanceLock);
 
         dirtyBits = changeTracker.GetInstancerDirtyBits(id);
-        if (HdChangeTracker::IsAnyPrimVarDirty(dirtyBits, id)) {
+        if (HdChangeTracker::IsAnyPrimvarDirty(dirtyBits, id)) {
 
             // If this instancer has dirty primvars, get the list of
             // primvar names and then cache each one.
 
-            TfTokenVector primVarNames;
-            primVarNames = _GetDelegate()->GetPrimVarInstanceNames(id);
+            TfTokenVector primvarNames;
+            HdPrimvarDescriptorVector primvars = GetDelegate()
+                ->GetPrimvarDescriptors(id, HdInterpolationInstance);
 
-            TF_FOR_ALL(nameIt, primVarNames) {
-                if (HdChangeTracker::IsPrimVarDirty(dirtyBits, id, *nameIt)) {
-                    VtValue value = _GetDelegate()->Get(id, *nameIt);
+            for (HdPrimvarDescriptor const& pv: primvars) {
+                if (HdChangeTracker::IsPrimvarDirty(dirtyBits, id, pv.name)) {
+                    VtValue value = GetDelegate()->Get(id, pv.name);
                     if (!value.IsEmpty()) {
-                        if (_primvarMap.count(*nameIt) > 0) {
-                            delete _primvarMap[*nameIt];
+                        if (_primvarMap.count(pv.name) > 0) {
+                            delete _primvarMap[pv.name];
                         }
-                        _primvarMap[*nameIt] =
-                            new HdVtBufferSource(*nameIt, value);
+                        _primvarMap[pv.name] =
+                            new HdVtBufferSource(pv.name, value);
                     }
                 }
             }
@@ -123,9 +124,9 @@ HdEmbreeInstancer::ComputeInstanceTransforms(SdfPath const &prototypeId)
     // If any transform isn't provided, it's assumed to be the identity.
 
     GfMatrix4d instancerTransform =
-        _GetDelegate()->GetInstancerTransform(GetId(), prototypeId);
+        GetDelegate()->GetInstancerTransform(GetId(), prototypeId);
     VtIntArray instanceIndices =
-        _GetDelegate()->GetInstanceIndices(GetId(), prototypeId);
+        GetDelegate()->GetInstanceIndices(GetId(), prototypeId);
 
     VtMatrix4dArray transforms(instanceIndices.size());
     for (size_t i = 0; i < instanceIndices.size(); ++i) {
@@ -188,7 +189,7 @@ HdEmbreeInstancer::ComputeInstanceTransforms(SdfPath const &prototypeId)
     }
 
     HdInstancer *parentInstancer =
-        _GetDelegate()->GetRenderIndex().GetInstancer(GetParentId());
+        GetDelegate()->GetRenderIndex().GetInstancer(GetParentId());
     if (!TF_VERIFY(parentInstancer)) {
         return transforms;
     }

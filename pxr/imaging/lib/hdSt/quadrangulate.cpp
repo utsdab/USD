@@ -23,19 +23,22 @@
 //
 #include "pxr/pxr.h"
 #include "pxr/imaging/glf/glew.h"
+#include "pxr/imaging/glf/contextCaps.h"
 
-#include "pxr/imaging/hdSt/quadrangulate.h"
+#include "pxr/imaging/hdSt/bufferArrayRangeGL.h"
+#include "pxr/imaging/hdSt/bufferResourceGL.h"
+#include "pxr/imaging/hdSt/glslProgram.h"
 #include "pxr/imaging/hdSt/meshTopology.h"
+#include "pxr/imaging/hdSt/quadrangulate.h"
+#include "pxr/imaging/hdSt/resourceRegistry.h"
+#include "pxr/imaging/hdSt/tokens.h"
 
 #include "pxr/imaging/hd/bufferArrayRange.h"
-#include "pxr/imaging/hd/bufferArrayRangeGL.h"
-#include "pxr/imaging/hd/bufferResourceGL.h"
-#include "pxr/imaging/hd/glslProgram.h"
 #include "pxr/imaging/hd/meshUtil.h"
 #include "pxr/imaging/hd/perfLog.h"
-#include "pxr/imaging/hd/renderContextCaps.h"
-#include "pxr/imaging/hd/resourceRegistry.h"
+#include "pxr/imaging/hd/types.h"
 #include "pxr/imaging/hd/vtBufferSource.h"
+
 #include "pxr/imaging/glf/glslfx.h"
 
 #include "pxr/base/gf/vec2i.h"
@@ -86,9 +89,15 @@ HdSt_QuadIndexBuilderComputation::HdSt_QuadIndexBuilderComputation(
 void
 HdSt_QuadIndexBuilderComputation::AddBufferSpecs(HdBufferSpecVector *specs) const
 {
-    specs->push_back(HdBufferSpec(HdTokens->indices, GL_INT, 4));
+    specs->emplace_back(HdTokens->indices,
+                        HdTupleType{HdTypeInt32Vec4, 1});
     // coarse-quads uses int2 as primitive param.
-    specs->push_back(HdBufferSpec(HdTokens->primitiveParam, GL_INT, 2));
+    specs->emplace_back(HdTokens->primitiveParam,
+                        HdTupleType{HdTypeInt32Vec2, 1});
+    // 4 edge indices per quad
+    specs->emplace_back(HdTokens->edgeIndices,
+         		HdTupleType{HdTypeInt32Vec4, 1});
+				
 }
 
 bool
@@ -105,10 +114,12 @@ HdSt_QuadIndexBuilderComputation::Resolve()
     // generate quad index buffer
     VtVec4iArray quadsFaceVertexIndices;
     VtVec2iArray primitiveParam;
+    VtVec4iArray quadsEdgeIndices;
     HdMeshUtil meshUtil(_topology, _id);
     meshUtil.ComputeQuadIndices(
             &quadsFaceVertexIndices,
-            &primitiveParam);
+            &primitiveParam,
+            &quadsEdgeIndices);
 
     _SetResult(HdBufferSourceSharedPtr(new HdVtBufferSource(
                                            HdTokens->indices,
@@ -116,6 +127,10 @@ HdSt_QuadIndexBuilderComputation::Resolve()
 
     _primitiveParam.reset(new HdVtBufferSource(HdTokens->primitiveParam,
                                                VtValue(primitiveParam)));
+
+    _quadsEdgeIndices.reset(new HdVtBufferSource(HdTokens->edgeIndices,
+                                               VtValue(quadsEdgeIndices)));
+
 
     _SetResolved();
     return true;
@@ -127,10 +142,10 @@ HdSt_QuadIndexBuilderComputation::HasChainedBuffer() const
     return true;
 }
 
-HdBufferSourceSharedPtr
-HdSt_QuadIndexBuilderComputation::GetChainedBuffer() const
+HdBufferSourceVector
+HdSt_QuadIndexBuilderComputation::GetChainedBuffers() const
 {
-    return _primitiveParam;
+    return { _primitiveParam, _quadsEdgeIndices };
 }
 
 bool
@@ -216,9 +231,7 @@ HdSt_QuadrangulateTableComputation::AddBufferSpecs(
     HdBufferSpecVector *specs) const
 {
     // quadinfo computation produces an index buffer for quads.
-    specs->push_back(HdBufferSpec(HdTokens->quadInfo,
-                                  GL_INT,
-                                  1));
+    specs->emplace_back(HdTokens->quadInfo, HdTupleType{HdTypeInt32, 1});
 }
 
 bool
@@ -273,7 +286,7 @@ HdSt_QuadrangulateComputation::Resolve()
     if (meshUtil.ComputeQuadrangulatedPrimvar(quadInfo,
                 _source->GetData(),
                 _source->GetNumElements(),
-                _source->GetGLElementDataType(),
+                _source->GetTupleType().type,
                 &result)) {
         HD_PERF_COUNTER_ADD(HdPerfTokens->quadrangulatedVerts,
                 quadInfo->numAdditionalPoints);
@@ -297,10 +310,10 @@ HdSt_QuadrangulateComputation::AddBufferSpecs(HdBufferSpecVector *specs) const
     _source->AddBufferSpecs(specs);
 }
 
-int
-HdSt_QuadrangulateComputation::GetGLComponentDataType() const
+HdTupleType
+HdSt_QuadrangulateComputation::GetTupleType() const
 {
-    return _source->GetGLComponentDataType();
+    return _source->GetTupleType();
 }
 
 bool
@@ -349,7 +362,7 @@ HdSt_QuadrangulateFaceVaryingComputation::Resolve()
     if (meshUtil.ComputeQuadrangulatedFaceVaryingPrimvar(
                 _source->GetData(),
                 _source->GetNumElements(),
-                _source->GetGLElementDataType(),
+                _source->GetTupleType().type,
                 &result)) {
         _SetResult(HdBufferSourceSharedPtr(
                     new HdVtBufferSource(
@@ -380,13 +393,14 @@ HdSt_QuadrangulateFaceVaryingComputation::_CheckValid() const
 // ---------------------------------------------------------------------------
 
 HdSt_QuadrangulateComputationGPU::HdSt_QuadrangulateComputationGPU(
-    HdSt_MeshTopology *topology, TfToken const &sourceName, GLenum dataType,
+    HdSt_MeshTopology *topology, TfToken const &sourceName, HdType dataType,
     SdfPath const &id)
     : _id(id), _topology(topology), _name(sourceName), _dataType(dataType)
 {
-    if (dataType != GL_FLOAT && dataType != GL_DOUBLE) {
-        TF_CODING_ERROR("Unsupported primvar type for quadrangulation [%s]",
-                        _id.GetText());
+    HdType compType = HdGetComponentType(dataType);
+    if (compType != HdTypeFloat && compType != HdTypeDouble) {
+        TF_CODING_ERROR("Unsupported primvar type %s for quadrangulation [%s]",
+                        TfEnum::GetName(dataType).c_str(), _id.GetText());
     }
 }
 
@@ -419,31 +433,34 @@ HdSt_QuadrangulateComputationGPU::Execute(
         return;
 
     // select shader by datatype
-    TfToken shaderToken = (_dataType == GL_FLOAT ?
-                           HdGLSLProgramTokens->quadrangulateFloat :
-                           HdGLSLProgramTokens->quadrangulateDouble);
+    TfToken shaderToken =
+        (HdGetComponentType(_dataType) == HdTypeFloat) ?
+        HdStGLSLProgramTokens->quadrangulateFloat :
+        HdStGLSLProgramTokens->quadrangulateDouble;
 
-    HdGLSLProgramSharedPtr computeProgram =
-        HdGLSLProgram::GetComputeProgram(shaderToken, resourceRegistry);
+    HdStGLSLProgramSharedPtr computeProgram =
+        HdStGLSLProgram::GetComputeProgram(shaderToken,
+            static_cast<HdStResourceRegistry*>(resourceRegistry));
+        
     if (!computeProgram) return;
 
     GLuint program = computeProgram->GetProgram().GetId();
 
-    HdBufferArrayRangeGLSharedPtr range_ =
-        boost::static_pointer_cast<HdBufferArrayRangeGL> (range);
+    HdStBufferArrayRangeGLSharedPtr range_ =
+        boost::static_pointer_cast<HdStBufferArrayRangeGL> (range);
 
     // buffer resources for GPU computation
-    HdBufferResourceSharedPtr primVar_ = range_->GetResource(_name);
-    HdBufferResourceGLSharedPtr primVar =
-        boost::static_pointer_cast<HdBufferResourceGL> (primVar_);
+    HdBufferResourceSharedPtr primvar_ = range_->GetResource(_name);
+    HdStBufferResourceGLSharedPtr primvar =
+        boost::static_pointer_cast<HdStBufferResourceGL> (primvar_);
 
-    HdBufferArrayRangeGLSharedPtr quadrangulateTableRange_ =
-        boost::static_pointer_cast<HdBufferArrayRangeGL> (quadrangulateTableRange);
+    HdStBufferArrayRangeGLSharedPtr quadrangulateTableRange_ =
+        boost::static_pointer_cast<HdStBufferArrayRangeGL> (quadrangulateTableRange);
 
     HdBufferResourceSharedPtr quadrangulateTable_ =
         quadrangulateTableRange_->GetResource();
-    HdBufferResourceGLSharedPtr quadrangulateTable =
-        boost::static_pointer_cast<HdBufferResourceGL> (quadrangulateTable_);
+    HdStBufferResourceGLSharedPtr quadrangulateTable =
+        boost::static_pointer_cast<HdStBufferResourceGL> (quadrangulateTable_);
 
     // prepare uniform buffer for GPU computation
     struct Uniform {
@@ -451,8 +468,8 @@ HdSt_QuadrangulateComputationGPU::Execute(
         int quadInfoStride;
         int quadInfoOffset;
         int maxNumVert;
-        int primVarOffset;
-        int primVarStride;
+        int primvarOffset;
+        int primvarStride;
         int numComponents;
     } uniform;
 
@@ -469,13 +486,16 @@ HdSt_QuadrangulateComputationGPU::Execute(
     // components in interleaved vertex array are always same data type.
     // i.e. it can't handle an interleaved array which interleaves
     // float/double, float/int etc.
-    uniform.primVarOffset = primVar->GetOffset() / primVar->GetComponentSize();
-    uniform.primVarStride = primVar->GetStride() / primVar->GetComponentSize();
-    uniform.numComponents = primVar->GetNumComponents();
+    const size_t componentSize =
+        HdDataSizeOfType(HdGetComponentType(primvar->GetTupleType().type));
+    uniform.primvarOffset = primvar->GetOffset() / componentSize;
+    uniform.primvarStride = primvar->GetStride() / componentSize;
+    uniform.numComponents =
+        HdGetComponentCount(primvar->GetTupleType().type);
 
     // transfer uniform buffer
     GLuint ubo = computeProgram->GetGlobalUniformBuffer().GetId();
-    HdRenderContextCaps const &caps = HdRenderContextCaps::GetInstance();
+    GlfContextCaps const &caps = GlfContextCaps::GetInstance();
     // XXX: workaround for 319.xx driver bug of glNamedBufferDataEXT on UBO
     // XXX: move this workaround to renderContextCaps
     if (false && caps.directStateAccessEnabled) {
@@ -487,7 +507,7 @@ HdSt_QuadrangulateComputationGPU::Execute(
     }
 
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, primVar->GetId());
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, primvar->GetId());
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, quadrangulateTable->GetId());
 
     // dispatch compute kernel

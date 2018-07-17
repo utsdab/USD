@@ -25,15 +25,16 @@
 #include "pxr/usd/usd/stage.h"
 
 #include "pxr/usd/usd/attribute.h"
+#include "pxr/usd/usd/attributeQuery.h"
 #include "pxr/usd/usd/clip.h"
 #include "pxr/usd/usd/clipCache.h"
+#include "pxr/usd/usd/common.h"
 #include "pxr/usd/usd/debugCodes.h"
 #include "pxr/usd/usd/instanceCache.h"
 #include "pxr/usd/usd/interpolators.h"
 #include "pxr/usd/usd/notice.h"
 #include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/primRange.h"
-#include "pxr/usd/usd/pyConversions.h"
 #include "pxr/usd/usd/relationship.h"
 #include "pxr/usd/usd/resolver.h"
 #include "pxr/usd/usd/resolveInfo.h"
@@ -61,7 +62,7 @@
 #include "pxr/usd/sdf/schema.h"
 #include "pxr/usd/sdf/types.h" 
 
-#include "pxr/base/tracelite/trace.h"
+#include "pxr/base/trace/trace.h"
 #include "pxr/usd/ar/resolver.h"
 #include "pxr/usd/ar/resolverContext.h"
 #include "pxr/usd/ar/resolverContextBinder.h"
@@ -78,20 +79,19 @@
 #include "pxr/base/tf/enum.h"
 #include "pxr/base/tf/envSetting.h"
 #include "pxr/base/tf/hashset.h"
-#include "pxr/base/tf/makePyConstructor.h"
 #include "pxr/base/tf/mallocTag.h"
 #include "pxr/base/tf/ostreamMethods.h"
 #include "pxr/base/tf/pyLock.h"
 #include "pxr/base/tf/registryManager.h"
 #include "pxr/base/tf/scoped.h"
+#include "pxr/base/tf/stl.h"
 #include "pxr/base/tf/stringUtils.h"
 #include "pxr/base/work/arenaDispatcher.h"
 #include "pxr/base/work/loops.h"
 #include "pxr/base/work/utils.h"
 
-#include <boost/bind.hpp>
 #include <boost/optional.hpp>
-#include <boost/scoped_ptr.hpp>
+#include <boost/iterator/transform_iterator.hpp>
 #include <boost/utility/in_place_factory.hpp>
 
 #include <tbb/spin_rw_mutex.h>
@@ -106,7 +106,7 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-
+using boost::make_transform_iterator;
 using std::pair;
 using std::make_pair;
 using std::map;
@@ -241,8 +241,8 @@ UsdStage::SetGlobalVariantFallbacks(const PcpVariantFallbackMap &fallbacks)
 // stack of \a node up to the root of the pcp node tree.  Use
 // SdfLayerOffset::GetInverse() to go the other direction.
 static SdfLayerOffset
-_GetLayerOffsetToRoot(const PcpNodeRef& pcpNode,
-                      const SdfLayerHandle& layer)
+_GetLayerToStageOffset(const PcpNodeRef& pcpNode,
+                       const SdfLayerHandle& layer)
 {
     // PERFORMANCE: This is cached in the PcpNode and should be cheap.
     // Get the node-local path and layer offset.
@@ -269,31 +269,8 @@ _GetLayerOffsetToRoot(const PcpNodeRef& pcpNode,
     // it is a validation error to compose mixed frame rates. This was done as a
     // performance optimization.
 
-    return localOffset;
+    return UsdPrepLayerOffset(localOffset);
 }
-
-// Make a copy of paths, but uniqued with a prefix-check, which
-// removes all elements that are prefixed by other elements.
-template <class T>
-static void
-_CopyAndRemoveDescendentPaths(const T& paths, SdfPathVector* outPaths)
-{
-    using std::unique_copy;
-    using boost::bind;
-
-    outPaths->reserve(paths.size());
-
-    // Unique with an equivalence predicate that checks if the rhs has the lhs
-    // as a prefix.  If so, it's considered equivalent and therefore elided by
-    // unique_copy.  This leaves outPaths in a state where it contains
-    // no path that is descendant to any other.  Said another way, for all paths
-    // 'p' in pathVecToRecompose, there does not exist another (different) path
-    // 'q' also in pathVecToRecompose such that p.HasPrefix(q).
-    unique_copy(paths.begin(), paths.end(),
-                back_inserter(*outPaths),
-                bind(&SdfPath::HasPrefix, _2, _1));
-}
-
 
 char const *_dormantMallocTagID = "UsdStages in aggregate";
 
@@ -332,7 +309,7 @@ _CreatePathResolverContext(
 }
 
 static std::string
-_ResolveAssetPathRelativeToLayer(
+_AnchorAssetPathRelativeToLayer(
     const SdfLayerHandle& anchor,
     const std::string& assetPath)
 {
@@ -341,8 +318,16 @@ _ResolveAssetPathRelativeToLayer(
         return assetPath;
     }
 
+    return SdfComputeAssetPathRelativeToLayer(anchor, assetPath);
+}
+
+static std::string
+_ResolveAssetPathRelativeToLayer(
+    const SdfLayerHandle& anchor,
+    const std::string& assetPath)
+{
     const std::string computedAssetPath = 
-        SdfComputeAssetPathRelativeToLayer(anchor, assetPath);
+        _AnchorAssetPathRelativeToLayer(anchor, assetPath);
     if (computedAssetPath.empty()) {
         return computedAssetPath;
     }
@@ -350,20 +335,24 @@ _ResolveAssetPathRelativeToLayer(
     return ArGetResolver().Resolve(computedAssetPath);
 }
 
-void
-UsdStage::_MakeResolvedAssetPaths(UsdTimeCode time,
-                                  const UsdAttribute& attr,
-                                  SdfAssetPath *assetPaths,
-                                  size_t numAssetPaths) const
+// If anchorAssetPathsOnly is true, this function will only
+// update the authored assetPaths by anchoring them to the
+// anchor layer; it will not fill in the resolved path field.
+static void
+_MakeResolvedAssetPathsImpl(const SdfLayerRefPtr &anchor,
+                            const ArResolverContext &context,
+                            SdfAssetPath *assetPaths,
+                            size_t numAssetPaths,
+                            bool anchorAssetPathsOnly)
 {
-    auto anchor = _GetLayerWithStrongestValue(time, attr);
-    auto context = GetPathResolverContext();
-
-    // Get the layer providing the strongest value and use that to anchor the
-    // resolve.
-    if (anchor) {
-        ArResolverContextBinder binder(context);
-        for (size_t i = 0; i != numAssetPaths; ++i) {
+    ArResolverContextBinder binder(context);
+    for (size_t i = 0; i != numAssetPaths; ++i) {
+        if (anchorAssetPathsOnly) {
+            assetPaths[i] = SdfAssetPath(
+                _AnchorAssetPathRelativeToLayer(
+                    anchor, assetPaths[i].GetAssetPath()));
+        }
+        else {
             assetPaths[i] = SdfAssetPath(
                 assetPaths[i].GetAssetPath(),
                 _ResolveAssetPathRelativeToLayer(
@@ -375,20 +364,40 @@ UsdStage::_MakeResolvedAssetPaths(UsdTimeCode time,
 void
 UsdStage::_MakeResolvedAssetPaths(UsdTimeCode time,
                                   const UsdAttribute& attr,
-                                  VtValue* value) const
+                                  SdfAssetPath *assetPaths,
+                                  size_t numAssetPaths,
+                                  bool anchorAssetPathsOnly) const
+{
+    // Get the layer providing the strongest value and use that to anchor the
+    // resolve.
+    auto anchor = _GetLayerWithStrongestValue(time, attr);
+    if (anchor) {
+        _MakeResolvedAssetPathsImpl(
+            anchor, GetPathResolverContext(), assetPaths, numAssetPaths,
+            anchorAssetPathsOnly);
+    }
+}
+
+void
+UsdStage::_MakeResolvedAssetPaths(UsdTimeCode time,
+                                  const UsdAttribute& attr,
+                                  VtValue* value,
+                                  bool anchorAssetPathsOnly) const
 {
     if (value->IsHolding<SdfAssetPath>()) {
         SdfAssetPath assetPath;
         value->UncheckedSwap(assetPath);
-        _MakeResolvedAssetPaths(time, attr, &assetPath, 1);
+        _MakeResolvedAssetPaths(
+            time, attr, &assetPath, 1, anchorAssetPathsOnly);
         value->UncheckedSwap(assetPath);
             
     }
     else if (value->IsHolding<VtArray<SdfAssetPath>>()) {
         VtArray<SdfAssetPath> assetPaths;
         value->UncheckedSwap(assetPaths);
-        _MakeResolvedAssetPaths(time, attr, assetPaths.data(), 
-                                assetPaths.size());
+        _MakeResolvedAssetPaths(
+            time, attr, assetPaths.data(), assetPaths.size(), 
+            anchorAssetPathsOnly);
         value->UncheckedSwap(assetPaths);
     }
 }
@@ -447,14 +456,14 @@ UsdStage::~UsdStage()
         "UsdStage::~UsdStage(rootLayer=@%s@, sessionLayer=@%s@)\n",
         _rootLayer ? _rootLayer->GetIdentifier().c_str() : "<null>",
         _sessionLayer ? _sessionLayer->GetIdentifier().c_str() : "<null>");
-    Close();
+    _Close();
     if (_mallocTagID != _dormantMallocTagID){
         free(const_cast<char*>(_mallocTagID));
     }
 }
 
 void
-UsdStage::Close()
+UsdStage::_Close()
 {
     TfScopedVar<bool> resetIsClosing(_isClosingStage, true);
 
@@ -507,11 +516,22 @@ namespace {
 // We don't populate such prims in Usd.
 struct _NameChildrenPred
 {
-    explicit _NameChildrenPred(Usd_InstanceCache* instanceCache)
-        : _instanceCache(instanceCache)
+    explicit _NameChildrenPred(const UsdStagePopulationMask* mask,
+                               Usd_InstanceCache* instanceCache)
+        : _mask(mask)
+        , _instanceCache(instanceCache)
     { }
 
-    bool operator()(const PcpPrimIndex &index) const {
+    bool operator()(const PcpPrimIndex &index, 
+                    TfTokenVector* childNamesToCompose) const 
+    {
+        // Compose only the child prims that are included in the population
+        // mask, if any.
+        if (_mask && !_mask->GetIncludedChildNames(
+                index.GetPath(), childNamesToCompose)) {
+            return false;
+        }
+
         // Use a resolver to walk the index and find the strongest active
         // opinion.
         Usd_Resolver res(&index);
@@ -532,7 +552,7 @@ struct _NameChildrenPred
         if (index.IsInstanceable()) {
             const bool indexUsedAsMasterSource = 
                 _instanceCache->RegisterInstancePrimIndex(index)
-                || !_instanceCache->GetMasterUsingPrimIndexAtPath(
+                || !_instanceCache->GetMasterUsingPrimIndexPath(
                     index.GetPath()).IsEmpty();
             return indexUsedAsMasterSource;
         }
@@ -541,6 +561,7 @@ struct _NameChildrenPred
     }
 
 private:
+    const UsdStagePopulationMask* _mask;
     Usd_InstanceCache* _instanceCache;
 };
 
@@ -629,36 +650,13 @@ _CreateNewLayer(const std::string &identifier)
 
 /* static */
 UsdStageRefPtr
-UsdStage::CreateNew(const std::string& identifier)
-{
-    TfAutoMallocTag2 tag("Usd", _StageTag(identifier));
-
-    if (SdfLayerRefPtr layer = _CreateNewLayer(identifier))
-        return Open(layer, _CreateAnonymousSessionLayer(layer));
-    return TfNullPtr;
-}
-
-/* static */
-UsdStageRefPtr
 UsdStage::CreateNew(const std::string& identifier,
-                    const SdfLayerHandle& sessionLayer)
+                    InitialLoadSet load)
 {
     TfAutoMallocTag2 tag("Usd", _StageTag(identifier));
 
     if (SdfLayerRefPtr layer = _CreateNewLayer(identifier))
-        return Open(layer, sessionLayer);
-    return TfNullPtr;
-}
-
-/* static */
-UsdStageRefPtr
-UsdStage::CreateNew(const std::string& identifier,
-                    const ArResolverContext& pathResolverContext)
-{
-    TfAutoMallocTag2 tag("Usd", _StageTag(identifier));
-
-    if (SdfLayerRefPtr layer = _CreateNewLayer(identifier))
-        return Open(layer, pathResolverContext);
+        return Open(layer, _CreateAnonymousSessionLayer(layer), load);
     return TfNullPtr;
 }
 
@@ -666,70 +664,103 @@ UsdStage::CreateNew(const std::string& identifier,
 UsdStageRefPtr
 UsdStage::CreateNew(const std::string& identifier,
                     const SdfLayerHandle& sessionLayer,
-                    const ArResolverContext& pathResolverContext)
+                    InitialLoadSet load)
 {
     TfAutoMallocTag2 tag("Usd", _StageTag(identifier));
 
     if (SdfLayerRefPtr layer = _CreateNewLayer(identifier))
-        return Open(layer, sessionLayer, pathResolverContext);
+        return Open(layer, sessionLayer, load);
     return TfNullPtr;
 }
 
 /* static */
 UsdStageRefPtr
-UsdStage::CreateInMemory()
+UsdStage::CreateNew(const std::string& identifier,
+                    const ArResolverContext& pathResolverContext,
+                    InitialLoadSet load)
+{
+    TfAutoMallocTag2 tag("Usd", _StageTag(identifier));
+
+    if (SdfLayerRefPtr layer = _CreateNewLayer(identifier))
+        return Open(layer, pathResolverContext, load);
+    return TfNullPtr;
+}
+
+/* static */
+UsdStageRefPtr
+UsdStage::CreateNew(const std::string& identifier,
+                    const SdfLayerHandle& sessionLayer,
+                    const ArResolverContext& pathResolverContext,
+                    InitialLoadSet load)
+{
+    TfAutoMallocTag2 tag("Usd", _StageTag(identifier));
+
+    if (SdfLayerRefPtr layer = _CreateNewLayer(identifier))
+        return Open(layer, sessionLayer, pathResolverContext, load);
+    return TfNullPtr;
+}
+
+/* static */
+UsdStageRefPtr
+UsdStage::CreateInMemory(InitialLoadSet load)
 {
     // Use usda file format if an identifier was not provided.
     //
     // In regards to "tmp.usda" below, SdfLayer::CreateAnonymous always
     // prefixes the identifier with the layer's address in memory, so using the
     // same identifier multiple times still produces unique layers.
-    return CreateInMemory("tmp.usda");
-}
-
-/* static */
-UsdStageRefPtr
-UsdStage::CreateInMemory(const std::string& identifier)
-{
-    return Open(SdfLayer::CreateAnonymous(identifier));
+    return CreateInMemory("tmp.usda", load);
 }
 
 /* static */
 UsdStageRefPtr
 UsdStage::CreateInMemory(const std::string& identifier,
-                         const ArResolverContext& pathResolverContext)
+                         InitialLoadSet load)
 {
-    // CreateAnonymous() will transform 'identifier', so don't bother
-    // using it as a tag
-    TfAutoMallocTag tag("Usd");
-    
-    return Open(SdfLayer::CreateAnonymous(identifier), pathResolverContext);
+    return Open(SdfLayer::CreateAnonymous(identifier), load);
 }
 
 /* static */
 UsdStageRefPtr
 UsdStage::CreateInMemory(const std::string& identifier,
-                         const SdfLayerHandle &sessionLayer)
+                         const ArResolverContext& pathResolverContext,
+                         InitialLoadSet load)
 {
     // CreateAnonymous() will transform 'identifier', so don't bother
     // using it as a tag
     TfAutoMallocTag tag("Usd");
     
-    return Open(SdfLayer::CreateAnonymous(identifier), sessionLayer);
+    return Open(SdfLayer::CreateAnonymous(identifier), 
+                pathResolverContext, load);
 }
 
 /* static */
 UsdStageRefPtr
 UsdStage::CreateInMemory(const std::string& identifier,
                          const SdfLayerHandle &sessionLayer,
-                         const ArResolverContext& pathResolverContext)
+                         InitialLoadSet load)
+{
+    // CreateAnonymous() will transform 'identifier', so don't bother
+    // using it as a tag
+    TfAutoMallocTag tag("Usd");
+    
+    return Open(SdfLayer::CreateAnonymous(identifier), 
+                sessionLayer, load);
+}
+
+/* static */
+UsdStageRefPtr
+UsdStage::CreateInMemory(const std::string& identifier,
+                         const SdfLayerHandle &sessionLayer,
+                         const ArResolverContext& pathResolverContext,
+                         InitialLoadSet load)
 {
     // CreateAnonymous() will transform 'identifier', so don't bother
     // using it as a tag
     TfAutoMallocTag tag("Usd");
     
     return Open(SdfLayer::CreateAnonymous(identifier),
-                sessionLayer, pathResolverContext);
+                sessionLayer, pathResolverContext, load);
 }
 
 static
@@ -1172,7 +1203,7 @@ bool
 UsdStage::_ValidateEditPrimAtPath(const SdfPath &primPath, 
                                   const char* operation) const
 {
-    if (ARCH_UNLIKELY(Usd_InstanceCache::IsPathMasterOrInMaster(primPath))) {
+    if (ARCH_UNLIKELY(Usd_InstanceCache::IsPathInMaster(primPath))) {
         TF_CODING_ERROR("Cannot %s at path <%s>; "
                         "authoring to an instancing master is not allowed.",
                         operation, primPath.GetText());
@@ -1296,7 +1327,7 @@ UsdStage::_CreatePropertySpecForEditing(const UsdProperty &prop)
         for (Usd_Resolver r(&prim.GetPrimIndex()); r.IsValid(); r.NextLayer()) {
             if (SdfPropertySpecHandle propSpec = r.GetLayer()->
                 GetPropertyAtPath(r.GetLocalPath().AppendProperty(propName))) {
-                if (specToCopy = TfDynamic_cast<TypedSpecHandle>(propSpec))
+                if ((specToCopy = TfDynamic_cast<TypedSpecHandle>(propSpec)))
                     break;
                 // Type mismatch.
                 TF_RUNTIME_ERROR("Spec type mismatch.  Failed to create %s for "
@@ -1507,10 +1538,11 @@ UsdStage::_SetValueImpl(
         // across two different reference arcs -- which may have
         // different time offsets.  perhaps we need the map function
         // to track a time offset for each path?
-        const SdfLayerOffset layerOffset = 
-            GetEditTarget().GetMapFunction().GetTimeOffset();
+        const SdfLayerOffset stageToLayerOffset = 
+            UsdPrepLayerOffset(GetEditTarget().GetMapFunction().GetTimeOffset())
+            .GetInverse();
 
-        double localTime = layerOffset.GetInverse() * time.GetValue();
+        double localTime = stageToLayerOffset * time.GetValue();
 
         attrSpec->GetLayer()->SetTimeSample(
             attrSpec->GetPath(),
@@ -1553,11 +1585,13 @@ UsdStage::_ClearValue(UsdTimeCode time, const UsdAttribute &attr)
         return false;
     }
 
-    const SdfLayerOffset layerOffset = 
-        editTarget.GetMapFunction().GetTimeOffset();
+    const SdfLayerOffset stageToLayerOffset = 
+        UsdPrepLayerOffset(editTarget.GetMapFunction().GetTimeOffset())
+        .GetInverse();
 
-    attrSpec->GetLayer()->EraseTimeSample(
-        attrSpec->GetPath(), layerOffset.GetInverse() * time.GetValue());
+    const double layerTime = stageToLayerOffset * time.GetValue();
+
+    attrSpec->GetLayer()->EraseTimeSample(attrSpec->GetPath(), layerTime);
 
     return true;
 }
@@ -1637,8 +1671,10 @@ _IsPrivateFieldKey(const TfToken& fieldKey)
         ignoredKeys.insert(SdfFieldKeys->VariantSelection);
         ignoredKeys.insert(SdfFieldKeys->VariantSetNames);
         // Clip keys.
-        ignoredKeys.insert(UsdTokens->allTokens.begin(),
-                           UsdTokens->allTokens.end());
+        {
+            auto clipFields = UsdGetClipRelatedFields();
+            ignoredKeys.insert(clipFields.begin(), clipFields.end());
+        }
         // Value keys.
         ignoredKeys.insert(SdfFieldKeys->Default);
         ignoredKeys.insert(SdfFieldKeys->TimeSamples);
@@ -1741,7 +1777,7 @@ UsdStage::_GetPrimDataAtPathOrInMaster(const SdfPath &path) const
     // in the master.
     if (!primData) {
         const SdfPath primInMasterPath = 
-            _instanceCache->GetPrimInMasterForPath(path);
+            _instanceCache->GetPathInMasterForInstancePath(path);
         if (!primInMasterPath.IsEmpty()) {
             primData = _GetPrimDataAtPath(primInMasterPath);
         }
@@ -1776,7 +1812,7 @@ UsdStage::_IsValidForLoad(const SdfPath& path) const
         // Lets see if any ancestor exists, if so it's safe to attempt to load.
         SdfPath parentPath = path;
         while (parentPath != SdfPath::AbsoluteRootPath()) {
-            if (curPrim = GetPrimAtPath(parentPath)) {
+            if ((curPrim = GetPrimAtPath(parentPath))) {
                 break;
             }
             parentPath = parentPath.GetParentPath();
@@ -1844,6 +1880,7 @@ UsdStage::_WalkPrimsWithMastersImpl(
 
 void
 UsdStage::_DiscoverPayloads(const SdfPath& rootPath,
+                            UsdLoadPolicy policy,
                             SdfPathSet* primIndexPaths,
                             bool unloadedOnly,
                             SdfPathSet* usdPrimPaths) const
@@ -1851,29 +1888,34 @@ UsdStage::_DiscoverPayloads(const SdfPath& rootPath,
     tbb::concurrent_vector<SdfPath> primIndexPathsVec;
     tbb::concurrent_vector<SdfPath> usdPrimPathsVec;
 
-    _WalkPrimsWithMasters(
-        rootPath,
+    auto addPrimPayload =
         [this, unloadedOnly, primIndexPaths, usdPrimPaths,
          &primIndexPathsVec, &usdPrimPathsVec]
         (UsdPrim const &prim) {
-            // Inactive prims are never included in this query.  Masters are
-            // also never included, since they aren't independently loadable.
-            if (!prim.IsActive() || prim.IsMaster())
-                return;
-            
-            if (prim._GetSourcePrimIndex().HasPayload()) {
-                SdfPath const &payloadIncludePath =
-                    prim._GetSourcePrimIndex().GetPath();
-                if (!unloadedOnly ||
-                    !_cache->IsPayloadIncluded(payloadIncludePath)) {
-                    if (primIndexPaths)
-                        primIndexPathsVec.push_back(payloadIncludePath);
-                    if (usdPrimPaths)
-                        usdPrimPathsVec.push_back(prim.GetPath());
-                }
+        // Inactive prims are never included in this query.  Masters are
+        // also never included, since they aren't independently loadable.
+        if (!prim.IsActive() || prim.IsMaster())
+            return;
+        
+        if (prim._GetSourcePrimIndex().HasPayload()) {
+            SdfPath const &payloadIncludePath =
+                prim._GetSourcePrimIndex().GetPath();
+            if (!unloadedOnly ||
+                !_cache->IsPayloadIncluded(payloadIncludePath)) {
+                if (primIndexPaths)
+                    primIndexPathsVec.push_back(payloadIncludePath);
+                if (usdPrimPaths)
+                    usdPrimPathsVec.push_back(prim.GetPath());
             }
-        });
-
+        }
+    };
+    
+    if (policy == UsdLoadWithDescendants) {
+        _WalkPrimsWithMasters(rootPath, addPrimPayload);
+    } else {
+        addPrimPayload(GetPrimAtPath(rootPath));
+    }
+            
     // Copy stuff out.
     if (primIndexPaths) {
         primIndexPaths->insert(
@@ -1926,14 +1968,14 @@ UsdStage::_DiscoverAncestorPayloads(const SdfPath& rootPath,
 }
 
 UsdPrim
-UsdStage::Load(const SdfPath& path)
+UsdStage::Load(const SdfPath& path, UsdLoadPolicy policy)
 {
     SdfPathSet exclude, include;
     include.insert(path);
 
     // Update the load set; this will trigger recomposition and include any
     // recursive payloads needed.
-    LoadAndUnload(include, exclude);
+    LoadAndUnload(include, exclude, policy);
 
     return GetPrimAtPath(path);
 }
@@ -1951,12 +1993,14 @@ UsdStage::Unload(const SdfPath& path)
 
 void
 UsdStage::LoadAndUnload(const SdfPathSet &loadSet,
-                        const SdfPathSet &unloadSet)
+                        const SdfPathSet &unloadSet,
+                        UsdLoadPolicy policy)
 {
     TfAutoMallocTag2 tag("Usd", _mallocTagID);
 
     SdfPathSet aggregateLoads, aggregateUnloads;
-    _LoadAndUnload(loadSet, unloadSet, &aggregateLoads, &aggregateUnloads);
+    _LoadAndUnload(loadSet, unloadSet,
+                   &aggregateLoads, &aggregateUnloads, policy);
 
     // send notifications when loading or unloading
     if (aggregateLoads.empty() && aggregateUnloads.empty()) {
@@ -1964,21 +2008,28 @@ UsdStage::LoadAndUnload(const SdfPathSet &loadSet,
     }
 
     UsdStageWeakPtr self(this);
-    SdfPathVector pathsToRecomposeVec, otherPaths;
+    SdfPathVector pathsToRecomposeVec;
+
     pathsToRecomposeVec.insert(pathsToRecomposeVec.begin(), 
                                aggregateLoads.begin(), aggregateLoads.end());
     pathsToRecomposeVec.insert(pathsToRecomposeVec.begin(),
                                aggregateUnloads.begin(), aggregateUnloads.end());
     SdfPath::RemoveDescendentPaths(&pathsToRecomposeVec);
-    UsdNotice::ObjectsChanged(self, &pathsToRecomposeVec, &otherPaths)
-               .Send(self);
+
+    UsdNotice::ObjectsChanged::_PathsToChangesMap resyncChanges, infoChanges;
+    for (const SdfPath& p : pathsToRecomposeVec) {
+        resyncChanges[p];
+    }
+
+    UsdNotice::ObjectsChanged(self, &resyncChanges, &infoChanges).Send(self);
 }
 
 void
 UsdStage::_LoadAndUnload(const SdfPathSet &loadSet,
                          const SdfPathSet &unloadSet,
                          SdfPathSet *aggregateLoads,
-                         SdfPathSet *aggregateUnloads)
+                         SdfPathSet *aggregateUnloads,
+                         UsdLoadPolicy policy)
 {
     // Include implicit (recursive or ancestral) related payloads in both sets.
     SdfPathSet finalLoadSet, finalUnloadSet;
@@ -1991,7 +2042,7 @@ UsdStage::_LoadAndUnload(const SdfPathSet &loadSet,
         if (!_IsValidForLoad(path)) {
             continue;
         }
-        _DiscoverPayloads(path, &finalLoadSet, /*unloadedOnly=*/true);
+        _DiscoverPayloads(path, policy, &finalLoadSet, /*unloadedOnly=*/true);
         _DiscoverAncestorPayloads(path, &finalLoadSet, /*unloadedOnly=*/true);
     }
 
@@ -2080,7 +2131,7 @@ UsdStage::_LoadAndUnload(const SdfPathSet &loadSet,
     // resulting from this request, this will trigger recomposition of UsdPrims
     // that potentially didn't change; it seems like we could do better.
     TF_DEBUG(USD_CHANGES).Msg("\nProcessing Load/Unload changes\n");
-    _Recompose(changes, NULL);
+    _Recompose(changes);
 
     // Recurse.
     //
@@ -2093,7 +2144,8 @@ UsdStage::_LoadAndUnload(const SdfPathSet &loadSet,
         aggregateUnloads->insert(finalUnloadSet.begin(), finalUnloadSet.end());
     }
 
-    _LoadAndUnload(loadSet, SdfPathSet(), aggregateLoads, aggregateUnloads);
+    _LoadAndUnload(loadSet, SdfPathSet(),
+                   aggregateLoads, aggregateUnloads, policy);
 }
 
 SdfPathSet
@@ -2134,31 +2186,35 @@ UsdStage::FindLoadable(const SdfPath& rootPath)
     // convert it to the path of the prim in the corresponding master.
     // This ensures _DiscoverPayloads will always return paths to 
     // prims in masters for loadable prims in instances.
-    if (!Usd_InstanceCache::IsPathMasterOrInMaster(path)) {
+    if (!Usd_InstanceCache::IsPathInMaster(path)) {
         const SdfPath pathInMaster = 
-            _instanceCache->GetPrimInMasterForPath(path);
+            _instanceCache->GetPathInMasterForInstancePath(path);
         if (!pathInMaster.IsEmpty()) {
             path = pathInMaster;
         }
     }
 
     SdfPathSet loadable;
-    _DiscoverPayloads(path, NULL, /* unloadedOnly = */ false, &loadable);
+    _DiscoverPayloads(path, UsdLoadWithDescendants, nullptr,
+                      /* unloadedOnly = */ false, &loadable);
     return loadable;
 }
 
 void
 UsdStage::SetPopulationMask(UsdStagePopulationMask const &mask)
 {
-    // For now just set the mask and recompose everything at the Usd level.
+    // For now just set the mask and recompose everything.
     _populationMask = mask;
-    SdfPathSet absRoot = { SdfPath::AbsoluteRootPath() };
-    _Recompose(PcpChanges(), &absRoot);
+
+    PcpChanges changes;
+    changes.DidChangeSignificantly(_cache.get(), SdfPath::AbsoluteRootPath());
+    _Recompose(changes);
 }
 
 void
 UsdStage::ExpandPopulationMask(
-    std::function<bool (UsdRelationship const &)> const &pred)
+    std::function<bool (UsdRelationship const &)> const &relPred,
+    std::function<bool (UsdAttribute const &)> const &attrPred)
 {
     if (GetPopulationMask().IncludesSubtree(SdfPath::AbsoluteRootPath()))
         return;
@@ -2167,21 +2223,31 @@ UsdStage::ExpandPopulationMask(
     // include them in the mask.  If the mask changes, call SetPopulationMask()
     // and redo.  Continue until the mask ceases expansion.  
     while (true) {
-        SdfPathVector tgtPaths =
-            GetPseudoRoot().FindAllRelationshipTargetPaths(pred, false);
+        auto root = GetPseudoRoot();
+        SdfPathVector
+            tgtPaths = root.FindAllRelationshipTargetPaths(relPred, false),
+            connPaths = root.FindAllAttributeConnectionPaths(attrPred, false);
         
         tgtPaths.erase(remove_if(tgtPaths.begin(), tgtPaths.end(),
                                  [this](SdfPath const &path) {
                                      return _populationMask.Includes(path);
                                  }),
                        tgtPaths.end());
+        connPaths.erase(remove_if(connPaths.begin(), connPaths.end(),
+                                 [this](SdfPath const &path) {
+                                     return _populationMask.Includes(path);
+                                 }),
+                       connPaths.end());
         
-        if (tgtPaths.empty())
+        if (tgtPaths.empty() && connPaths.empty())
             break;
 
         auto popMask = GetPopulationMask();
         for (auto const &path: tgtPaths) {
-            popMask.Add(path);
+            popMask.Add(path.GetPrimPath());
+        }
+        for (auto const &path: connPaths) {
+            popMask.Add(path.GetPrimPath());
         }
         SetPopulationMask(popMask);
     }
@@ -2217,8 +2283,8 @@ UsdStage::_GetMasterForInstance(Usd_PrimDataConstPtr prim) const
         return NULL;
     }
 
-    const SdfPath masterPath = 
-        _instanceCache->GetMasterForPrimIndexAtPath(
+    const SdfPath masterPath =
+        _instanceCache->GetMasterForInstanceablePrimIndexPath(
             prim->GetPrimIndex().GetPath());
     return masterPath.IsEmpty() ? NULL : _GetPrimDataAtPath(masterPath);
 }
@@ -2230,7 +2296,7 @@ UsdStage::_IsObjectDescendantOfInstance(const SdfPath& path) const
     // prim index, it would not be computed during composition unless
     // it is also serving as the source prim index for a master prim
     // on this stage.
-    return (_instanceCache->IsPrimInMasterForPrimIndexAtPath(
+    return (_instanceCache->IsPathDescendantToAnInstance(
             path.GetAbsoluteRootOrPrimPath()));
 }
 
@@ -2249,7 +2315,7 @@ UsdStage::_GetPrimPathUsingPrimIndexAtPath(const SdfPath& primIndexPath) const
     } 
     else if (_instanceCache->GetNumMasters() != 0) {
         const vector<SdfPath> mastersUsingPrimIndex = 
-            _instanceCache->GetPrimsInMastersUsingPrimIndexAtPath(
+            _instanceCache->GetPrimsInMastersUsingPrimIndexPath(
                 primIndexPath);
 
         for (const auto& pathInMaster : mastersUsingPrimIndex) {
@@ -2345,7 +2411,7 @@ UsdStage::_ComposeChildren(Usd_PrimDataPtr prim,
         const SdfPath& sourceIndexPath = 
             prim->GetSourcePrimIndex().GetPath();
         const SdfPath masterPath = 
-            _instanceCache->GetMasterUsingPrimIndexAtPath(sourceIndexPath);
+            _instanceCache->GetMasterUsingPrimIndexPath(sourceIndexPath);
 
         if (!masterPath.IsEmpty()) {
             Usd_PrimDataPtr masterPrim = _GetPrimDataAtPath(masterPath);
@@ -2803,7 +2869,7 @@ UsdStage::Reload()
     // reload any layers but only loaded layers that we failed to load
     // previously (because loading a previously unloaded layer doesn't
     // invoke change processing).
-    _Recompose(changes, NULL);
+    _Recompose(changes);
 }
 
 /*static*/
@@ -3213,14 +3279,14 @@ UsdStage::MuteAndUnmuteLayers(const std::vector<std::string> &muteLayers,
         return;
     }
 
-    SdfPathSet paths;
-    _Recompose(changes, &paths);
+    using _PathsToChangesMap = UsdNotice::ObjectsChanged::_PathsToChangesMap;
+    _PathsToChangesMap resyncChanges, infoChanges;
+    _Recompose(changes, &resyncChanges);
 
     UsdStageWeakPtr self(this);
-    const SdfPathVector recomposedPaths(paths.begin(), paths.end());
-    const SdfPathVector otherPaths;
-    UsdNotice::ObjectsChanged(self, &recomposedPaths, &otherPaths)
-               .Send(self);
+
+    UsdNotice::ObjectsChanged(self, &resyncChanges, &infoChanges)
+        .Send(self);
 }
 
 const std::vector<std::string>&
@@ -3250,8 +3316,7 @@ UsdStage::Traverse(const Usd_PrimFlagsPredicate &predicate)
 UsdPrimRange
 UsdStage::TraverseAll()
 {
-    return UsdPrimRange::Stage(UsdStagePtr(this),
-                                  Usd_PrimFlagsPredicate::Tautology());
+    return UsdPrimRange::Stage(UsdStagePtr(this), UsdPrimAllPrimsPredicate);
 }
 
 bool
@@ -3293,11 +3358,48 @@ UsdStage::_RemoveProperty(const SdfPath &path)
     return true;
 }
 
-// Add paths in the given cache that depend on the given path in the given layer
-// to the output.
+template <class... Values>
+static void
+_AddToChangedPaths(SdfPathVector *paths, const SdfPath& p, 
+                   const Values&... data)
+{
+    paths->push_back(p);
+}
+
+template <class ChangedPaths, class... Values>
+static void
+_AddToChangedPaths(ChangedPaths *paths, const SdfPath& p, const Values&... data)
+{
+    (*paths)[p].emplace_back(data...);
+}
+
+static std::string
+_Stringify(const SdfPathVector& paths)
+{
+    return TfStringify(paths);
+}
+
+template <class ChangedPaths>
+static std::string
+_Stringify(const ChangedPaths& paths)
+{
+    return _Stringify(SdfPathVector(
+        make_transform_iterator(paths.begin(), TfGet<0>()),
+        make_transform_iterator(paths.end(), TfGet<0>())));
+}
+
+// Add paths in the given cache that depend on the given path in the given 
+// layer to changedPaths. If ChangedPaths is a map of paths to list of 
+// objects, will construct an object using the given extraData
+// and append to the back of the list for each dependent path. If 
+// ChangedPaths is a vector, each dependent path will be appended to
+// the vector and extraData is ignored.
+template <class ChangedPaths, class... ExtraData>
 static void
 _AddDependentPaths(const SdfLayerHandle &layer, const SdfPath &path,
-                   const PcpCache &cache, SdfPathSet *output)
+                   const PcpCache &cache,
+                   ChangedPaths *changedPaths,
+                   const ExtraData&... extraData)
 {
     // We include virtual dependencies so that we can process
     // changes like adding missing defaultPrim metadata.
@@ -3316,7 +3418,8 @@ _AddDependentPaths(const SdfLayerHandle &layer, const SdfPath &path,
     // because we do not want to include root deps on those sites, just
     // the other kinds of inbound deps.
     if (cache.GetLayerStack()->HasLayer(layer)) {
-        output->insert(path.StripAllVariantSelections());
+        const SdfPath depPath = path.StripAllVariantSelections();
+        _AddToChangedPaths(changedPaths, depPath, extraData...);
     }
 
     for (const PcpDependency& dep:
@@ -3324,14 +3427,78 @@ _AddDependentPaths(const SdfLayerHandle &layer, const SdfPath &path,
                                     /* recurseOnSite */ true,
                                     /* recurseOnIndex */ false,
                                     filterForExistingCachesOnly)) {
-        output->insert(dep.indexPath);
+        _AddToChangedPaths(changedPaths, dep.indexPath, extraData...);
     }
 
     TF_DEBUG(USD_CHANGES).Msg(
         "Adding paths that use <%s> in layer @%s@: %s\n",
         path.GetText(),
         layer->GetIdentifier().c_str(),
-        TfStringify(*output).c_str());
+        _Stringify(*changedPaths).c_str());
+}
+
+// Removes all elements from changedPaths whose paths are prefixed 
+// by other elements.
+template <class ChangedPaths>
+static void
+_RemoveDescendentEntries(ChangedPaths *changedPaths)
+{
+    for (auto it = changedPaths->begin(); it != changedPaths->end(); ) {
+        auto prefixedIt = it;
+        ++prefixedIt;
+
+        auto prefixedEndIt = prefixedIt;
+        for (; prefixedEndIt != changedPaths->end()
+               && prefixedEndIt->first.HasPrefix(it->first); ++prefixedEndIt)
+            { }
+
+        changedPaths->erase(prefixedIt, prefixedEndIt);
+        ++it;
+    }
+}
+
+// Removes all elements from weaker whose paths are prefixed by other
+// elements in stronger. If elements with the same path exist in both
+// weaker and stronger, merges those elements into stronger and removes
+// the element from weaker. Assumes that stronger has no elements
+// whose paths are prefixed by other elements in stronger.
+template <class ChangedPaths>
+static void
+_MergeAndRemoveDescendentEntries(ChangedPaths *stronger, ChangedPaths *weaker)
+{
+    // We may be removing entries from weaker, and depending on the
+    // concrete type of ChangedPaths that may invalidate iterators. So don't
+    // cache the end iterator here.
+    auto weakIt = weaker->begin();
+
+    auto strongIt = stronger->begin();
+    const auto strongEndIt = stronger->end();
+
+    while (strongIt != strongEndIt && weakIt != weaker->end()) {
+        if (weakIt->first < strongIt->first) {
+            // If the current element in weaker is less than the current element
+            // in stronger, it cannot be prefixed, so retain it.
+            ++weakIt;
+        } else if (weakIt->first == strongIt->first) {
+            // If the same path exists in both weaker and stronger, merge the
+            // weaker entry into stronger, then remove it from weaker.
+            strongIt->second.insert(strongIt->second.end(),
+                weakIt->second.begin(), weakIt->second.end());
+            weakIt = weaker->erase(weakIt);
+        } else if (weakIt->first.HasPrefix(strongIt->first)) {
+            // Otherwise if this element in weaker is prefixed by the current
+            // element in stronger, discard it. 
+            //
+            // Note that if stronger was allowed to have elements that were
+            // prefixed by other elements in stronger, this would not be 
+            // correct, since stronger could have an exact match for this
+            // path, which we'd need to merge.
+            weakIt = weaker->erase(weakIt);
+        } else {
+            // Otherwise advance to the next element in stronger.
+            ++strongIt;
+        }
+    }
 }
 
 void
@@ -3364,7 +3531,10 @@ UsdStage::_HandleLayersDidChange(
 
     // Keep track of paths to USD objects that need to be recomposed or
     // have otherwise changed.
-    SdfPathSet pathsToRecompose, otherResyncPaths, otherChangedPaths;
+    using _PathsToChangesMap = UsdNotice::ObjectsChanged::_PathsToChangesMap;
+    _PathsToChangesMap recomposeChanges, otherResyncChanges, otherInfoChanges;
+
+    SdfPathVector changedActivePaths;
 
     // Add dependent paths for any PrimSpecs whose fields have changed that may
     // affect cached prim information.
@@ -3380,6 +3550,11 @@ UsdStage::_HandleLayersDidChange(
             const SdfPath &path = entryList.first;
             const SdfChangeList::Entry &entry = entryList.second;
 
+            // Skip target paths entirely -- we do not create target objects in
+            // USD.
+            if (path.IsTargetPath())
+                continue;
+
             TF_DEBUG(USD_CHANGES).Msg(
                 "<%s> in @%s@ changed.\n",
                 path.GetText(), 
@@ -3389,15 +3564,24 @@ UsdStage::_HandleLayersDidChange(
             if (path == SdfPath::AbsoluteRootPath() ||
                 path.IsPrimOrPrimVariantSelectionPath()) {
 
-                if (entry.flags.didReorderChildren) {
+                bool didChangeActive = false;
+                for (const auto& info : entry.infoChanged) {
+                    if (info.first == SdfFieldKeys->Active) {
+                        TF_DEBUG(USD_CHANGES).Msg(
+                            "Changed field: %s\n", info.first.GetText());
+                        didChangeActive = true;
+                        break;
+                    }
+                }
+
+                if (didChangeActive || entry.flags.didReorderChildren) {
                     willRecompose = true;
                 } else {
                     for (const auto& info : entry.infoChanged) {
-                        const auto infoKey = info.first;
-                        if ((infoKey == SdfFieldKeys->Active)    ||
-                            (infoKey == SdfFieldKeys->Kind)      ||
-                            (infoKey == SdfFieldKeys->TypeName)  ||
-                            (infoKey == SdfFieldKeys->Specifier) ||
+                        const auto& infoKey = info.first;
+                        if (infoKey == SdfFieldKeys->Kind ||
+                            infoKey == SdfFieldKeys->TypeName ||
+                            infoKey == SdfFieldKeys->Specifier ||
                             
                             // XXX: Could be more specific when recomposing due
                             //      to clip changes. E.g., only update the clip
@@ -3405,8 +3589,7 @@ UsdStage::_HandleLayersDidChange(
                             UsdIsClipRelatedField(infoKey)) {
 
                             TF_DEBUG(USD_CHANGES).Msg(
-                                "Changed field: %s\n",
-                                infoKey.GetText());
+                                "Changed field: %s\n", infoKey.GetText());
 
                             willRecompose = true;
                             break;
@@ -3416,31 +3599,23 @@ UsdStage::_HandleLayersDidChange(
 
                 if (willRecompose) {
                     _AddDependentPaths(layerAndChangelist.first, path, 
-                                       *_cache, &pathsToRecompose);
-            }
+                                        *_cache, &recomposeChanges, &entry);
+                }
+                if (didChangeActive) {
+                    _AddDependentPaths(layerAndChangelist.first, path, 
+                                       *_cache, &changedActivePaths);
+                }
             }
             else {
-                if (path.IsPropertyPath()) {
-                    willRecompose = 
-                        entry.flags.didAddPropertyWithOnlyRequiredFields    ||
-                        entry.flags.didAddProperty                          ||
-                        entry.flags.didRemovePropertyWithOnlyRequiredFields ||
-                        entry.flags.didRemoveProperty;
-                }
-                else if (path.IsTargetPath()) {
-                    // XXX: This will cause us to include target paths like
-                    // /Foo.rel[/Bar] in the resynced path list in the
-                    // ObjectsChanged notice we emit. This is a bug; no such
-                    // object exists in the USD scenegraph. Keeping this here
-                    // for now to maintain current behavior.
-                    willRecompose =
-                        entry.flags.didAddTarget ||
-                        entry.flags.didRemoveTarget;
-                }
+                willRecompose = path.IsPropertyPath() &&
+                    (entry.flags.didAddPropertyWithOnlyRequiredFields ||
+                     entry.flags.didAddProperty ||
+                     entry.flags.didRemovePropertyWithOnlyRequiredFields ||
+                     entry.flags.didRemoveProperty);
 
                 if (willRecompose) {
                     _AddDependentPaths(layerAndChangelist.first, path, 
-                                       *_cache, &otherResyncPaths);
+                                       *_cache, &otherResyncChanges, &entry);
                 }
             }
 
@@ -3449,7 +3624,7 @@ UsdStage::_HandleLayersDidChange(
             // changes.
             if (!willRecompose) {
                 _AddDependentPaths(layerAndChangelist.first, path, 
-                                   *_cache, &otherChangedPaths);
+                                  *_cache, &otherInfoChanges, &entry);
             }
         }
     }
@@ -3457,87 +3632,101 @@ UsdStage::_HandleLayersDidChange(
     PcpChanges changes;
     changes.DidChange(std::vector<PcpCache*>(1, _cache.get()),
                       n.GetChangeListMap());
-    _Recompose(changes, &pathsToRecompose);
 
-    // Add in all other paths that are marked as resynced here so
-    // that any descendents of resynced prims are removed below.
-    pathsToRecompose.insert(otherResyncPaths.begin(), otherResyncPaths.end());
+    // Pcp does not consider activation changes to be significant since
+    // it doesn't look at activation during composition. However, UsdStage
+    // needs to do so, since it elides children of deactivated prims.
+    // This ensures that prim indexes for these prims are ejected from
+    // the PcpCache.
+    for (const SdfPath& p : changedActivePaths) {
+        changes.DidChangeSignificantly(_cache.get(), p);
+    }
 
-    // Make a copy of pathsToRecompose, but uniqued with a prefix-check, which
-    // removes all elements that are prefixed by other elements.  Also
-    // remove any paths that are beneath instances, since UsdStage doesn't
-    // expose any objects at these paths.
-    SdfPathVector pathsToRecomposeVec;
-    _CopyAndRemoveDescendentPaths(pathsToRecompose, &pathsToRecomposeVec);
+    _Recompose(changes, &recomposeChanges);
 
-    using std::remove_if;
-    using boost::bind;
+    // Filter out all changes to objects beneath instances and remap
+    // them to the corresponding object in the instance's master. Do this
+    // after _Recompose so that the instancing cache is up-to-date.
+    auto remapChangesToMasters = [this](_PathsToChangesMap* changes) {
+        std::vector<_PathsToChangesMap::value_type> masterChanges;
+        for (auto it = changes->begin(); it != changes->end(); ) {
+            if (_IsObjectDescendantOfInstance(it->first)) {
+                const SdfPath primIndexPath = 
+                    it->first.GetAbsoluteRootOrPrimPath();
+                for (const SdfPath& pathInMaster :
+                     _instanceCache->GetPrimsInMastersUsingPrimIndexPath(
+                         primIndexPath)) {
+                    masterChanges.emplace_back(
+                        it->first.ReplacePrefix(primIndexPath, pathInMaster), 
+                        it->second);
+                }
+                it = changes->erase(it);
+                continue;
+            }
+            ++it;
+        }
 
-    pathsToRecomposeVec.erase(
-        remove_if(pathsToRecomposeVec.begin(), pathsToRecomposeVec.end(),
-                  bind(&UsdStage::_IsObjectDescendantOfInstance, this, _1)),
-        pathsToRecomposeVec.end());
+        for (const auto& entry : masterChanges) {
+            auto& value = (*changes)[entry.first];
+            value.insert(value.end(), entry.second.begin(), entry.second.end());
+        }
+    };
+
+    remapChangesToMasters(&recomposeChanges);
+    remapChangesToMasters(&otherResyncChanges);
+    remapChangesToMasters(&otherInfoChanges);
+
+    // Add in all other paths that are marked as resynced.
+    if (recomposeChanges.empty()) {
+        recomposeChanges.swap(otherResyncChanges);
+    }
+    else {
+        _RemoveDescendentEntries(&recomposeChanges);
+        _MergeAndRemoveDescendentEntries(&recomposeChanges, &otherResyncChanges);
+        for (auto& entry : otherResyncChanges) {
+            recomposeChanges[entry.first] = std::move(entry.second);
+        }
+    }
 
     // Collect the paths in otherChangedPaths that aren't under paths that
     // were recomposed.  If the pseudo-root had been recomposed, we can
     // just clear out otherChangedPaths since everything was recomposed.
-    if (!pathsToRecomposeVec.empty() && 
-        pathsToRecomposeVec.front() == SdfPath::AbsoluteRootPath()) {
+    if (!recomposeChanges.empty() &&
+        recomposeChanges.begin()->first == SdfPath::AbsoluteRootPath()) {
         // If the pseudo-root is present, it should be the only path in the
-        // vector.
-        TF_VERIFY(pathsToRecomposeVec.size() == 1);
-        otherChangedPaths.clear();
+        // changes.
+        TF_VERIFY(recomposeChanges.size() == 1);
+        otherInfoChanges.clear();
     }
 
-    SdfPathVector otherChangedPathsVec;
-    otherChangedPathsVec.reserve(otherChangedPaths.size());
-    remove_copy_if(otherChangedPaths.begin(), otherChangedPaths.end(),
-                   back_inserter(otherChangedPathsVec),
-                   bind(&UsdStage::_IsObjectDescendantOfInstance, this, _1));
-
-    // Now we want to remove all elements of otherChangedPathsVec that are
-    // prefixed by elements in pathsToRecompose.
-    SdfPathVector::iterator
-        other = otherChangedPathsVec.begin(),
-        otherEnd = otherChangedPathsVec.end();
-    SdfPathVector::const_iterator
-        recomp = pathsToRecomposeVec.begin(),
-        recompEnd = pathsToRecomposeVec.end();
-    while (recomp != recompEnd && other != otherEnd) {
-        if (*other < *recomp) {
-            // If the current element in other is less than the current element
-            // in recomp, it cannot be prefixed, so retain it.
-            ++other;
-        } else if (other->HasPrefix(*recomp)) {
-            // Otherwise if this element in other is prefixed by the current
-            // element in pathsToRecompose, shuffle it to the end to discard.
-            if (other+1 != otherEnd)
-                std::rotate(other, other + 1, otherEnd);
-            --otherEnd;
-        } else {
-            // Otherwise advance to the next element in pathsToRecompose.
-            ++recomp;
-        }
-    }
-    // Erase removed elements.
-    otherChangedPathsVec.erase(otherEnd, otherChangedPathsVec.end());
+    // Now we want to remove all elements of otherInfoChanges that are
+    // prefixed by elements in recomposeChanges or beneath instances.
+    _MergeAndRemoveDescendentEntries(&recomposeChanges, &otherInfoChanges);
 
     UsdStageWeakPtr self(this);
 
     // Notify about changed objects.
     UsdNotice::ObjectsChanged(
-        self, &pathsToRecomposeVec, &otherChangedPathsVec).Send(self);
+        self, &recomposeChanges, &otherInfoChanges).Send(self);
 
     // Receivers can now refresh their caches... or just dirty them
     UsdNotice::StageContentsChanged(self).Send(self);
 }
 
 void 
-UsdStage::_Recompose(const PcpChanges &changes,
-                     SdfPathSet *initialPathsToRecompose)
+UsdStage::_Recompose(const PcpChanges &changes)
 {
-    SdfPathSet newPathsToRecompose;
-    SdfPathSet *pathsToRecompose = initialPathsToRecompose ?
+    using _PathsToChangesMap = UsdNotice::ObjectsChanged::_PathsToChangesMap;
+    _Recompose(changes, (_PathsToChangesMap*)nullptr);
+}
+
+template <class T>
+void 
+UsdStage::_Recompose(const PcpChanges &changes,
+                     T *initialPathsToRecompose)
+{
+    T newPathsToRecompose;
+    T *pathsToRecompose = initialPathsToRecompose ?
         initialPathsToRecompose : &newPathsToRecompose;
 
     _RecomposePrims(changes, pathsToRecompose);
@@ -3562,34 +3751,43 @@ UsdStage::_Recompose(const PcpChanges &changes,
     }
 }
 
+template <class T>
 void 
 UsdStage::_RecomposePrims(const PcpChanges &changes,
-                          SdfPathSet *pathsToRecompose)
+                          T *pathsToRecompose)
 {
     changes.Apply();
 
-    const PcpChanges::CacheChanges &cacheChanges = changes.GetCacheChanges();
+    // Process layer stack changes.
+    //
+    // Pcp recomputes layer stacks immediately upon the call to 
+    // PcpChanges::Apply, which causes composition errors that occur
+    // during this process to not be reported in _ComposePrimIndexesInParallel.
+    // Walk through all modified layer stacks and report their errors here.
+    const PcpChanges::LayerStackChanges &layerStackChanges = 
+        changes.GetLayerStackChanges();
 
+    for (const auto& layerStackChange : layerStackChanges) {
+        const PcpLayerStackPtr& layerStack = layerStackChange.first;
+        const PcpErrorVector& errors = layerStack->GetLocalErrors();
+        if (!errors.empty()) {
+            _ReportPcpErrors(errors, "Recomposing stage");
+        }
+    }
+
+    // Process composed prim changes.
+    const PcpChanges::CacheChanges &cacheChanges = changes.GetCacheChanges();
     if (!cacheChanges.empty()) {
         const PcpCacheChanges &ourChanges = cacheChanges.begin()->second;
 
         for (const auto& path : ourChanges.didChangeSignificantly) {
-            // Translate the real path from Pcp into a stage-relative path
-            pathsToRecompose->insert(path);
+            (*pathsToRecompose)[path];
             TF_DEBUG(USD_CHANGES).Msg("Did Change Significantly: %s\n",
                                       path.GetText());
         }
 
-        for (const auto& path : ourChanges.didChangeSpecs) {
-            // Translate the real path from Pcp into a stage-relative path
-            pathsToRecompose->insert(path);
-            TF_DEBUG(USD_CHANGES).Msg("Did Change Spec: %s\n",
-                                      path.GetText());
-        }
-
         for (const auto& path : ourChanges.didChangePrims) {
-            // Translate the real path from Pcp into a stage-relative path
-            pathsToRecompose->insert(path);
+            (*pathsToRecompose)[path];
             TF_DEBUG(USD_CHANGES).Msg("Did Change Prim: %s\n",
                                       path.GetText());
         }
@@ -3603,26 +3801,23 @@ UsdStage::_RecomposePrims(const PcpChanges &changes,
         return;
     }
 
-    // Prune descendant paths into a vector.
-    SdfPathVector pathVecToRecompose;
-    _CopyAndRemoveDescendentPaths(*pathsToRecompose, &pathVecToRecompose);
+    // Prune descendant paths.
+    _RemoveDescendentEntries(pathsToRecompose);
 
     // Invalidate the clip cache, but keep the clips alive for the duration
     // of recomposition in the (likely) case that clip data hasn't changed
     // and the underlying clip layer can be reused.
     Usd_ClipCache::Lifeboat clipLifeboat;
-    for (const auto& path : pathVecToRecompose) {
-        _clipCache->InvalidateClipsForPrim(path, &clipLifeboat);
+    for (const auto& entry : *pathsToRecompose) {
+        _clipCache->InvalidateClipsForPrim(entry.first, &clipLifeboat);
     }
-
-    typedef TfHashMap<SdfPath, SdfPath, SdfPath::Hash> _MasterToPrimIndexMap;
-    _MasterToPrimIndexMap masterToPrimIndexMap;
 
     // Ask Pcp to compute all the prim indexes in parallel, stopping at
     // stuff that's not active.
     SdfPathVector primPathsToRecompose;
-    primPathsToRecompose.reserve(pathVecToRecompose.size());
-    for (const SdfPath& path : pathVecToRecompose) {
+    primPathsToRecompose.reserve(pathsToRecompose->size());
+    for (const auto& entry : *pathsToRecompose) {
+        const SdfPath& path = entry.first;
         if (!path.IsAbsoluteRootOrPrimPath() ||
             path.ContainsPrimVariantSelection()) {
             continue;
@@ -3632,9 +3827,9 @@ UsdStage::_RecomposePrims(const PcpChanges &changes,
         // need to recompose any prim index beneath instance prim 
         // indexes *unless* they are being used as the source index
         // for a master.
-        if (_instanceCache->IsPrimInMasterForPrimIndexAtPath(path)) {
+        if (_instanceCache->IsPathDescendantToAnInstance(path)) {
             const bool primIndexUsedByMaster = 
-                _instanceCache->IsPrimInMasterUsingPrimIndexAtPath(path);
+                _instanceCache->MasterUsesPrimIndexPath(path);
             if (!primIndexUsedByMaster) {
                 TF_DEBUG(USD_CHANGES).Msg(
                     "Ignoring elided prim <%s>\n", path.GetText());
@@ -3656,51 +3851,43 @@ UsdStage::_RecomposePrims(const PcpChanges &changes,
     _ComposePrimIndexesInParallel(
         primPathsToRecompose, _IncludeNewPayloadsIfAncestorWasIncluded,
         "Recomposing stage", &instanceChanges);
-
+    
     // Determine what instance master prims on this stage need to
     // be recomposed due to instance prim index changes.
-    SdfPathVector masterPrimsToRecompose;
-    for (const SdfPath& path : primPathsToRecompose) {
+    typedef TfHashMap<SdfPath, SdfPath, SdfPath::Hash> _MasterToPrimIndexMap;
+    _MasterToPrimIndexMap masterToPrimIndexMap;
+
+    const size_t origNumPathsToRecompose = pathsToRecompose->size();
+    for (const auto& entry : *pathsToRecompose) {
+        const SdfPath& path = entry.first;
         for (const SdfPath& masterPath :
-                 _instanceCache->GetPrimsInMastersUsingPrimIndexAtPath(path)) {
-            masterPrimsToRecompose.push_back(masterPath);
+                 _instanceCache->GetPrimsInMastersUsingPrimIndexPath(path)) {
             masterToPrimIndexMap[masterPath] = path;
+            (*pathsToRecompose)[masterPath];
         }
     }
 
     for (size_t i = 0; i != instanceChanges.newMasterPrims.size(); ++i) {
-        masterPrimsToRecompose.push_back(instanceChanges.newMasterPrims[i]);
         masterToPrimIndexMap[instanceChanges.newMasterPrims[i]] =
             instanceChanges.newMasterPrimIndexes[i];
+        (*pathsToRecompose)[instanceChanges.newMasterPrims[i]];
     }
 
     for (size_t i = 0; i != instanceChanges.changedMasterPrims.size(); ++i) {
-        masterPrimsToRecompose.push_back(instanceChanges.changedMasterPrims[i]);
         masterToPrimIndexMap[instanceChanges.changedMasterPrims[i]] =
             instanceChanges.changedMasterPrimIndexes[i];
+        (*pathsToRecompose)[instanceChanges.changedMasterPrims[i]];
     }
 
-    if (!masterPrimsToRecompose.empty()) {
-        // Insert these master prims into the pathsToRecompose set to
-        // ensure we send the appropriate notices.
-        pathsToRecompose->insert(
-            masterPrimsToRecompose.begin(), masterPrimsToRecompose.end());
-
-        pathVecToRecompose.insert(
-            pathVecToRecompose.end(), 
-            masterPrimsToRecompose.begin(), masterPrimsToRecompose.end());
-        SdfPath::RemoveDescendentPaths(&pathVecToRecompose);
+    if (pathsToRecompose->size() != origNumPathsToRecompose) {
+        _RemoveDescendentEntries(pathsToRecompose);
     }
 
-    pathsToRecompose->insert(
-        instanceChanges.deadMasterPrims.begin(), 
-        instanceChanges.deadMasterPrims.end());
-    _DestroyPrimsInParallel(instanceChanges.deadMasterPrims);
-
-    SdfPathVector::const_iterator
-        i = pathVecToRecompose.begin(), end = pathVecToRecompose.end();
     std::vector<Usd_PrimDataPtr> subtreesToRecompose;
-    _ComputeSubtreesToRecompose(i, end, &subtreesToRecompose);
+    _ComputeSubtreesToRecompose(
+        make_transform_iterator(pathsToRecompose->begin(), TfGet<0>()),
+        make_transform_iterator(pathsToRecompose->end(), TfGet<0>()),
+        &subtreesToRecompose);
 
     // Recompose subtrees.
     if (masterToPrimIndexMap.empty()) {
@@ -3722,6 +3909,49 @@ UsdStage::_RecomposePrims(const PcpChanges &changes,
         }
         _ComposeSubtreesInParallel(
             subtreesToRecompose, &primIndexPathsForSubtrees);
+    }
+
+    // Destroy dead master subtrees, making sure to record them in
+    // paths to recompose for notifications.
+    for (const SdfPath& p : instanceChanges.deadMasterPrims) {
+        (*pathsToRecompose)[p];
+    }
+    _DestroyPrimsInParallel(instanceChanges.deadMasterPrims);
+
+    // If the instancing changes produced old/new associated indexes, we need to
+    // square up payload inclusion, and recurse.
+    if (!instanceChanges.associatedIndexOld.empty()) {
+
+        // Walk the old and new, and if the old has payloads included strictly
+        // descendent to the old path, find the equivalent relative path on the
+        // new and include that payload.
+        SdfPathSet curLoadSet = _cache->GetIncludedPayloads();
+        SdfPathSet newPayloads;
+
+        for (size_t i = 0;
+             i != instanceChanges.associatedIndexOld.size(); ++i) {
+            SdfPath const &oldPath = instanceChanges.associatedIndexOld[i];
+            SdfPath const &newPath = instanceChanges.associatedIndexNew[i];
+            for (auto iter = curLoadSet.lower_bound(oldPath);
+                 iter != curLoadSet.end() && iter->HasPrefix(oldPath); ++iter) {
+                if (*iter == oldPath)
+                    continue;
+                SdfPath payloadPath = iter->ReplacePrefix(oldPath, newPath);
+                newPayloads.insert(payloadPath);
+                TF_DEBUG(USD_INSTANCING).Msg(
+                    "Including equivalent payload <%s> -> <%s> for instancing "
+                    "changes.\n",
+                    iter->GetText(), payloadPath.GetText());
+            }
+        }
+        if (!newPayloads.empty()) {
+            // Request payloads and recurse.
+            PcpChanges pcpChanges;
+            _cache->RequestPayloads(newPayloads, SdfPathSet(), &pcpChanges);
+            T toRecompose;
+            _RecomposePrims(pcpChanges, &toRecompose);
+            pathsToRecompose->insert(toRecompose.begin(), toRecompose.end());
+        }
     }
 }
 
@@ -3754,7 +3984,7 @@ UsdStage::_RemoveMasterSubtreesSubsumedByInstances(
         const SdfPath* sourceIndexPath = 
             TfMapLookupPtr(primPathToSourceIndexPathMap, p->GetPath());
         const SdfPath& masterPath = 
-            _instanceCache->GetMasterUsingPrimIndexAtPath(
+            _instanceCache->GetMasterUsingPrimIndexPath(
                 sourceIndexPath ? *sourceIndexPath : p->GetPath());
         if (!masterPath.IsEmpty()) {
             if (!mastersForSubtrees) {
@@ -3919,17 +4149,12 @@ UsdStage::_ComposePrimIndexesInParallel(
         TF_DEBUG(USD_COMPOSITION).Msg("%s", msg.c_str());
     }
 
-    std::vector<SdfPath> const *pathsToCompose = &primIndexPaths;
-
-    // If we have a population mask, take the intersection of the requested
-    // paths with the stage's population mask, and only compute those.
+    // We only want to compute prim indexes included by the stage's 
+    // population mask. As an optimization, if all prims are included the 
+    // name children predicate doesn't need to consider the mask at all.
     static auto allMask = UsdStagePopulationMask::All();
-    vector<SdfPath> maskedPaths;
-    if (GetPopulationMask() != allMask) {
-        maskedPaths = UsdStagePopulationMask(primIndexPaths).
-            GetIntersection(GetPopulationMask()).GetPaths();
-        pathsToCompose = &maskedPaths;
-    }
+    const UsdStagePopulationMask* mask = 
+        _populationMask == allMask ? nullptr : &_populationMask;
 
     // Ask Pcp to compute all the prim indexes in parallel, stopping at
     // prim indexes that won't be used by the stage.
@@ -3937,19 +4162,22 @@ UsdStage::_ComposePrimIndexesInParallel(
 
     if (includeRule == _IncludeAllDiscoveredPayloads) {
         _cache->ComputePrimIndexesInParallel(
-            *pathsToCompose, &errs, _NameChildrenPred(_instanceCache.get()),
+            primIndexPaths, &errs, 
+            _NameChildrenPred(mask, _instanceCache.get()),
             [](const SdfPath &) { return true; },
             "Usd", _mallocTagID);
     }
     else if (includeRule == _IncludeNoDiscoveredPayloads) {
         _cache->ComputePrimIndexesInParallel(
-            *pathsToCompose, &errs, _NameChildrenPred(_instanceCache.get()),
+            primIndexPaths, &errs, 
+            _NameChildrenPred(mask, _instanceCache.get()),
             [](const SdfPath &) { return false; },
             "Usd", _mallocTagID);
     }
     else if (includeRule == _IncludeNewPayloadsIfAncestorWasIncluded) {
         _cache->ComputePrimIndexesInParallel(
-            *pathsToCompose, &errs, _NameChildrenPred(_instanceCache.get()),
+            primIndexPaths, &errs, 
+            _NameChildrenPred(mask, _instanceCache.get()),
             _IncludeNewlyDiscoveredPayloadsPredicate(this),
             "Usd", _mallocTagID);
     }
@@ -4091,16 +4319,110 @@ UsdStage::_GetDefiningSpecType(const UsdPrim& prim,
 // Flatten & Export Utilities
 // ------------------------------------------------------------------------- //
 
+class Usd_FlattenAccess
+{
+public:
+    static void GetAllMetadata(
+        const UsdObject &obj, bool useFallbacks,
+        UsdMetadataValueMap* resultMap, bool anchorAssetPathsOnly)
+    {
+        obj.GetStage()->_GetAllMetadata(
+            obj, useFallbacks, resultMap, anchorAssetPathsOnly);
+    }
+
+    static void MakeResolvedAssetPaths(
+        UsdTimeCode time, const UsdAttribute& attr,
+        VtValue* value, bool anchorAssetPathsOnly)
+    {
+        attr.GetStage()->_MakeResolvedAssetPaths(
+            time, attr, value, anchorAssetPathsOnly);
+    }
+};
+
 namespace {
-using _MasterToFlattenedPathMap 
-    = std::unordered_map<SdfPath, SdfPath, SdfPath::Hash>;
+
+// Populates the time sample map with the resolved values for the given 
+// attribute and returns true if time samples exist, false otherwise.
+bool 
+_GetTimeSampleMap(const UsdAttribute &attr, SdfTimeSampleMap *out,
+                  const SdfLayerOffset& offset = SdfLayerOffset(),
+                  bool anchorAssetPathsOnly = false)
+{
+    UsdAttributeQuery attrQuery(attr);
+
+    std::vector<double> timeSamples;
+    if (attrQuery.GetTimeSamples(&timeSamples)) {
+        for (const auto& timeSample : timeSamples) {
+            VtValue value;
+            if (attrQuery.Get(&value, timeSample)) {
+                Usd_FlattenAccess::MakeResolvedAssetPaths(
+                    timeSample, attr, &value, anchorAssetPathsOnly);
+                (*out)[offset * timeSample].Swap(value);
+            }
+            else {
+                (*out)[offset * timeSample] = VtValue(SdfValueBlock());
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+// Map from path to replacement for remapping target paths during flattening.
+using _PathRemapping = std::map<SdfPath, SdfPath>;
+
+// Apply path remappings to a list of target paths.
+void
+_RemapTargetPaths(SdfPathVector* targetPaths, 
+                  const _PathRemapping& pathRemapping)
+{
+    if (pathRemapping.empty()) {
+        return;
+    }
+
+    for (SdfPath& p : *targetPaths) {
+        // XXX: This is not optimal; SdfPathFindLongestPrefix uses
+        // std::lower_bound, which is linear instead of std::map::lower_bound,
+        // which is logarithmic.
+        auto it = SdfPathFindLongestPrefix(
+            make_transform_iterator(pathRemapping.begin(), TfGet<0>()),
+            make_transform_iterator(pathRemapping.end(), TfGet<0>()),
+            p);
+        if (it.base() != pathRemapping.end()) {
+            p = p.ReplacePrefix(it.base()->first, it.base()->second);
+        }
+    }
+}
+
+// Remove any paths to master prims or descendants from given target paths
+// for srcProp. Issues a warning if any paths were removed.
+void
+_RemoveMasterTargetPaths(const UsdProperty& srcProp, 
+                         SdfPathVector* targetPaths)
+{
+    auto removeIt = std::remove_if(
+        targetPaths->begin(), targetPaths->end(),
+        Usd_InstanceCache::IsPathInMaster);
+    if (removeIt == targetPaths->end()) {
+        return;
+    }
+
+    TF_WARN(
+        "Some %s paths from <%s> could not be flattened because "
+        "they targeted objects within an instancing master.",
+        srcProp.Is<UsdAttribute>() ? 
+            "attribute connection" : "relationship target",
+        srcProp.GetPath().GetText());
+
+    targetPaths->erase(removeIt, targetPaths->end());
+}
 
 // We want to give generated masters in the flattened stage
 // reserved(using '__' as a prefix), unclashing paths, however,
 // we don't want to use the '__Master' paths which have special
 // meaning to UsdStage. So we create a mapping between our generated
 // 'Flattened_Master'-style paths and the '__Master' paths.
-_MasterToFlattenedPathMap
+_PathRemapping
 _GenerateFlattenedMasterPath(const std::vector<UsdPrim>& masters)
 {
     size_t primMasterId = 1;
@@ -4110,7 +4432,7 @@ _GenerateFlattenedMasterPath(const std::vector<UsdPrim>& masters)
                                       primMasterId++));
     };
 
-    _MasterToFlattenedPathMap masterToFlattened;
+    _PathRemapping masterToFlattened;
 
     for (auto const& masterPrim : masters) {
         SdfPath flattenedMasterPath;
@@ -4133,6 +4455,258 @@ _GenerateFlattenedMasterPath(const std::vector<UsdPrim>& masters)
 
     return masterToFlattened;
 }
+
+void
+_CopyMetadata(const SdfSpecHandle& dest, const UsdMetadataValueMap& metadata)
+{
+    // Copy each key/value into the Sdf spec.
+    TfErrorMark m;
+    vector<string> msgs;
+    for (auto const& tokVal : metadata) {
+        dest->SetInfo(tokVal.first, tokVal.second);
+        if (!m.IsClean()) {
+            msgs.clear();
+            for (auto i = m.GetBegin(); i != m.GetEnd(); ++i) {
+                msgs.push_back(i->GetCommentary());
+            }
+            m.Clear();
+            TF_WARN("Failed copying metadata: %s", TfStringJoin(msgs).c_str());
+        }
+    }
+}
+
+void
+_CopyAuthoredMetadata(const UsdObject &source, const SdfSpecHandle& dest)
+{
+    // GetAllMetadata returns all non-private metadata fields (it excludes
+    // composition arcs and values), which is exactly what we want here.
+    UsdMetadataValueMap metadata;
+    Usd_FlattenAccess::GetAllMetadata(
+        source, /* useFallbacks = */ false, &metadata,
+        /* anchorAssetPathsOnly = */ true);
+
+    _CopyMetadata(dest, metadata);
+}
+
+void
+_CopyProperty(const UsdProperty &prop,
+              const SdfPrimSpecHandle &dest, const TfToken &destName,
+              const _PathRemapping &pathRemapping,
+              const SdfLayerOffset &timeOffset)
+{
+    if (prop.Is<UsdAttribute>()) {
+        UsdAttribute attr = prop.As<UsdAttribute>();
+        
+        if (!attr.GetTypeName()){
+            TF_WARN("Attribute <%s> has unknown value type. " 
+                    "It will be omitted from the flattened result.", 
+                    attr.GetPath().GetText());
+            return;
+        }
+
+        SdfAttributeSpecHandle sdfAttr = dest->GetAttributes()[destName];
+        if (!sdfAttr) {
+            sdfAttr = SdfAttributeSpec::New(dest, destName, attr.GetTypeName());
+        }
+
+        _CopyAuthoredMetadata(attr, sdfAttr);
+
+        // Copy the default & time samples, if present. We get the
+        // correct timeSamples/default value resolution here because
+        // GetBracketingTimeSamples sets hasSamples=false when the
+        // default value is stronger.
+
+        double lower = 0.0, upper = 0.0;
+        bool hasSamples = false;
+        if (attr.GetBracketingTimeSamples(
+            0.0, &lower, &upper, &hasSamples) && hasSamples) {
+            SdfTimeSampleMap ts;
+            if (_GetTimeSampleMap(attr, &ts, timeOffset, 
+                                  /* anchorAssetPathsOnly = */ true)) {
+                sdfAttr->SetInfo(SdfFieldKeys->TimeSamples, VtValue::Take(ts));
+            }
+        }
+        if (attr.HasAuthoredMetadata(SdfFieldKeys->Default)) {
+            VtValue defaultValue;
+            if (attr.Get(&defaultValue)) {
+                Usd_FlattenAccess::MakeResolvedAssetPaths(
+                    UsdTimeCode::Default(), attr, &defaultValue, 
+                    /* anchorAssetPathsOnly = */ true);
+            }
+            else {
+                defaultValue = SdfValueBlock();
+            }
+            sdfAttr->SetInfo(SdfFieldKeys->Default, defaultValue);
+        }
+        SdfPathVector sources;
+        attr.GetConnections(&sources);
+        if (!sources.empty()) {
+            _RemapTargetPaths(&sources, pathRemapping);
+            _RemoveMasterTargetPaths(prop, &sources);
+            sdfAttr->GetConnectionPathList().GetExplicitItems() = sources;
+        }
+     }
+     else if (prop.Is<UsdRelationship>()) {
+         UsdRelationship rel = prop.As<UsdRelationship>();
+         // NOTE: custom = true by default for relationship, but the
+         // SdfSchema fallback is false, so we must set it explicitly
+         // here. The situation is similar for variability.
+         SdfRelationshipSpecHandle sdfRel = dest->GetRelationships()[destName];
+         if (!sdfRel){
+             sdfRel = SdfRelationshipSpec::New(
+                 dest, destName, /*custom*/ false, SdfVariabilityVarying);
+         }
+
+         _CopyAuthoredMetadata(rel, sdfRel);
+
+         SdfPathVector targets;
+         rel.GetTargets(&targets);
+         if (!targets.empty()) {
+             _RemapTargetPaths(&targets, pathRemapping);
+             _RemoveMasterTargetPaths(prop, &targets);
+             sdfRel->GetTargetPathList().GetExplicitItems() = targets;
+         }
+     }
+}
+
+void
+_CopyPrim(const UsdPrim &usdPrim, 
+          const SdfLayerHandle &layer, const SdfPath &path,
+          const _PathRemapping &masterToFlattened)
+{
+    SdfPrimSpecHandle newPrim;
+    
+    if (!usdPrim.IsActive()) {
+        return;
+    }
+    
+    if (usdPrim.GetPath() == SdfPath::AbsoluteRootPath()) {
+        newPrim = layer->GetPseudoRoot();
+    } else {
+        // Note that the true value for spec will be populated in _CopyMetadata
+        newPrim = SdfPrimSpec::New(layer->GetPrimAtPath(path.GetParentPath()), 
+                                   path.GetName(), SdfSpecifierOver, 
+                                   usdPrim.GetTypeName());
+    }
+
+    if (usdPrim.IsInstance()) {
+        const auto flattenedMasterPath = 
+            masterToFlattened.at(usdPrim.GetMaster().GetPath());
+
+        // Author an internal reference to our flattened master prim
+        newPrim->GetReferenceList().Add(SdfReference(std::string(),
+                                        flattenedMasterPath));
+    }
+    
+    _CopyAuthoredMetadata(usdPrim, newPrim);
+
+    // In the case of flattening clips, we may have builtin attributes which 
+    // aren't declared in the static scene topology, but may have a value 
+    // in some clips that we want to relay into the flattened result.
+    // XXX: This should be removed if we fix GetProperties()
+    // and GetAuthoredProperties to consider clips.
+    auto hasValue = [](const UsdProperty& prop){
+        return prop.Is<UsdAttribute>()
+               && prop.As<UsdAttribute>().HasAuthoredValueOpinion();
+    };
+    
+    for (auto const &prop : usdPrim.GetProperties()) {
+        if (prop.IsAuthored() || hasValue(prop)) {
+            _CopyProperty(prop, newPrim, prop.GetName(), masterToFlattened,
+                          SdfLayerOffset());
+        }
+    }
+}
+
+void
+_CopyMasterPrim(const UsdPrim &masterPrim,
+                const SdfLayerHandle &destinationLayer,
+                const _PathRemapping &masterToFlattened)
+{
+    const auto& flattenedMasterPath 
+        = masterToFlattened.at(masterPrim.GetPath());
+
+    for (UsdPrim child: UsdPrimRange::AllPrims(masterPrim)) {
+        // We need to update the child path to use the Flatten name.
+        const auto flattenedChildPath = child.GetPath().ReplacePrefix(
+            masterPrim.GetPath(), flattenedMasterPath);
+
+        _CopyPrim(child, destinationLayer, flattenedChildPath, 
+                  masterToFlattened);
+    }
+}
+
+bool
+_IsPrivateFallbackFieldKey(const TfToken& fieldKey)
+{
+    // Consider documentation and comment fallbacks as private; these are
+    // primarily for schema authors and are not expected to be authored 
+    // in flattened results.
+    if (fieldKey == SdfFieldKeys->Documentation ||
+        fieldKey == SdfFieldKeys->Comment) {
+        return true;
+    }
+
+    // Consider default value fallback as non-private, since we do write out
+    // default values during flattening.
+    if (fieldKey == SdfFieldKeys->Default) {
+        return false;
+    }
+
+    return _IsPrivateFieldKey(fieldKey);
+}
+
+bool
+_HasAuthoredValue(const TfToken& fieldKey, 
+                  const SdfPropertySpecHandleVector& propStack)
+{
+    return std::any_of(
+        propStack.begin(), propStack.end(),
+        [&fieldKey](const SdfPropertySpecHandle& spec) {
+            return spec->HasInfo(fieldKey);
+        });
+}
+
+void
+_CopyFallbacks(const SdfPropertySpecHandle &srcPropDef,
+               const SdfPropertySpecHandle &dstPropDef,
+               const SdfPropertySpecHandle &dstPropSpec,
+               const SdfPropertySpecHandleVector &dstPropStack)
+{
+    if (!srcPropDef) {
+        return;
+    }
+
+    std::vector<TfToken> fallbackFields = srcPropDef->ListFields();
+    fallbackFields.erase(
+        std::remove_if(fallbackFields.begin(), fallbackFields.end(),
+                       _IsPrivateFallbackFieldKey),
+        fallbackFields.end());
+
+    UsdMetadataValueMap fallbacks;
+    for (const auto& fieldName : fallbackFields) {
+        // If the property spec already has a value for this field,
+        // don't overwrite it with the fallback.
+        if (dstPropSpec->HasField(fieldName)) {
+            continue;
+        }
+
+        // If we're flattening over a builtin property and the
+        // fallback for that property matches the source fallback
+        // and there isn't an authored value that's overriding that
+        // fallback, we don't need to write the fallback.
+        VtValue fallbackVal = srcPropDef->GetField(fieldName);
+        if (dstPropDef && dstPropDef->GetField(fieldName) == fallbackVal &&
+            !_HasAuthoredValue(fieldName, dstPropStack)) {
+                continue;
+        }
+
+        fallbacks[fieldName].Swap(fallbackVal);
+    }
+
+    _CopyMetadata(dstPropSpec, fallbacks);
+}
+
 } // end anonymous namespace
 
 bool
@@ -4177,7 +4751,7 @@ UsdStage::Flatten(bool addSourceFileComment) const
     }
 
     for (UsdPrim prim: UsdPrimRange::AllPrims(GetPseudoRoot())) {
-        _FlattenPrim(prim, flatLayer, prim.GetPath(), masterToFlattened);
+        _CopyPrim(prim, flatLayer, prim.GetPath(), masterToFlattened);
     }
 
     if (addSourceFileComment) {
@@ -4197,198 +4771,103 @@ UsdStage::Flatten(bool addSourceFileComment) const
     return flatLayer;
 }
 
-
-void
-UsdStage::_FlattenPrim(const UsdPrim &usdPrim,
-                       const SdfLayerHandle &layer,
-                       const SdfPath &path,
-                       const _MasterToFlattenedPathMap &masterToFlattened) const
+UsdProperty 
+UsdStage::_FlattenProperty(const UsdProperty &srcProp,
+                           const UsdPrim &dstParent, const TfToken &dstName)
 {
-    SdfPrimSpecHandle newPrim;
-    
-    if (!usdPrim.IsActive()) {
-        return;
-    }
-    
-    if (usdPrim.GetPath() == SdfPath::AbsoluteRootPath()) {
-        newPrim = layer->GetPseudoRoot();
-    } else {
-        // Note that the true value for spec will be populated in _CopyMetadata
-        newPrim = SdfPrimSpec::New(layer->GetPrimAtPath(path.GetParentPath()), 
-                                   path.GetName(), SdfSpecifierOver, 
-                                   usdPrim.GetTypeName());
+    if (!srcProp) {
+        TF_CODING_ERROR("Cannot flatten invalid property <%s>", 
+                        UsdDescribe(srcProp).c_str());
+        return UsdProperty();
     }
 
-    if (usdPrim.IsInstance()) {
-        const auto flattenedMasterPath = 
-            masterToFlattened.at(usdPrim.GetMaster().GetPath());
-
-        // Author an internal reference to our flattened master prim
-        newPrim->GetReferenceList().Add(SdfReference(std::string(),
-                                        flattenedMasterPath));
-    }
-    
-    _CopyMetadata(usdPrim, newPrim);
-
-    // In the case of flattening clips, we may have builtin attributes which aren't
-    // declared in the static scene topology, but may have a value in some
-    // clips that we want to relay into the flattened result.
-    // XXX: This should be removed if we fix GetProperties()
-    // and GetAuthoredProperties to consider clips.
-    auto hasValue = [](const UsdProperty& prop){
-        return prop.Is<UsdAttribute>()
-               && prop.As<UsdAttribute>().HasAuthoredValueOpinion();
-    };
-    
-    for (auto const &prop : usdPrim.GetProperties()) {
-        if (prop.IsAuthored() || hasValue(prop)) {
-            _CopyProperty(prop, newPrim, masterToFlattened);
-        }
-    }
-}
-
-void
-UsdStage::_CopyMasterPrim(const UsdPrim &masterPrim,
-                          const SdfLayerHandle &destinationLayer,
-                          const _MasterToFlattenedPathMap 
-                            &masterToFlattened) const
-{
-    const auto& flattenedMasterPath 
-        = masterToFlattened.at(masterPrim.GetPath());
-
-    for (UsdPrim child: UsdPrimRange::AllPrims(masterPrim)) {
-        // We need to update the child path to use the Flatten name.
-        const auto flattenedChildPath = child.GetPath().ReplacePrefix(
-            masterPrim.GetPath(), flattenedMasterPath);
-
-        _FlattenPrim(child, destinationLayer, flattenedChildPath,
-                     masterToFlattened);
-    }
-}
-
-static 
-void 
-_TranslatePathsToFlattenedMaster(
-    const UsdProperty &prop,
-    SdfPathVector *paths, 
-    const _MasterToFlattenedPathMap &masterToFlattened)
-{
-    if (!prop.GetPrim().IsInMaster()) {
-        return;
+    if (!dstParent) {
+        TF_CODING_ERROR("Cannot flatten property <%s> to invalid %s",
+                        UsdDescribe(srcProp).c_str(),
+                        UsdDescribe(dstParent).c_str());
+        return UsdProperty();
     }
 
-    UsdPrim master = prop.GetPrim();
-    while (!master.IsMaster()) {
-        master = master.GetParent();
-    }
-
-    const SdfPath* flattenedMasterPath = 
-        TfMapLookupPtr(masterToFlattened, master.GetPath());
-    if (TF_VERIFY(flattenedMasterPath)) {
-        for (auto& path : *paths) {
-            path = path.ReplacePrefix(
-                master.GetPath(), *flattenedMasterPath);
-        }
-    }
-}
-
-void 
-UsdStage::_CopyProperty(const UsdProperty &prop,
-                        const SdfPrimSpecHandle &dest,
-                        const _MasterToFlattenedPathMap
-                            &masterToFlattened) const
-{
-    if (prop.Is<UsdAttribute>()) {
-        UsdAttribute attr = prop.As<UsdAttribute>();
-        
-        if (!attr.GetTypeName()){
-            TF_WARN("Attribute <%s> has unknown value type. " 
-                    "It will be omitted from the flattened result.", 
-                    attr.GetPath().GetText());
-            return;
+    // Keep track of the pre-existing property stack for the destination
+    // property if any -- we use this later to determine if we need to
+    // stamp out the fallback values from the source property.
+    SdfPropertySpecHandleVector dstPropStack;
+    if (UsdProperty dstProp = dstParent.GetProperty(dstName)) {
+        if ((srcProp.Is<UsdAttribute>() && !dstProp.Is<UsdAttribute>()) ||
+            (srcProp.Is<UsdRelationship>() && !dstProp.Is<UsdRelationship>())) {
+            TF_CODING_ERROR("Cannot flatten %s to %s because they are "
+                            "different property types", 
+                            UsdDescribe(srcProp).c_str(), 
+                            UsdDescribe(dstProp).c_str());
+            return UsdProperty();
         }
 
-        SdfAttributeSpecHandle sdfAttr =
-            SdfAttributeSpec::New(
-                dest, attr.GetName(), attr.GetTypeName());
-        _CopyMetadata(attr, sdfAttr);
+        dstPropStack = dstProp.GetPropertyStack();
+    }
 
-        // Copy the default & time samples, if present. We get the
-        // correct timeSamples/default value resolution here because
-        // GetBracketingTimeSamples sets hasSamples=false when the
-        // default value is stronger.
+    {
+        SdfChangeBlock block;
 
-        double lower = 0.0, upper = 0.0;
-        bool hasSamples = false;
-        VtValue defaultValue;
-        if (attr.GetBracketingTimeSamples(
-            0.0, &lower, &upper, &hasSamples) && hasSamples) {
-            sdfAttr->SetInfo(SdfFieldKeys->TimeSamples,
-                             VtValue(_GetTimeSampleMap(attr)));
+        SdfPrimSpecHandle primSpec = _CreatePrimSpecForEditing(dstParent);
+        if (!primSpec) {
+            // _CreatePrimSpecForEditing will have already issued any
+            // coding errors, so just bail out.
+            return UsdProperty();
         }
-        if (attr.HasAuthoredMetadata(SdfFieldKeys->Default)) {
-            if (!attr.Get(&defaultValue)) {
-                sdfAttr->SetInfo(SdfFieldKeys->Default, 
-                                 VtValue(SdfValueBlock())); 
-            } else {
-                sdfAttr->SetInfo(SdfFieldKeys->Default, defaultValue);
+
+        if (SdfPropertySpecHandle dstPropSpec = 
+                primSpec->GetProperties()[dstName]) {
+            // Ignore the pre-existing property spec when determining
+            // whether to stamp out fallback values.
+            dstPropStack.erase(
+                std::remove(dstPropStack.begin(), dstPropStack.end(), 
+                            dstPropSpec), 
+                dstPropStack.end());
+
+            // Clear out the existing property spec unless we're flattening
+            // over the source property. In that case, we don't want to
+            // remove the property spec because its authored opinions should
+            // be considered when flattening. This won't leave behind any
+            // unwanted opinions since we'll be overwriting all of the
+            // destination property spec's fields anyway in this case.
+            const bool flatteningToSelf = 
+                srcProp.GetPrim() == dstParent && srcProp.GetName() == dstName;
+            if (!flatteningToSelf) {
+                primSpec->RemoveProperty(dstPropSpec);
             }
         }
-        SdfPathVector sources;
-        attr.GetConnections(&sources);
-        if (!sources.empty()) {
-            // If this attribute is in a master, we need to translate
-            // any sources that point to a prim in this master to the
-            // corresponding flattened master.
-            _TranslatePathsToFlattenedMaster(prop, &sources, masterToFlattened);
-            sdfAttr->GetConnectionPathList().GetExplicitItems() = sources;
+
+        // Set up a path remapping so that attribute connections or 
+        // relationships targeting an object beneath the old parent prim
+        // now target objects beneath the new parent prim.
+        _PathRemapping remapping;
+        if (srcProp.GetPrim() != dstParent) {
+            remapping[srcProp.GetPrimPath()] = dstParent.GetPath();
         }
-     }
-     else if (prop.Is<UsdRelationship>()) {
-         UsdRelationship rel = prop.As<UsdRelationship>();
-         // NOTE: custom = true by default for relationship, but the
-         // SdfSchema fallback is false, so we must set it explicitly
-         // here. The situation is similar for variability.
-         SdfRelationshipSpecHandle sdfRel =
-             SdfRelationshipSpec::New(dest, rel.GetName(),
-                                      /*custom*/ false,
-                                      SdfVariabilityVarying);
-         _CopyMetadata(rel, sdfRel);
 
-         SdfPathVector targets;
-         rel.GetTargets(&targets);
-         if (!targets.empty()) {
-             // If this relationship is in a master, we need to translate
-             // any targets that point to a prim in this master to the
-             // corresponding flattened master.
-             _TranslatePathsToFlattenedMaster(prop, &targets, masterToFlattened);
-             sdfRel->GetTargetPathList().GetExplicitItems() = targets;
-         }
-     }
-}
+        // Apply offsets that affect the edit target to flattened time 
+        // samples to ensure they resolve to the expected value.
+        const SdfLayerOffset stageToLayerOffset = 
+            UsdPrepLayerOffset(GetEditTarget().GetMapFunction().GetTimeOffset())
+            .GetInverse();
 
-void
-UsdStage::_CopyMetadata(const UsdObject &source, 
-                        const SdfSpecHandle& dest) const
-{
-    // GetAllMetadata returns all non-private metadata fields (it excludes
-    // composition arcs and values), which is exactly what we want here.
-    UsdMetadataValueMap metadata = source.GetAllAuthoredMetadata();
+        // Copy authored property values and metadata.
+        _CopyProperty(srcProp, primSpec, dstName, remapping, stageToLayerOffset);
 
-    // Copy each key/value into the Sdf spec.
-    TfErrorMark m;
-    vector<string> msgs;
-    for (auto const& tokVal : metadata) {
-        dest->SetInfo(tokVal.first, tokVal.second);
-        if (!m.IsClean()) {
-            msgs.clear();
-            for (auto i = m.GetBegin(); i != m.GetEnd(); ++i) {
-                msgs.push_back(i->GetCommentary());
-            }
-            m.Clear();
-            TF_WARN("Failed copying metadata: %s", TfStringJoin(msgs).c_str());
+        SdfPropertySpecHandle dstPropSpec = 
+            primSpec->GetProperties().get(dstName);
+        if (!dstPropSpec) {
+            return UsdProperty();
         }
+
+        // Copy fallback property values and metadata if needed.
+        _CopyFallbacks(
+            _GetPropertyDefinition(srcProp.GetPrim(), srcProp.GetName()),
+            _GetPropertyDefinition(dstParent, dstName),
+            dstPropSpec, dstPropStack);
     }
+
+    return dstParent.GetProperty(dstName);
 }
 
 const PcpPrimIndex*
@@ -4426,18 +4905,27 @@ static const T &_UncheckedGet(const VtValue *val) {
 }
 
 template <class T>
+void _UncheckedSwap(SdfAbstractDataValue *dv, T& val) {
+    using namespace std;
+    swap(*static_cast<T*>(dv->value), val);
+}
+template <class T>
+void _UncheckedSwap(VtValue *value, T& val) {
+    value->Swap(val);
+}
+
+template <class T>
 static void
 _Set(SdfAbstractDataValue *dv, T const &val) { dv->StoreValue(val); }
 template <class T>
 static void _Set(VtValue *value, T const &val) { *value = val; }
-
 
 template <class Storage>
 static void _ApplyLayerOffset(Storage storage,
                               const PcpNodeRef &node,
                               const SdfLayerRefPtr &layer)
 {
-    SdfLayerOffset offset = _GetLayerOffsetToRoot(node, layer).GetInverse();
+    SdfLayerOffset offset = _GetLayerToStageOffset(node, layer);
     if (!offset.IsIdentity()) {
         const SdfTimeSampleMap &samples =
             _UncheckedGet<SdfTimeSampleMap>(storage);
@@ -4449,6 +4937,53 @@ static void _ApplyLayerOffset(Storage storage,
     }
 }
 
+template <class Storage>
+static void _MakeResolvedAssetPaths(Storage storage,
+                                    const PcpNodeRef &node,
+                                    const SdfLayerRefPtr &layer,
+                                    bool anchorAssetPathsOnly)
+{
+    if (_IsHolding<SdfAssetPath>(storage)) {
+        SdfAssetPath assetPath;
+        _UncheckedSwap(storage, assetPath);
+        _MakeResolvedAssetPathsImpl(
+            layer, node.GetLayerStack()->GetIdentifier().pathResolverContext,
+            &assetPath, 1,  anchorAssetPathsOnly);
+        _UncheckedSwap(storage, assetPath);
+    } else if (_IsHolding<VtArray<SdfAssetPath>>(storage)) {
+        VtArray<SdfAssetPath> assetPaths;
+        _UncheckedSwap(storage, assetPaths);
+        _MakeResolvedAssetPathsImpl(
+            layer, node.GetLayerStack()->GetIdentifier().pathResolverContext,
+            assetPaths.data(), assetPaths.size(), anchorAssetPathsOnly);
+        _UncheckedSwap(storage, assetPaths);
+    }
+}
+
+// If the given dictionary contains any SdfAssetPath or
+// VtArray<SdfAssetPath> as values, fills in those values
+// with their resolved paths.
+static void
+_ResolveAssetPathsInDictionary(const SdfLayerRefPtr &anchor,
+                               const PcpNodeRef &node,
+                               VtDictionary *dict,
+                               bool anchorAssetPathsOnly)
+{
+    for (auto& entry : *dict) {
+        VtValue& v = entry.second;
+        if (v.IsHolding<VtDictionary>()) {
+            VtDictionary resolvedDict;
+            v.UncheckedSwap(resolvedDict);
+            _ResolveAssetPathsInDictionary(
+                anchor, node, &resolvedDict, anchorAssetPathsOnly);
+            v.UncheckedSwap(resolvedDict);
+        }
+        else {
+            _MakeResolvedAssetPaths(&v, node, anchor, anchorAssetPathsOnly);
+        }
+    }
+}
+
 namespace {
 
 template <class Storage>
@@ -4456,7 +4991,11 @@ struct StrongestValueComposer
 {
     static const bool ProducesValue = true;
 
-    explicit StrongestValueComposer(Storage s) : _value(s), _done(false) {}
+    explicit StrongestValueComposer(Storage s, 
+                                    bool anchorAssetPathsOnly = false)
+        : _value(s), _done(false), _anchorAssetPathsOnly(anchorAssetPathsOnly) 
+        {}
+
     const std::type_info& GetHeldTypeid() const { return _GetTypeid(_value); }
     bool IsDone() const { return _done; }
     bool ConsumeAuthored(const PcpNodeRef &node,
@@ -4481,18 +5020,29 @@ struct StrongestValueComposer
             layer->HasField(specId, fieldName, _value) :
             layer->HasFieldDictKey(specId, fieldName, keyPath, _value);
 
-        if (_done && _IsHolding<VtDictionary>(_value)) {
-            // Continue composing if we got a dictionary.
-            _done = false;
-            if (isDict) {
-                // Merge dictionaries: _value is weaker, tmpDict stronger.
-                VtDictionaryOverRecursive(
-                    &tmpDict, _UncheckedGet<VtDictionary>(_value));
-                _Set(_value, tmpDict);
+        if (_done) {
+            if (_IsHolding<VtDictionary>(_value)) {
+                VtDictionary resolvedDict;
+                _UncheckedSwap(_value, resolvedDict);
+                _ResolveAssetPathsInDictionary(
+                    layer, node, &resolvedDict, _anchorAssetPathsOnly);
+                _UncheckedSwap(_value, resolvedDict);                
+
+                // Continue composing if we got a dictionary.
+                _done = false;
+                if (isDict) {
+                    // Merge dictionaries: _value is weaker, tmpDict stronger.
+                    VtDictionaryOverRecursive(
+                        &tmpDict, _UncheckedGet<VtDictionary>(_value));
+                    _UncheckedSwap(_value, tmpDict);
+                }
+                return true;
+            } else if (_IsHolding<SdfTimeSampleMap>(_value)) {
+                _ApplyLayerOffset(_value, node, layer);
+            } else {
+                _MakeResolvedAssetPaths(
+                    _value, node, layer, _anchorAssetPathsOnly);
             }
-            return true;
-        } else if (_done && _IsHolding<SdfTimeSampleMap>(_value)) {
-            _ApplyLayerOffset(_value, node, layer);
         }
         return _done;
     }
@@ -4533,6 +5083,7 @@ struct StrongestValueComposer
 protected:
     Storage _value;
     bool _done;
+    bool _anchorAssetPathsOnly;
 };
 
 
@@ -4941,9 +5492,7 @@ UsdStage::_GetPrimSpecifierImpl(Usd_PrimDataConstPtr primData,
     // Iterate over all prims, strongest to weakest.
     SdfSpecifier curSpecifier = SdfSpecifierOver;
 
-    SdfPath localPath;
-    SdfLayerRefPtr layer;
-    PcpNodeRef node;
+    Usd_Resolver::Position specPos;
 
     const PcpPrimIndex &primIndex = primData->GetPrimIndex();
     for (Usd_Resolver res(&primIndex); res.IsValid(); res.NextLayer()) {
@@ -4951,9 +5500,8 @@ UsdStage::_GetPrimSpecifierImpl(Usd_PrimDataConstPtr primData,
         _SpecifierStrength curStrength = _SpecifierStrengthDefining;
         if (res.GetLayer()->HasField(
                 res.GetLocalPath(), SdfFieldKeys->Specifier, &curSpecifier)) {
-            node = res.GetNode();
-            layer = res.GetLayer();
-            localPath = res.GetLocalPath();
+            specPos = res.GetPosition();
+
             if (SdfIsDefiningSpecifier(curSpecifier)) {
                 // Compute strength.
                 if (curSpecifier == SdfSpecifierClass) {
@@ -5000,11 +5548,12 @@ UsdStage::_GetPrimSpecifierImpl(Usd_PrimDataConstPtr primData,
 
     // Verify we found *something*.  We should never have PrimData without at
     // least one PrimSpec, and 'specifier' is required, so it must be present.
-    if (TF_VERIFY(layer, "No PrimSpecs for '%s'",
+    if (TF_VERIFY(specPos.GetLayer(), "No PrimSpecs for '%s'",
                   primData->GetPath().GetText())) {
         // Let the composer see the deciding opinion.
         composer->ConsumeAuthored(
-            node, layer, SdfAbstractDataSpecId(&localPath),
+            specPos.GetNode(), specPos.GetLayer(), 
+            SdfAbstractDataSpecId(&specPos.GetLocalPath()),
             SdfFieldKeys->Specifier, TfToken());
     }
     return true;
@@ -5290,7 +5839,8 @@ UsdStage::_ListMetadataFields(const UsdObject &obj, bool useFallbacks) const
 void
 UsdStage::_GetAllMetadata(const UsdObject &obj,
                           bool useFallbacks,
-                          UsdMetadataValueMap* resultMap) const
+                          UsdMetadataValueMap* resultMap,
+                          bool anchorAssetPathsOnly) const
 {
     TRACE_FUNCTION();
 
@@ -5299,7 +5849,7 @@ UsdStage::_GetAllMetadata(const UsdObject &obj,
     TfTokenVector fieldNames = _ListMetadataFields(obj, useFallbacks);
     for (const auto& fieldName : fieldNames) {
         VtValue val;
-        StrongestValueComposer<VtValue *> composer(&val);
+        StrongestValueComposer<VtValue *> composer(&val, anchorAssetPathsOnly);
         _GetMetadataImpl(obj, fieldName, TfToken(), useFallbacks, &composer);
         result[fieldName] = val;
     }
@@ -5421,7 +5971,8 @@ public:
             &info._primPathInLayerStack, &attr.GetName());
         const SdfLayerRefPtr& layer = 
             info._layerStack->GetLayers()[info._layerIndex];
-        const double localTime = info._offset * time.GetValue();
+        const double localTime =
+            info._layerToStageOffset.GetInverse() * time.GetValue();
 
         double upper = 0.0;
         double lower = 0.0;
@@ -5432,7 +5983,12 @@ public:
         }
         else {
             if (!TF_VERIFY(layer->GetBracketingTimeSamplesForPath(
-                        specId, localTime, &lower, &upper))) {
+                        specId, localTime, &lower, &upper),
+                        "No bracketing time samples for "
+                               "%s on <%s> for time %g between %g and %g",
+                               layer->GetIdentifier().c_str(),
+                               specId.GetFullSpecPath().GetText(),
+                               localTime, lower, upper)) {
                 return false;
             }
         }
@@ -5579,7 +6135,7 @@ _HasTimeSamples(const SdfLayerRefPtr& source,
             specId, *time, lower, upper);
     }
 
-    return source->HasField(specId, SdfFieldKeys->TimeSamples);
+    return source->GetNumTimeSamplesForPath(specId) > 0;
 }
 
 bool
@@ -5594,7 +6150,9 @@ _HasTimeSamples(const Usd_ClipRefPtr& source,
                source->_GetNumTimeSamplesForPathInLayerForClip(specId) != 0;
     }
 
-    return source->HasField(specId, SdfFieldKeys->TimeSamples);
+    // Use this method to directly access authored time samples,
+    // disregarding 'fake' samples used by clips.
+    return source->_GetNumTimeSamplesForPathInLayerForClip(specId) > 0;
 }
 
 enum _DefaultValueResult {
@@ -5715,12 +6273,12 @@ struct UsdStage::_ResolveInfoResolver
     {
         const PcpLayerStackPtr& nodeLayers = node.GetLayerStack();
         const SdfLayerRefPtrVector& layerStack = nodeLayers->GetLayers();
-        const SdfLayerOffset layerOffset = _GetLayerOffsetToRoot(node, 
-            layerStack[layerStackPosition]);
+        const SdfLayerOffset layerToStageOffset =
+            _GetLayerToStageOffset(node, layerStack[layerStackPosition]);
         const SdfLayerRefPtr& layer = layerStack[layerStackPosition];
         boost::optional<double> localTime;
         if (time) {
-            localTime = layerOffset * (*time);
+            localTime = layerToStageOffset.GetInverse() * (*time);
         }
 
         if (_HasTimeSamples(layer, specId, localTime.get_ptr(), 
@@ -5744,7 +6302,7 @@ struct UsdStage::_ResolveInfoResolver
             _resolveInfo->_layerStack = nodeLayers;
             _resolveInfo->_layerIndex = layerStackPosition;
             _resolveInfo->_primPathInLayerStack = node.GetPath();
-            _resolveInfo->_offset = layerOffset;
+            _resolveInfo->_layerToStageOffset = layerToStageOffset;
             _resolveInfo->_node = node;
             return true;
         }
@@ -6049,32 +6607,6 @@ UsdStage::_GetValueFromResolveInfo(const UsdResolveInfo &info,
 // --------------------------------------------------------------------- //
 
 bool
-UsdStage::_GetTimeSampleMap(const UsdAttribute &attr,
-                            SdfTimeSampleMap *out) const
-{
-    // Note that we must invoke interpolation here. This is because
-    // value clips may have authored clipTimes which don't 
-    // have a matching sample in the corresponding clip, so we have
-    // to interpolate a value(if we can) for it.
-    std::vector<double> timeSamples;
-    if (_GetTimeSamplesInInterval(attr, GfInterval::GetFullInterval(), 
-                                  &timeSamples)) {
-        for (const auto& timeSample : timeSamples) {
-            VtValue value;
-            Usd_UntypedInterpolator interp(attr, &value);
-
-            if (_GetValueImpl(timeSample, attr, &interp, &value)) {
-                (*out)[timeSample] = value;
-            } else {
-                (*out)[timeSample] = VtValue(SdfValueBlock());
-            }
-        }
-        return true;
-    }
-    return false;
-}
-
-bool
 UsdStage::_GetTimeSamplesInInterval(const UsdAttribute& attr,
                                     const GfInterval& interval,
                                     std::vector<double>* times) const
@@ -6084,14 +6616,6 @@ UsdStage::_GetTimeSamplesInInterval(const UsdAttribute& attr,
     return _GetTimeSamplesInIntervalFromResolveInfo(info, attr, interval, times);
 }
 
-SdfTimeSampleMap
-UsdStage::_GetTimeSampleMap(const UsdAttribute &attr) const
-{
-    SdfTimeSampleMap result;
-    _GetTimeSampleMap(attr, &result);
-    return result;
-}
-
 bool 
 UsdStage::_GetTimeSamplesInIntervalFromResolveInfo(
     const UsdResolveInfo &info,
@@ -6099,11 +6623,10 @@ UsdStage::_GetTimeSamplesInIntervalFromResolveInfo(
     const GfInterval& interval,
     std::vector<double>* times) const
 {
-    if ((interval.IsMinFinite() && interval.IsMinOpen())
-        || (interval.IsMaxFinite() && interval.IsMaxOpen())) {
-        TF_CODING_ERROR("Finite endpoints in the specified interval (%s)"
-                        "must be closed.", TfStringify(interval).c_str());
-        return false;
+    // An empty requested interval would result in in empty times
+    // vector so avoid computing any of the contained samples
+    if (interval.IsEmpty()) {
+        return true;
     }
 
     // This is the lowest-level site for guaranteeing that all GetTimeSample
@@ -6113,11 +6636,29 @@ UsdStage::_GetTimeSamplesInIntervalFromResolveInfo(
                                           vector<double>* target, 
                                           const GfInterval& interval) 
     {
-        const auto sampleRangeBegin = std::lower_bound(samples.begin(),
-            samples.end(), interval.GetMin());
-        const auto sampleRangeEnd = std::upper_bound(sampleRangeBegin,
-            samples.end(), interval.GetMax());
-        target->insert(target->end(), sampleRangeBegin, sampleRangeEnd);
+        std::set<double>::iterator samplesBegin, samplesEnd; 
+
+        if (interval.IsMinOpen()) {
+            samplesBegin = std::upper_bound(samples.begin(), 
+                                            samples.end(), 
+                                            interval.GetMin()); 
+        } else {
+            samplesBegin = std::lower_bound(samples.begin(), 
+                                            samples.end(), 
+                                            interval.GetMin());
+        }
+
+        if (interval.IsMaxOpen()) {
+            samplesEnd = std::lower_bound(samplesBegin,
+                                          samples.end(), 
+                                          interval.GetMax());
+        } else {
+            samplesEnd = std::upper_bound(samplesBegin,
+                                          samples.end(),
+                                          interval.GetMax());
+        }
+
+        target->insert(target->end(), samplesBegin, samplesEnd);
     };
 
     if (info._source == UsdResolveInfoSourceTimeSamples) {
@@ -6128,11 +6669,21 @@ UsdStage::_GetTimeSamplesInIntervalFromResolveInfo(
 
         const std::set<double> samples = layer->ListTimeSamplesForPath(specId);
         if (!samples.empty()) {
-            copySamplesInInterval(samples, times, interval);
-            const SdfLayerOffset offset = info._offset.GetInverse();
-            if (!offset.IsIdentity()) {
+            if (info._layerToStageOffset.IsIdentity()) {
+                // The layer offset is identity, so we can use the interval
+                // directly, and do not need to remap the sample times.
+                copySamplesInInterval(samples, times, interval);
+            } else {
+                // Map the interval (expressed in stage time) to layer time.
+                const SdfLayerOffset stageToLayer =
+                    info._layerToStageOffset.GetInverse();
+                const GfInterval layerInterval =
+                    interval * stageToLayer.GetScale()
+                    + stageToLayer.GetOffset();
+                copySamplesInInterval(samples, times, layerInterval);
+                // Map the layer sample times to stage times.
                 for (auto &time : *times) {
-                    time = offset * time;
+                    time = info._layerToStageOffset * time;
                 }
             }
         }
@@ -6202,7 +6753,6 @@ UsdStage::_GetTimeSamplesInIntervalFromResolveInfo(
                     std::unique(
                         timesFromAllClips.begin(), timesFromAllClips.end()),
                     timesFromAllClips.end());
-
                 times->swap(timesFromAllClips);
                 return true;
             }
@@ -6295,8 +6845,8 @@ UsdStage::_GetBracketingTimeSamples(const UsdAttribute &attr,
         *lower = extraInfo.lowerSample;
         *upper = extraInfo.upperSample;
 
-        if (!resolveInfo._offset.IsIdentity()) {
-            const SdfLayerOffset offset = resolveInfo._offset.GetInverse();
+        const SdfLayerOffset offset = resolveInfo._layerToStageOffset;
+        if (!offset.IsIdentity()) {
             *lower = offset * (*lower);
             *upper = offset * (*upper);
         }
@@ -6324,15 +6874,15 @@ UsdStage::_GetBracketingTimeSamplesFromResolveInfo(const UsdResolveInfo &info,
             &info._primPathInLayerStack, &attr.GetName());
         const SdfLayerRefPtr& layer = 
             info._layerStack->GetLayers()[info._layerIndex];
-        const double layerTime = info._offset * desiredTime;
+        const double layerTime =
+            info._layerToStageOffset.GetInverse() * desiredTime;
         
         if (layer->GetBracketingTimeSamplesForPath(
                 specId, layerTime, lower, upper)) {
 
-            if (!info._offset.IsIdentity()) {
-                const SdfLayerOffset offset = info._offset.GetInverse();
-                *lower = offset * (*lower);
-                *upper = offset * (*upper);
+            if (!info._layerToStageOffset.IsIdentity()) {
+                *lower = info._layerToStageOffset * (*lower);
+                *upper = info._layerToStageOffset * (*upper);
             }
 
             *hasSamples = true;

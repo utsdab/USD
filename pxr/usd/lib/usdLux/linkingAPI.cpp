@@ -122,6 +122,7 @@ UsdLuxLinkingAPI::DoesLinkPath(const LinkMap &linkMap, const SdfPath &path)
     return true;
 }
 
+/* deprecated */
 USDLUX_API
 SdfPath
 UsdLuxLinkingAPI::GetLinkPathForFaceSet(const UsdGeomFaceSetAPI &faceSet)
@@ -129,6 +130,7 @@ UsdLuxLinkingAPI::GetLinkPathForFaceSet(const UsdGeomFaceSetAPI &faceSet)
     return faceSet.GetFaceIndicesAttr().GetPath();
 }
 
+/* deprecated */
 USDLUX_API
 bool
 UsdLuxLinkingAPI::DoesLinkFaceSet(const LinkMap &linkMap,
@@ -155,7 +157,7 @@ UsdLuxLinkingAPI::ComputeLinkMap() const
         result[p] = true;
     }
     if (!includeByDefault) {
-        result[SdfPath::AbsoluteRootPath()] = includeByDefault;
+        result[SdfPath::AbsoluteRootPath()] = false;
     }
     return result;
 }

@@ -24,6 +24,7 @@
 #include "pxr/usd/usdUI/sceneGraphPrimAPI.h"
 #include "pxr/usd/usd/schemaRegistry.h"
 #include "pxr/usd/usd/typed.h"
+#include "pxr/usd/usd/tokens.h"
 
 #include "pxr/usd/sdf/types.h"
 #include "pxr/usd/sdf/assetPath.h"
@@ -34,9 +35,14 @@ PXR_NAMESPACE_OPEN_SCOPE
 TF_REGISTRY_FUNCTION(TfType)
 {
     TfType::Define<UsdUISceneGraphPrimAPI,
-        TfType::Bases< UsdSchemaBase > >();
+        TfType::Bases< UsdAPISchemaBase > >();
     
 }
+
+TF_DEFINE_PRIVATE_TOKENS(
+    _schemaTokens,
+    (SceneGraphPrimAPI)
+);
 
 /* virtual */
 UsdUISceneGraphPrimAPI::~UsdUISceneGraphPrimAPI()
@@ -54,6 +60,20 @@ UsdUISceneGraphPrimAPI::Get(const UsdStagePtr &stage, const SdfPath &path)
     return UsdUISceneGraphPrimAPI(stage->GetPrimAtPath(path));
 }
 
+/*virtual*/
+bool 
+UsdUISceneGraphPrimAPI::_IsAppliedAPISchema() const 
+{
+    return true;
+}
+
+/* static */
+UsdUISceneGraphPrimAPI
+UsdUISceneGraphPrimAPI::Apply(const UsdPrim &prim)
+{
+    return UsdAPISchemaBase::_ApplyAPISchema<UsdUISceneGraphPrimAPI>(
+            prim, _schemaTokens->SceneGraphPrimAPI);
+}
 
 /* static */
 const TfType &
@@ -134,7 +154,7 @@ UsdUISceneGraphPrimAPI::GetSchemaAttributeNames(bool includeInherited)
     };
     static TfTokenVector allNames =
         _ConcatenateAttributeNames(
-            UsdSchemaBase::GetSchemaAttributeNames(true),
+            UsdAPISchemaBase::GetSchemaAttributeNames(true),
             localNames);
 
     if (includeInherited)

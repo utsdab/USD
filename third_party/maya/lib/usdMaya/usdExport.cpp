@@ -64,12 +64,17 @@ MSyntax usdExport::createSyntax()
     syntax.addFlag("-dsp" , "-exportDisplayColor", MSyntax::kBoolean);
     syntax.addFlag("-shd" , "-shadingMode" , MSyntax::kString);
     syntax.addFlag("-uvs" , "-exportUVs", MSyntax::kBoolean);
+    syntax.addFlag("-mcs" , "-exportMaterialCollections", MSyntax::kBoolean);
+    syntax.addFlag("-mcp" , "-materialCollectionsPath", MSyntax::kString);
+    syntax.addFlag("-cbb" , "-exportCollectionBasedBindings", MSyntax::kBoolean);
     syntax.addFlag("-nuv" , "-normalizeMeshUVs" , MSyntax::kBoolean);
     syntax.addFlag("-nnu" , "-normalizeNurbs" , MSyntax::kBoolean);
     syntax.addFlag("-euv" , "-nurbsExplicitUVType" , MSyntax::kString);
     syntax.addFlag("-cls" , "-exportColorSets", MSyntax::kBoolean);
     syntax.addFlag("-dms" , "-defaultMeshScheme", MSyntax::kString);
     syntax.addFlag("-vis" , "-exportVisibility", MSyntax::kBoolean);
+    syntax.addFlag("-skn" , "-exportSkin", MSyntax::kString);
+    syntax.addFlag("-psc" , "-parentScope", MSyntax::kString);
 
     syntax.addFlag("-fr" , "-frameRange"   , MSyntax::kDouble, MSyntax::kDouble);
     syntax.addFlag("-pr" , "-preRoll"   , MSyntax::kDouble);
@@ -151,6 +156,11 @@ try
             jobArgs.shadingMode = PxrUsdMayaShadingModeTokens->displayColor;
         }
         else {
+            if (shadingMode == "Material Colors") {
+                shadingMode = TfToken("displayColor");
+            } else if (shadingMode == "RfM Shaders") {
+                shadingMode = TfToken("pxrRis");
+            }
             if (PxrUsdMayaShadingModeRegistry::GetInstance().GetExporter(shadingMode)) {
                 jobArgs.shadingMode = shadingMode;
             }
@@ -167,6 +177,22 @@ try
     if (argData.isFlagSet("exportUVs")) {
         argData.getFlagArgument("exportUVs", 0, jobArgs.exportMeshUVs);
         jobArgs.exportNurbsExplicitUV = jobArgs.exportMeshUVs;
+    }
+
+    if (argData.isFlagSet("exportMaterialCollections")) {
+        argData.getFlagArgument("exportMaterialCollections", 0,
+                                jobArgs.exportMaterialCollections);
+    }
+
+    if (argData.isFlagSet("materialCollectionsPath")) {
+        MString stringVal;
+        argData.getFlagArgument("materialCollectionsPath", 0, stringVal);
+        jobArgs.materialCollectionsPath = stringVal.asChar();
+    }
+
+    if (argData.isFlagSet("exportCollectionBasedBindings")) {
+        argData.getFlagArgument("exportCollectionBasedBindings", 0,
+                                jobArgs.exportCollectionBasedBindings);
     }
 
     if (argData.isFlagSet("normalizeMeshUVs")) {
@@ -209,6 +235,36 @@ try
 
     if (argData.isFlagSet("exportVisibility")) {
         argData.getFlagArgument("exportVisibility", 0, jobArgs.exportVisibility);
+    }
+
+    if (argData.isFlagSet("exportSkin")) {
+        MString stringVal;
+
+        argData.getFlagArgument("exportSkin", 0, stringVal);
+        if (stringVal == "none") {
+            jobArgs.exportSkin = false;
+        }
+        else if (stringVal == "auto") {
+            jobArgs.exportSkin = true;
+            jobArgs.autoSkelRoots = true;
+        }
+        else if (stringVal == "explicit") {
+            jobArgs.exportSkin = true;
+            jobArgs.autoSkelRoots = false;
+        }
+        else {
+            MGlobal::displayWarning(
+                    "Incorrect value for -exportSkin flag; assuming "
+                    "'-exportSkin none'");
+            jobArgs.exportSkin = false;
+        }
+    }
+
+    if (argData.isFlagSet("parentScope")) {
+        MString stringVal;
+        argData.getFlagArgument("parentScope", 0,
+                                stringVal);
+        jobArgs.setParentScope(stringVal.asChar());
     }
 
     bool append = false;
@@ -394,10 +450,10 @@ try
     // Create stage and process static data
     if (usdWriteJob.beginJob(fileName, append, startTime, endTime)) {
         if (jobArgs.exportAnimation) {
-            MTime oldCurTime = MAnimControl::currentTime();
-            for (double i=startTime;i<(endTime+1);i++) {
+            const MTime oldCurTime = MAnimControl::currentTime();
+            for (double i = startTime; i < (endTime + 1.0); ++i) {
                 for (double sampleTime : frameSamples) {
-                    double actualTime = i + sampleTime;
+                    const double actualTime = i + sampleTime;
                     if (verbose) {
                         MString info;
                         info = actualTime;
@@ -411,7 +467,8 @@ try
                     }
                 }
             }
-            // set the time back
+
+            // Set the time back.
             MGlobal::viewFrame(oldCurTime);
         }
 

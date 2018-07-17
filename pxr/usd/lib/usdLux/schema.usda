@@ -2,7 +2,7 @@
 (
     "This file describes the USD Lux light schemata for code generation."
     subLayers = [
-        @../usdGeom/schema.usda@
+        @usdGeom/schema.usda@
     ]
 )
 
@@ -59,10 +59,11 @@ class "Light" (
         displayName = "Color Temperature"
         doc = """Color temperature, in degrees Kelvin, representing the
         white point.  The default is a common white point, D65.  Lower
-        values are warmer and higher values are cooler.  Only takes effect
-        when enableColorTemperature is set to true.  When active, the
+        values are warmer and higher values are cooler.  The valid range
+        is from 1000 to 10000. Only takes effect when
+        enableColorTemperature is set to true.  When active, the
         computed result multiplies against the color attribute.
-        See UsdLuxBlackbodyColorTemperatureAsRgb()."""
+        See UsdLuxBlackbodyTemperatureAsRgb()."""
     )
     rel filters (
         doc = """Relationship to the light filters that apply to this light."""
@@ -70,6 +71,7 @@ class "Light" (
 }
 
 class "ListAPI" (
+    inherits = </APISchemaBase>
     doc = """API schema to support discovery and publishing of lights in a scene.
 
     \\section UsdLuxListAPI_Discovery Discovering Lights via Traversal
@@ -184,7 +186,7 @@ class "ListAPI" (
     \\section UsdLuxListAPI_Instancing Instancing
 
     Where instances are present, UsdLuxListAPI::ComputeLightList() will
-    return the instance-unqiue paths to any lights discovered within
+    return the instance-unique paths to any lights discovered within
     those instances.  Lights within a UsdGeomPointInstancer will
     not be returned, however, since they cannot be referred to
     solely via paths.
@@ -212,6 +214,7 @@ class "ListAPI" (
 }
 
 class "ShapingAPI" (
+    inherits = </APISchemaBase>
     doc = """Controls for shaping a light's emission."""
 ) {
     float shaping:focus = 0 (
@@ -250,6 +253,7 @@ class "ShapingAPI" (
 }
 
 class "ShadowAPI" (
+    inherits = </APISchemaBase>
     doc = """Controls to refine a light's shadow behavior.  These are
     non-physical controls that are valuable for visual lighting work."""
 ) {
@@ -260,12 +264,12 @@ class "ShadowAPI" (
     rel shadow:include (
         displayGroup = "Shadows"
         displayName = "Shadow Include Subset"
-        doc = "Set of geometry to consider for shadowing. If this is not specified, all geometry is used for shadowing."
+        doc = "Set of geometry to consider for the purpose of casting shadows from a light.  If this is not specified, all geometry is used for shadowing."
     )
     rel shadow:exclude (
         displayGroup = "Shadows"
         displayName = "Shadow Exclude Subset"
-        doc = "Set of geometry to ignore for shadowing. If this is not specified, all geometry is used for shadowing."
+        doc = "Set of geometry to ignore for the purpose of casting shadows from a light.  If this is not specified, all geometry is used for shadowing."
     )
     color3f shadow:color = (0, 0, 0) (
         displayGroup = "Shadows"
@@ -275,12 +279,12 @@ class "ShadowAPI" (
     float shadow:distance (
         displayGroup = "Shadows"
         doc = """The maximum distance shadows are cast.
-        There is no limit unless this attribute value is overriden."""
+        There is no limit unless this attribute value is overridden."""
     )
     float shadow:falloff (
         displayGroup = "Shadows"
         doc = """The near distance at which shadow falloff beings.
-        There is no falloff unless this attribute value is overriden."""
+        There is no falloff unless this attribute value is overridden."""
     )
     float shadow:falloffGamma = 1.0 (
         displayGroup = "Shadows"
@@ -313,7 +317,7 @@ class DistantLight "DistantLight" (
         Higher values broaden the light and therefore soften shadow edges.
         """
     )
-    float intensity = 5000 (
+    float intensity = 50000 (
         doc = """Scales the emission of the light linearly.
         The DistantLight has a high default intensity to approximate the Sun."""
     )
@@ -322,17 +326,25 @@ class DistantLight "DistantLight" (
 class DiskLight "DiskLight" (
     inherits = </Light>
     doc = """Light emitted from one side of a circular disk.
-    The disk is centered in the XY plane and emits light along the -Z axis.
-    The disk has a diameter of 1 unit in local space."""
+    The disk is centered in the XY plane and emits light along the -Z axis."""
 ) {
+    float radius = 0.5 (
+        doc = "Radius of the disk."
+    )
 }
 
 class RectLight "RectLight" (
     inherits = </Light>
     doc = """Light emitted from one side of a rectangle.
     The rectangle is centered in the XY plane and emits light along the -Z axis.
-    The rectangle is 1 unit long in local space."""
+    The rectangle is 1 unit in length in the X and Y axis."""
 ) {
+    float width = 1 (
+        doc = "Width of the rectangle, in the local X axis."
+    )
+    float height = 1 (
+        doc = "Height of the rectangle, in the local Y axis."
+    )
     asset texture:file (
         doc = """A color texture to use on the rectangle."""
     )
@@ -340,9 +352,38 @@ class RectLight "RectLight" (
 
 class SphereLight "SphereLight" (
     inherits = </Light>
-    doc = """Light emitted outward from a sphere.
-    The sphere has a diameter of 1 unit in local space."""
+    doc = """Light emitted outward from a sphere."""
 ) {
+    float radius = 0.5 (
+        doc = "Radius of the sphere."
+    )
+    bool treatAsPoint = false (
+        doc = """A hint that this light can be treated as a 'point'
+        light (effectively, a zero-radius sphere) by renderers that
+        benefit from non-area lighting. Renderers that only support
+        area lights can disregard this."""
+    )
+}
+
+class CylinderLight "CylinderLight" (
+    inherits = </Light>
+    doc = """Light emitted outward from a cylinder.
+    The cylinder is centered at the origin and has its major axis on the X axis.
+    The cylinder does not emit light from the flat end-caps.
+    """
+) {
+    float length = 1 (
+        doc = "Width of the rectangle, in the local X axis."
+    )
+    float radius = 0.5 (
+        doc = "Radius of the cylinder."
+    )
+    bool treatAsLine = false (
+        doc = """A hint that this light can be treated as a 'line'
+        light (effectively, a zero-radius cylinder) by renderers that
+        benefit from non-area lighting. Renderers that only support
+        area lights can disregard this."""
+    )
 }
 
 class GeometryLight "GeometryLight" (
@@ -357,12 +398,12 @@ class GeometryLight "GeometryLight" (
 
 class DomeLight "DomeLight" (
     inherits = </Light>
-    doc = """Light emitted inward from a distant external dome or hemisphere,
-    such as a sky."""
+    doc = """Light emitted inward from a distant external environment,
+    such as a sky or IBL light probe."""
 ) {
     asset texture:file (
         doc = """A color texture to use on the dome, such as an HDR (high
-        dyanmic range) texture intended for IBL (image based lighting)."""
+        dynamic range) texture intended for IBL (image based lighting)."""
     )
     token texture:format = "automatic" (
         allowedTokens = ["automatic", "latlong", "mirroredBall", "angular", "cubeMapVerticalCross"]

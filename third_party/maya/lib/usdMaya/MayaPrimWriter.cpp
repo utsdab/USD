@@ -68,7 +68,8 @@ MayaPrimWriter::MayaPrimWriter(const MDagPath& iDag,
     mWriteJobCtx(jobCtx),
     mDagPath(iDag),
     mUsdPath(uPath),
-    mIsValid(true)
+    mIsValid(true),
+    mExportsVisibility(jobCtx.getArgs().exportVisibility)
 {
 }
 
@@ -97,7 +98,7 @@ MayaPrimWriter::writePrimAttrs(const MDagPath &dagT, const UsdTimeCode &usdTime,
     MFnDependencyNode depFn(getDagPath().node());
     MFnDependencyNode depFnT(dagT.node()); // optionally also scan a shape's transform if merging transforms
 
-    if (mWriteJobCtx.getArgs().exportVisibility) {
+    if (mExportsVisibility) {
         bool isVisible  = true;   // if BOTH shape or xform is animated, then visible
         bool isAnimated = false;  // if either shape or xform is animated, then animated
 
@@ -114,10 +115,9 @@ MayaPrimWriter::writePrimAttrs(const MDagPath &dagT, const UsdTimeCode &usdTime,
         TfToken const &visibilityTok = (isVisible ? UsdGeomTokens->inherited : 
                                         UsdGeomTokens->invisible);
         if (usdTime.IsDefault() != isAnimated ) {
-            if (usdTime.IsDefault())
-                primSchema.CreateVisibilityAttr(VtValue(visibilityTok), true);
-            else
-                primSchema.CreateVisibilityAttr().Set(visibilityTok, usdTime);
+            _SetAttribute(primSchema.CreateVisibilityAttr(VtValue(), true), 
+                          visibilityTok, 
+                          usdTime);
         }
     }
 
@@ -157,9 +157,12 @@ MayaPrimWriter::writePrimAttrs(const MDagPath &dagT, const UsdTimeCode &usdTime,
     // name collisions will always be handled by taking the shape node's value
     // if we're merging transforms and shapes.
     if (dagT.isValid() && !(dagT == getDagPath())) {
-        PxrUsdMayaWriteUtil::WriteUserExportedAttributes(dagT, usdPrim, usdTime);
+        PxrUsdMayaWriteUtil::WriteUserExportedAttributes(dagT, usdPrim, usdTime,
+                _GetSparseValueWriter());
     }
-    PxrUsdMayaWriteUtil::WriteUserExportedAttributes(getDagPath(), usdPrim, usdTime);
+
+    PxrUsdMayaWriteUtil::WriteUserExportedAttributes(getDagPath(), usdPrim, 
+            usdTime, _GetSparseValueWriter());
 
     return true;
 }
@@ -182,6 +185,26 @@ MayaPrimWriter::shouldPruneChildren() const
     return false;
 }
 
+void
+MayaPrimWriter::postExport()
+{ 
+}
+
+void
+MayaPrimWriter::setExportsVisibility(bool exports)
+{
+    mExportsVisibility = exports;
+}
+
+bool
+MayaPrimWriter::getAllAuthoredUsdPaths(SdfPathVector* outPaths) const
+{
+    if (!getUsdPath().IsEmpty()) {
+        outPaths->push_back(getUsdPath());
+        return true;
+    }
+    return false;
+}
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

@@ -31,6 +31,7 @@
 #include "pxr/usd/usdLux/light.h"
 #include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/stage.h"
+#include "pxr/usd/usdLux/tokens.h"
 
 #include "pxr/base/vt/value.h"
 
@@ -52,7 +53,6 @@ class SdfAssetPath;
 /// \class UsdLuxSphereLight
 ///
 /// Light emitted outward from a sphere.
-/// The sphere has a diameter of 1 unit in local space.
 ///
 class UsdLuxSphereLight : public UsdLuxLight
 {
@@ -62,6 +62,11 @@ public:
     /// true, GetStaticPrimDefinition() will return a valid prim definition with
     /// a non-empty typeName.
     static const bool IsConcrete = true;
+
+    /// Compile-time constant indicating whether or not this class inherits from
+    /// UsdTyped. Types which inherit from UsdTyped can impart a typename on a
+    /// UsdPrim.
+    static const bool IsTyped = true;
 
     /// Construct a UsdLuxSphereLight on UsdPrim \p prim .
     /// Equivalent to UsdLuxSphereLight::Get(prim.GetStage(), prim.GetPath())
@@ -141,6 +146,51 @@ private:
     // override SchemaBase virtuals.
     USDLUX_API
     virtual const TfType &_GetTfType() const;
+
+public:
+    // --------------------------------------------------------------------- //
+    // RADIUS 
+    // --------------------------------------------------------------------- //
+    /// Radius of the sphere.
+    ///
+    /// \n  C++ Type: float
+    /// \n  Usd Type: SdfValueTypeNames->Float
+    /// \n  Variability: SdfVariabilityVarying
+    /// \n  Fallback Value: 0.5
+    USDLUX_API
+    UsdAttribute GetRadiusAttr() const;
+
+    /// See GetRadiusAttr(), and also 
+    /// \ref Usd_Create_Or_Get_Property for when to use Get vs Create.
+    /// If specified, author \p defaultValue as the attribute's default,
+    /// sparsely (when it makes sense to do so) if \p writeSparsely is \c true -
+    /// the default for \p writeSparsely is \c false.
+    USDLUX_API
+    UsdAttribute CreateRadiusAttr(VtValue const &defaultValue = VtValue(), bool writeSparsely=false) const;
+
+public:
+    // --------------------------------------------------------------------- //
+    // TREATASPOINT 
+    // --------------------------------------------------------------------- //
+    /// A hint that this light can be treated as a 'point'
+    /// light (effectively, a zero-radius sphere) by renderers that
+    /// benefit from non-area lighting. Renderers that only support
+    /// area lights can disregard this.
+    ///
+    /// \n  C++ Type: bool
+    /// \n  Usd Type: SdfValueTypeNames->Bool
+    /// \n  Variability: SdfVariabilityVarying
+    /// \n  Fallback Value: False
+    USDLUX_API
+    UsdAttribute GetTreatAsPointAttr() const;
+
+    /// See GetTreatAsPointAttr(), and also 
+    /// \ref Usd_Create_Or_Get_Property for when to use Get vs Create.
+    /// If specified, author \p defaultValue as the attribute's default,
+    /// sparsely (when it makes sense to do so) if \p writeSparsely is \c true -
+    /// the default for \p writeSparsely is \c false.
+    USDLUX_API
+    UsdAttribute CreateTreatAsPointAttr(VtValue const &defaultValue = VtValue(), bool writeSparsely=false) const;
 
 public:
     // ===================================================================== //

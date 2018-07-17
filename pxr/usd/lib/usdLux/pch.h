@@ -25,6 +25,7 @@
 //
 
 #define TF_MAX_ARITY 7
+#include "pxr/pxr.h"
 #include "pxr/base/arch/defines.h"
 #if defined(ARCH_OS_DARWIN)
 #include <mach/mach_time.h>
@@ -45,6 +46,7 @@
 #include <algorithm>
 #include <atomic>
 #include <bitset>
+#include <cfloat>
 #include <cmath>
 #include <cstdarg>
 #include <cstddef>
@@ -62,6 +64,7 @@
 #include <iterator>
 #include <limits>
 #include <list>
+#include <locale>
 #include <map>
 #include <math.h>
 #include <memory>
@@ -82,7 +85,6 @@
 #include <vector>
 #include <boost/aligned_storage.hpp>
 #include <boost/any.hpp>
-#include <boost/bind.hpp>
 #include <boost/call_traits.hpp>
 #include <boost/compressed_pair.hpp>
 #include <boost/container/vector.hpp>
@@ -142,8 +144,12 @@
 #include <boost/preprocessor/tuple/elem.hpp>
 #include <boost/preprocessor/tuple/to_list.hpp>
 #include <boost/preprocessor/tuple/to_seq.hpp>
+#ifdef PXR_PYTHON_SUPPORT_ENABLED
 #include <boost/python.hpp>
 #include <boost/python/class.hpp>
+#include <boost/python/converter/from_python.hpp>
+#include <boost/python/converter/registered.hpp>
+#include <boost/python/converter/rvalue_from_python_data.hpp>
 #include <boost/python/def.hpp>
 #include <boost/python/def_visitor.hpp>
 #include <boost/python/dict.hpp>
@@ -154,7 +160,8 @@
 #include <boost/python/object.hpp>
 #include <boost/python/object_fwd.hpp>
 #include <boost/python/object_operators.hpp>
-#include <boost/python/pointee.hpp>
+#include <boost/python/operators.hpp>
+#include <boost/python/refcount.hpp>
 #include <boost/python/scope.hpp>
 #include <boost/python/to_python_converter.hpp>
 #include <boost/python/tuple.hpp>
@@ -163,6 +170,7 @@
 #undef tolower
 #undef toupper
 #endif
+#endif // PXR_PYTHON_SUPPORT_ENABLED
 #include <boost/range/iterator_range.hpp>
 #include <boost/scoped_ptr.hpp>
 #include <boost/shared_ptr.hpp>
@@ -180,15 +188,16 @@
 #include <boost/type_traits/is_const.hpp>
 #include <boost/type_traits/is_convertible.hpp>
 #include <boost/type_traits/is_enum.hpp>
+#include <boost/type_traits/is_polymorphic.hpp>
 #include <boost/type_traits/is_same.hpp>
 #include <boost/type_traits/remove_const.hpp>
 #include <boost/type_traits/remove_cv.hpp>
 #include <boost/type_traits/remove_reference.hpp>
 #include <boost/unordered_map.hpp>
-#include <boost/unordered_set.hpp>
 #include <boost/utility.hpp>
 #include <boost/utility/enable_if.hpp>
 #include <boost/utility/value_init.hpp>
+#include <boost/variant.hpp>
 #include <tbb/atomic.h>
 #include <tbb/concurrent_hash_map.h>
 #include <tbb/concurrent_unordered_set.h>
@@ -197,4 +206,7 @@
 #include <tbb/spin_mutex.h>
 #include <tbb/spin_rw_mutex.h>
 #include <tbb/task.h>
+#include <tbb/task_arena.h>
+#ifdef PXR_PYTHON_SUPPORT_ENABLED
 #include <Python.h>
+#endif // PXR_PYTHON_SUPPORT_ENABLED

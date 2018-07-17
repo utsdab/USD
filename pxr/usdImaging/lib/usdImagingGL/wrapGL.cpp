@@ -122,6 +122,7 @@ void wrapGL()
             .def("IsConverged", &UsdImagingGL::IsConverged)
             .def("GetRendererPlugins", &UsdImagingGL::GetRendererPlugins,
                  return_value_policy< TfPySequenceToTuple >())
+            .def("GetRendererPluginDesc", &UsdImagingGL::GetRendererPluginDesc)
             .def("SetRendererPlugin", &UsdImagingGL::SetRendererPlugin)
             .def("GetResourceAllocation", &UsdImagingGL::GetResourceAllocation)
         ;
@@ -171,6 +172,7 @@ void wrapGL()
             .def_readwrite("clipPlanes", &Params::clipPlanes)
             .def_readwrite("highlight", &Params::highlight)
             .def_readwrite("enableHardwareShading", &Params::enableHardwareShading)
+            .def_readwrite("enableUsdDrawModes", &Params::enableUsdDrawModes)
         ;
 
         TfPyContainerConversions::from_python_sequence<

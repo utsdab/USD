@@ -120,6 +120,21 @@ HdSceneDelegate::GetTransform(SdfPath const & id)
 }
 
 /*virtual*/
+size_t
+HdSceneDelegate::SampleTransform(SdfPath const & id,
+                                 size_t maxSampleCount,
+                                 float *times,
+                                 GfMatrix4d *samples)
+{
+    if (maxSampleCount > 0) {
+        times[0] = 0;
+        samples[0] = GetTransform(id);
+        return 1;
+    }
+    return 0;
+}
+
+/*virtual*/
 bool
 HdSceneDelegate::GetVisible(SdfPath const & id)
 {
@@ -141,6 +156,13 @@ HdSceneDelegate::GetCullStyle(SdfPath const &id)
 }
 
 /*virtual*/
+VtValue
+HdSceneDelegate::GetShadingStyle(SdfPath const &id)
+{
+    return VtValue();
+}
+
+/*virtual*/
 int
 HdSceneDelegate::GetRefineLevel(SdfPath const& id)
 {
@@ -152,6 +174,21 @@ VtValue
 HdSceneDelegate::Get(SdfPath const& id, TfToken const& key)
 {
     return VtValue();
+}
+
+/*virtual*/
+size_t
+HdSceneDelegate::SamplePrimvar(SdfPath const& id, TfToken const& key,
+                               size_t maxSampleCount,
+                               float *times,
+                               VtValue *samples)
+{
+    if (maxSampleCount > 0) {
+        times[0] = 0;
+        samples[0] = Get(id, key);
+        return 1;
+    }
+    return 0;
 }
 
 /*virtual*/
@@ -182,6 +219,22 @@ HdSceneDelegate::GetInstancerTransform(SdfPath const &instancerId,
 }
 
 /*virtual*/
+size_t
+HdSceneDelegate::SampleInstancerTransform(SdfPath const &instancerId,
+                                          SdfPath const &prototypeId,
+                                          size_t maxSampleCount,
+                                          float *times,
+                                          GfMatrix4d *samples)
+{
+    if (maxSampleCount > 0) {
+        times[0] = 0;
+        samples[0] = GetInstancerTransform(instancerId, prototypeId);
+        return 1;
+    }
+    return 0;
+}
+
+/*virtual*/
 SdfPath
 HdSceneDelegate::GetPathForInstanceIndex(const SdfPath &protoPrimPath,
                                          int instanceIndex,
@@ -195,49 +248,52 @@ HdSceneDelegate::GetPathForInstanceIndex(const SdfPath &protoPrimPath,
 
 
 // -----------------------------------------------------------------------//
-/// \name SurfaceShader Aspects
+/// \name Material Aspects
 // -----------------------------------------------------------------------//
 
 /*virtual*/
 std::string
-HdSceneDelegate::GetSurfaceShaderSource(SdfPath const &shaderId)
+HdSceneDelegate::GetSurfaceShaderSource(SdfPath const &materialId)
 {
     return std::string("");
 }
 
 /*virtual*/
 std::string
-HdSceneDelegate::GetDisplacementShaderSource(SdfPath const &shaderId)
+HdSceneDelegate::GetDisplacementShaderSource(SdfPath const &materialId)
 {
-    std::string shaderSource(
-        "vec4 displacementShader(int index, vec4 Peye, vec3 Neye, vec4 patchCoord) {\n"
-        "    return Peye;\n"
-        "}\n"
-        );
-    return shaderSource;
+    return std::string("");
 }
 
 /*virtual*/
 VtValue
-HdSceneDelegate::GetSurfaceShaderParamValue(SdfPath const &shaderId, 
-                              TfToken const &paramName)
+HdSceneDelegate::GetMaterialParamValue(SdfPath const &materialId, 
+                                       TfToken const &paramName)
 {
     return VtValue();
 }
 
 /*virtual*/
-HdShaderParamVector
-HdSceneDelegate::GetSurfaceShaderParams(SdfPath const &shaderId)
+HdMaterialParamVector
+HdSceneDelegate::GetMaterialParams(SdfPath const &materialId)
 {
-    return HdShaderParamVector();
+    return HdMaterialParamVector();
 }
 
 /*virtual*/
-SdfPathVector
-HdSceneDelegate::GetSurfaceShaderTextures(SdfPath const &shaderId)
+VtValue 
+HdSceneDelegate::GetMaterialResource(SdfPath const &materialId)
 {
-    return SdfPathVector();
+    return VtValue();
 }
+
+/*virtual*/
+TfTokenVector 
+HdSceneDelegate::GetMaterialPrimvars(SdfPath const &materialId)
+{
+    return TfTokenVector();
+}
+
 
 // -----------------------------------------------------------------------//
 /// \name Texture Aspects
@@ -293,27 +349,26 @@ HdSceneDelegate::InvokeExtComputation(SdfPath const& computationId,
 
 /*virtual*/
 TfTokenVector
-HdSceneDelegate::GetExtComputationInputNames(SdfPath const& id,
-                                             HdExtComputationInputType type)
+HdSceneDelegate::GetExtComputationSceneInputNames(SdfPath const& computationid)
 {
     return TfTokenVector();
 }
 
 /*virtual*/
-HdExtComputationInputParams
-HdSceneDelegate::GetExtComputationInputParams(SdfPath const& id,
-                                              TfToken const &inputName)
+HdExtComputationInputDescriptorVector
+HdSceneDelegate::GetExtComputationInputDescriptors(
+                                        SdfPath const& computationid)
 {
-    return HdExtComputationInputParams();
+    return HdExtComputationInputDescriptorVector();
 }
 
 /*virtual*/
-TfTokenVector
-HdSceneDelegate::GetExtComputationOutputNames(SdfPath const& id)
+HdExtComputationOutputDescriptorVector
+HdSceneDelegate::GetExtComputationOutputDescriptors(
+                                        SdfPath const& computationid)
 {
-    return TfTokenVector();
+    return HdExtComputationOutputDescriptorVector();
 }
-
 
 
 // -----------------------------------------------------------------------//
@@ -321,63 +376,28 @@ HdSceneDelegate::GetExtComputationOutputNames(SdfPath const& id)
 // -----------------------------------------------------------------------//
 
 /*virtual*/
-TfTokenVector
-HdSceneDelegate::GetPrimVarVertexNames(SdfPath const& id)
+HdPrimvarDescriptorVector
+HdSceneDelegate::GetPrimvarDescriptors(SdfPath const& id,
+                                       HdInterpolation interpolation)
 {
-    return TfTokenVector();
+    return HdPrimvarDescriptorVector();
 }
 
 /*virtual*/
-TfTokenVector
-HdSceneDelegate::GetPrimVarVaryingNames(SdfPath const& id)
+HdExtComputationPrimvarDescriptorVector
+HdSceneDelegate::GetExtComputationPrimvarDescriptors(
+                                        SdfPath const& rprimId,
+                                        HdInterpolation interpolationMode)
 {
-    return TfTokenVector();
-}
-
-/*virtual*/
-TfTokenVector
-HdSceneDelegate::GetPrimVarFacevaryingNames(SdfPath const& id)
-{
-    return TfTokenVector();
-}
-
-/*virtual*/
-TfTokenVector
-HdSceneDelegate::GetPrimVarUniformNames(SdfPath const& id)
-{
-    return TfTokenVector();
-}
-
-/*virtual*/
-TfTokenVector
-HdSceneDelegate::GetPrimVarConstantNames(SdfPath const& id)
-{
-    return TfTokenVector();
-}
-
-/*virtual*/
-TfTokenVector
-HdSceneDelegate::GetPrimVarInstanceNames(SdfPath const& id)
-{
-    return TfTokenVector();
+    return HdExtComputationPrimvarDescriptorVector();
 }
 
 
 /*virtual*/
-TfTokenVector
-HdSceneDelegate::GetExtComputationPrimVarNames(
-                                              SdfPath const& id,
-                                              HdInterpolation interpolationMode)
+std::string
+HdSceneDelegate::GetExtComputationKernel(SdfPath const& id)
 {
-    return TfTokenVector();
-}
-
-/*virtual*/
-HdExtComputationPrimVarDesc
-HdSceneDelegate::GetExtComputationPrimVarDesc(SdfPath const& id,
-                                              TfToken const& varName)
-{
-    return HdExtComputationPrimVarDesc();
+    return std::string();
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

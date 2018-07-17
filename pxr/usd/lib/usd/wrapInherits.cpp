@@ -23,6 +23,7 @@
 //
 #include "pxr/pxr.h"
 #include "pxr/usd/usd/inherits.h"
+#include "pxr/base/tf/pyResultConversions.h"
 
 #include <boost/python/class.hpp>
 #include <boost/python/operators.hpp>
@@ -36,10 +37,14 @@ PXR_NAMESPACE_USING_DIRECTIVE
 void wrapUsdInherits()
 {
     class_<UsdInherits>("Inherits", no_init)
-        .def("AppendInherit", &UsdInherits::AppendInherit, arg("primPath"))
+        .def("AddInherit", &UsdInherits::AddInherit,
+             (arg("primPath"),
+              arg("position")=UsdListPositionTempDefault))
         .def("RemoveInherit", &UsdInherits::RemoveInherit, arg("primPath"))
         .def("ClearInherits", &UsdInherits::ClearInherits)
         .def("SetInherits", &UsdInherits::SetInherits)
+        .def("GetAllDirectInherits", &UsdInherits::GetAllDirectInherits,
+             return_value_policy<TfPySequenceToList>())
         .def("GetPrim", (UsdPrim (UsdInherits::*)()) &UsdInherits::GetPrim)
         .def(!self)
         ;

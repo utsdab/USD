@@ -34,6 +34,7 @@
 #include "pxr/base/gf/ostreamHelpers.h"
 #include "pxr/base/tf/type.h"
 
+#include "pxr/base/gf/quatd.h"
 #include "pxr/base/gf/rotation.h"
 #include <float.h>
 #include <iostream>
@@ -101,6 +102,11 @@ GfMatrix3d::GfMatrix3d(const GfRotation &rot)
     SetRotate(rot);
 }
 
+GfMatrix3d::GfMatrix3d(const GfQuatd &rot)
+{
+    SetRotate(rot);
+}
+
 GfMatrix3d &
 GfMatrix3d::SetDiagonal(double s)
 {
@@ -126,7 +132,7 @@ GfMatrix3d::SetDiagonal(const GfVec3d& v)
 }
 
 double *
-GfMatrix3d::Get(double m[3][3])
+GfMatrix3d::Get(double m[3][3]) const
 {
     m[0][0] = _mtx[0][0];
     m[0][1] = _mtx[0][1];
@@ -421,14 +427,23 @@ GfMatrix3d::SetScale(double s)
 }
 
 GfMatrix3d &
+GfMatrix3d::SetRotate(const GfQuatd &rot)
+{
+    _SetRotateFromQuat(rot.GetReal(), rot.GetImaginary());
+    return *this;
+}
+
+GfMatrix3d &
 GfMatrix3d::SetRotate(const GfRotation &rot)
 {
     GfQuaternion quat = rot.GetQuaternion();
+    _SetRotateFromQuat(quat.GetReal(), GfVec3d(quat.GetImaginary()));
+    return *this;
+}
 
-    double  r = quat.GetReal();
-    GfVec3d i = quat.GetImaginary();
-
-
+void
+GfMatrix3d::_SetRotateFromQuat(double r, const GfVec3d& i)
+{
     _mtx[0][0] = 1.0 - 2.0 * (i[1] * i[1] + i[2] * i[2]);
     _mtx[0][1] =       2.0 * (i[0] * i[1] + i[2] *    r);
     _mtx[0][2] =       2.0 * (i[2] * i[0] - i[1] *    r);
@@ -440,9 +455,8 @@ GfMatrix3d::SetRotate(const GfRotation &rot)
     _mtx[2][0] =       2.0 * (i[2] * i[0] + i[1] *    r);
     _mtx[2][1] =       2.0 * (i[1] * i[2] - i[0] *    r);
     _mtx[2][2] = 1.0 - 2.0 * (i[1] * i[1] + i[0] * i[0]);
-
-    return *this;
 }
+                            
 
 GfMatrix3d &
 GfMatrix3d::SetScale(const GfVec3d &s)
@@ -504,7 +518,21 @@ GfMatrix3d::DecomposeRotation(const GfVec3d &axis0,
                              const GfVec3d &axis1,
                              const GfVec3d &axis2) const
 {
-    return ExtractRotation().Decompose(axis0, axis1, axis2);
+    return (ExtractRotation().Decompose(axis0, axis1, axis2));
 }
+
+
+bool
+GfIsClose(GfMatrix3d const &m1, GfMatrix3d const &m2, double tolerance)
+{
+    for(size_t row = 0; row < 3; ++row) {
+        for(size_t col = 0; col < 3; ++col) {
+            if(!GfIsClose(m1[row][col], m2[row][col], tolerance))
+                return false;
+        }
+    }
+    return true;
+}
+
 
 PXR_NAMESPACE_CLOSE_SCOPE

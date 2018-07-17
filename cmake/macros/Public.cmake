@@ -100,13 +100,13 @@ function(pxr_python_bin BIN_NAME)
     endif()
 
     # Add the target.
-    add_custom_target(${BIN_NAME}
+    add_custom_target(${BIN_NAME}_script
         DEPENDS ${outputs} ${pb_DEPENDENCIES}
     )
-    add_dependencies(python ${BIN_NAME})
+    add_dependencies(python ${BIN_NAME}_script)
 
     _get_folder("" folder)
-    set_target_properties(${BIN_NAME}
+    set_target_properties(${BIN_NAME}_script
         PROPERTIES
             FOLDER "${folder}"
     )
@@ -184,8 +184,13 @@ function(pxr_library NAME)
         LIBRARIES
         INCLUDE_DIRS
         RESOURCE_FILES
+        PYTHON_PUBLIC_CLASSES
+        PYTHON_PRIVATE_CLASSES
+        PYTHON_PUBLIC_HEADERS
+        PYTHON_PRIVATE_HEADERS
+        PYTHON_CPPFILES
         PYMODULE_CPPFILES
-        PYTHON_FILES
+        PYMODULE_FILES
         PYSIDE_UI_FILES
     )
 
@@ -195,6 +200,26 @@ function(pxr_library NAME)
         "${multiValueArgs}"
         ${ARGN}
     )
+
+    # If python support is enabled, merge the python specific categories
+    # with the more general before setting up compilation.
+    if(PXR_ENABLE_PYTHON_SUPPORT)
+        if(args_PYTHON_PUBLIC_CLASSES)
+            list(APPEND args_PUBLIC_CLASSES ${args_PYTHON_PUBLIC_CLASSES})
+        endif()
+        if(args_PYTHON_PUBLIC_HEADERS)
+            list(APPEND args_PUBLIC_HEADERS ${args_PYTHON_PUBLIC_HEADERS})
+        endif()
+        if(args_PYTHON_PRIVATE_CLASSES)
+            list(APPEND args_PRIVATE_CLASSES ${args_PYTHON_PRIVATE_CLASSES})
+        endif()
+        if(args_PYTHON_PRIVATE_HEADERS)
+            list(APPEND args_PRIVATE_HEADERS ${args_PYTHON_PRIVATE_HEADERS})
+        endif()
+        if(args_PYTHON_CPPFILES)
+            list(APPEND args_CPPFILES ${args_PYTHON_CPPFILES})
+        endif()
+    endif()
 
     # Collect libraries.
     get_property(help CACHE PXR_ALL_LIBS PROPERTY HELPSTRING)
@@ -284,11 +309,11 @@ function(pxr_library NAME)
         LIB_INSTALL_PREFIX_RESULT libInstallPrefix
     )
 
-    if(args_PYMODULE_CPPFILES OR args_PYTHON_FILES OR args_PYSIDE_UI_FILES)
+    if(PXR_ENABLE_PYTHON_SUPPORT AND (args_PYMODULE_CPPFILES OR args_PYMODULE_FILES OR args_PYSIDE_UI_FILES))
         _pxr_python_module(
             ${NAME}
             WRAPPED_LIB_INSTALL_PREFIX "${libInstallPrefix}"
-            PYTHON_FILES ${args_PYTHON_FILES}
+            PYTHON_FILES ${args_PYMODULE_FILES}
             PYSIDE_UI_FILES ${args_PYSIDE_UI_FILES}
             CPPFILES ${args_PYMODULE_CPPFILES}
             INCLUDE_DIRS ${args_INCLUDE_DIRS}
@@ -535,7 +560,7 @@ endfunction() # pxr_install_test_dir
 function(pxr_register_test TEST_NAME)
     if (PXR_BUILD_TESTS)
         cmake_parse_arguments(bt
-            "PYTHON;REQUIRES_DISPLAY;REQUIRES_SHARED_LIBS;REQUIRES_PYTHON_MODULES" 
+            "RUN_SERIAL;PYTHON;REQUIRES_SHARED_LIBS;REQUIRES_PYTHON_MODULES" 
             "CUSTOM_PYTHON;COMMAND;STDOUT_REDIRECT;STDERR_REDIRECT;DIFF_COMPARE;POST_COMMAND;POST_COMMAND_STDOUT_REDIRECT;POST_COMMAND_STDERR_REDIRECT;PRE_COMMAND;PRE_COMMAND_STDOUT_REDIRECT;PRE_COMMAND_STDERR_REDIRECT;FILES_EXIST;FILES_DONT_EXIST;CLEAN_OUTPUT;EXPECTED_RETURN_CODE;TESTENV"
             "ENV;PRE_PATH;POST_PATH"
             ${ARGN}
@@ -575,10 +600,6 @@ function(pxr_register_test TEST_NAME)
 
         if (bt_STDERR_REDIRECT)
             set(testWrapperCmd ${testWrapperCmd} --stderr-redirect=${bt_STDERR_REDIRECT})
-        endif()
-
-        if (bt_REQUIRES_DISPLAY)
-            set(testWrapperCmd ${testWrapperCmd} --requires-display)
         endif()
 
         if (bt_PRE_COMMAND_STDOUT_REDIRECT)
@@ -685,6 +706,12 @@ function(pxr_register_test TEST_NAME)
             COMMAND ${PYTHON_EXECUTABLE} ${testWrapperCmd}
                     "--env-var=PYTHONPATH=${_testPythonPath}" ${testCmd}
         )
+
+        # But in some cases, we need to pass cmake properties directly to cmake
+        # run_test, rather than configuring the environment
+        if (bt_RUN_SERIAL)
+            set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
+        endif()
     endif()
 endfunction() # pxr_register_test
 
@@ -832,7 +859,7 @@ function(pxr_toplevel_prologue)
 
     # Create a target for targets that require Python.  Each should add
     # itself as a dependency to the "python" target.
-    if(TARGET shared_libs)
+    if(TARGET shared_libs AND PXR_ENABLE_PYTHON_SUPPORT)
         add_custom_target(python ALL)
     endif()
 endfunction() # pxr_toplevel_prologue
@@ -1018,7 +1045,9 @@ function(pxr_core_epilogue)
             pxr_monolithic_epilogue()
             set(_building_monolithic FALSE PARENT_SCOPE)
         endif()
-        pxr_setup_python()
+        if(PXR_ENABLE_PYTHON_SUPPORT)
+            pxr_setup_python()
+        endif()
         pxr_setup_plugins()
         set(_building_core FALSE PARENT_SCOPE)
     endif()

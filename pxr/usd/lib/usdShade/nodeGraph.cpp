@@ -139,7 +139,7 @@ UsdShadeNodeGraph::ConnectableAPI() const
 
 UsdShadeOutput
 UsdShadeNodeGraph::CreateOutput(const TfToken& name,
-                             const SdfValueTypeName& typeName)
+                             const SdfValueTypeName& typeName) const
 {
     return UsdShadeConnectableAPI(GetPrim()).CreateOutput(name, typeName);
 }
@@ -156,9 +156,32 @@ UsdShadeNodeGraph::GetOutputs() const
     return UsdShadeConnectableAPI(GetPrim()).GetOutputs();
 }
 
+UsdShadeShader 
+UsdShadeNodeGraph::ComputeOutputSource(
+    const TfToken &outputName, 
+    TfToken *sourceName, 
+    UsdShadeAttributeType *sourceType) const
+{
+    UsdShadeOutput output = GetOutput(outputName); 
+    if (!output)
+        return UsdShadeShader();
+
+    UsdShadeConnectableAPI source;
+    if (output.GetConnectedSource(&source, sourceName, sourceType)) {
+        // XXX: we're not doing anything to detect cycles here, which will lead
+        // to an infinite loop.
+        if (source.IsNodeGraph()) {
+            source = UsdShadeNodeGraph(source).ComputeOutputSource(*sourceName,
+                sourceName, sourceType);
+        }
+    }
+
+    return source;
+}
+
 UsdShadeInput
 UsdShadeNodeGraph::CreateInput(const TfToken& name,
-                              const SdfValueTypeName& typeName)
+                              const SdfValueTypeName& typeName) const
 {
     TfToken inputName = name;
     if (!UsdShadeUtils::WriteNewEncoding()) {
@@ -237,7 +260,8 @@ static
 std::vector<UsdShadeInput>
 _GetInterfaceAttributeRecipientInputs(
     const UsdAttribute &interfaceAttr,
-    const TfToken &renderTarget)
+    const TfToken &renderTarget,
+    const TfTokenVector &propertyNames)
 {
     UsdPrim prim = interfaceAttr.GetPrim();
     std::vector<UsdShadeInput> ret;
@@ -253,14 +277,19 @@ _GetInterfaceAttributeRecipientInputs(
         }
     } else {
         // Find "interfaceRecipientsOf:" relationships for all renderTargets.
-        for (const UsdRelationship &rel : prim.GetRelationships()) {
+        for (const TfToken &propName : propertyNames) {
             // If the relationship name contains "interfaceRecipientsOf:"
             // and if its basename matches the basename of the interface 
             // attribute, it must be relevant to this relationship.
-            if (TfStringContains(rel.GetName(), 
+            if (TfStringContains(propName, 
                 UsdShadeTokens->interfaceRecipientsOf) &&
-                rel.GetBaseName() == interfaceAttr.GetBaseName()) {
-                interfaceRecipientsOfRels.push_back(rel);
+                TfStringEndsWith(propName,  std::string(":").append(
+                    interfaceAttr.GetBaseName().GetString()))) {
+                            
+                // Ignore silently if it's not a valid relationship.
+                if (UsdRelationship rel = prim.GetRelationship(propName)) {
+                    interfaceRecipientsOfRels.push_back(rel);
+                }
             }
         }
     }
@@ -293,6 +322,13 @@ _ComputeNonTransitiveInputConsumersMap(
 {
     UsdShadeNodeGraph::InterfaceInputConsumersMap result;
 
+    // If we're reading old encoding, cache the vector of property names to 
+    // avoid computing the entire vector once per node-graph input.
+    TfTokenVector propertyNames;
+    if (UsdShadeUtils::ReadOldEncoding()) {
+        propertyNames = nodeGraph.GetPrim().GetAuthoredPropertyNames();
+    }
+
     bool foundOldStyleInterfaceInputs = false;
     std::vector<UsdShadeInput> inputs = nodeGraph.GetInputs();
     for (const auto &input : inputs) {
@@ -305,7 +341,7 @@ _ComputeNonTransitiveInputConsumersMap(
                                 
                 const std::vector<UsdShadeInput> &recipients = 
                     _GetInterfaceAttributeRecipientInputs(input.GetAttr(), 
-                        renderTarget);
+                        renderTarget, propertyNames);
                 if (!recipients.empty()) {
                     foundOldStyleInterfaceInputs = true;
                     consumers = recipients;

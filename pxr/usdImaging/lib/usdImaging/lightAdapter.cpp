@@ -23,10 +23,14 @@
 //
 #include "pxr/usdImaging/usdImaging/lightAdapter.h"
 #include "pxr/usdImaging/usdImaging/delegate.h"
+#include "pxr/usdImaging/usdImaging/indexProxy.h"
 #include "pxr/usdImaging/usdImaging/tokens.h"
 
-#include "pxr/imaging/hd/renderIndex.h"
 #include "pxr/imaging/hd/tokens.h"
+
+#include "pxr/imaging/hd/light.h"
+
+#include "pxr/base/tf/envSetting.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -38,37 +42,39 @@ TF_REGISTRY_FUNCTION(TfType)
     // No factory here, UsdImagingLightAdapter is abstract.
 }
 
+TF_DEFINE_ENV_SETTING(USDIMAGING_ENABLE_SCENE_LIGHTS, 0, 
+                      "Enable loading scene lights.");
+bool _IsEnabledSceneLights() {
+    static bool _v = TfGetEnvSetting(USDIMAGING_ENABLE_SCENE_LIGHTS) == 1;
+    return _v;
+}
+
 UsdImagingLightAdapter::~UsdImagingLightAdapter() 
 {
 }
 
 void 
-UsdImagingLightAdapter::TrackVariabilityPrep(UsdPrim const& prim,
-                                            SdfPath const& cachePath,
-                                            HdDirtyBits requestedBits,
-                                            UsdImagingInstancerContext const* 
-                                                instancerContext)
-{    
-}
-
-void 
 UsdImagingLightAdapter::TrackVariability(UsdPrim const& prim,
                                         SdfPath const& cachePath,
-                                        HdDirtyBits requestedBits,
-                                        HdDirtyBits* dirtyBits,
+                                        HdDirtyBits* timeVaryingBits,
                                         UsdImagingInstancerContext const* 
-                                            instancerContext)
+                                            instancerContext) const
 {
-}
+    // Discover time-varying transforms.
+    _IsTransformVarying(prim,
+        HdLight::DirtyBits::DirtyTransform,
+        UsdImagingTokens->usdVaryingXform,
+        timeVaryingBits);
 
-void 
-UsdImagingLightAdapter::UpdateForTimePrep(UsdPrim const& prim,
-                                   SdfPath const& cachePath, 
-                                   UsdTimeCode time,
-                                   HdDirtyBits requestedBits,
-                                   UsdImagingInstancerContext const* 
-                                       instancerContext)
-{
+    // If any of the light attributes is time varying 
+    // we will assume all light params are time-varying.
+    const std::vector<UsdAttribute> &attrs = prim.GetAttributes();
+    TF_FOR_ALL(attrIter, attrs) {
+        const UsdAttribute& attr = *attrIter;
+        if (attr.GetNumTimeSamples()>1){
+            *timeVaryingBits |= HdLight::DirtyBits::DirtyParams;
+        }
+    }
 }
 
 // Thread safe.
@@ -78,13 +84,12 @@ UsdImagingLightAdapter::UpdateForTime(UsdPrim const& prim,
                                SdfPath const& cachePath, 
                                UsdTimeCode time,
                                HdDirtyBits requestedBits,
-                               HdDirtyBits* resultBits,
                                UsdImagingInstancerContext const* 
-                                   instancerContext)
+                                   instancerContext) const
 {
 }
 
-int
+HdDirtyBits
 UsdImagingLightAdapter::ProcessPropertyChange(UsdPrim const& prim,
                                       SdfPath const& cachePath, 
                                       TfToken const& propertyName)
@@ -93,26 +98,29 @@ UsdImagingLightAdapter::ProcessPropertyChange(UsdPrim const& prim,
 }
 
 void
-UsdImagingLightAdapter::ProcessPrimResync(SdfPath const& usdPath, 
-                                         UsdImagingIndexProxy* index) 
+UsdImagingLightAdapter::MarkDirty(UsdPrim const& prim,
+                                  SdfPath const& cachePath,
+                                  HdDirtyBits dirty,
+                                  UsdImagingIndexProxy* index)
 {
-    // XXX : This will become RemoveSprims when we standarize shaders/lights.
-    index->RemoveLight(/*cachePath*/usdPath);
-    index->RemoveDependency(/*usdPrimPath*/usdPath);
-
-    if (_GetPrim(usdPath)) {
-        // The prim still exists, so repopulate it.
-        index->Repopulate(/*cachePath*/usdPath);
-    }
+    index->MarkSprimDirty(cachePath, dirty);
 }
 
 void
-UsdImagingLightAdapter::ProcessPrimRemoval(SdfPath const& usdPath, 
-                                          UsdImagingIndexProxy* index) 
+UsdImagingLightAdapter::MarkTransformDirty(UsdPrim const& prim,
+                                           SdfPath const& cachePath,
+                                           UsdImagingIndexProxy* index)
 {
-    // XXX : This will become RemoveSprims when we standarize shaders/lights.
-    index->RemoveLight(/*cachePath*/usdPath);
-    index->RemoveDependency(/*usdPrimPath*/usdPath);
+    static const HdDirtyBits transformDirty = HdLight::DirtyTransform;
+    index->MarkSprimDirty(cachePath, transformDirty);
+}
+
+void
+UsdImagingLightAdapter::MarkVisibilityDirty(UsdPrim const& prim,
+                                            SdfPath const& cachePath,
+                                            UsdImagingIndexProxy* index)
+{
+    // TBD
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

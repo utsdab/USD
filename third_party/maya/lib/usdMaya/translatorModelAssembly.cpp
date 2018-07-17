@@ -24,6 +24,7 @@
 #include "pxr/pxr.h"
 #include "usdMaya/translatorModelAssembly.h"
 
+#include "usdMaya/JobArgs.h"
 #include "usdMaya/primReaderArgs.h"
 #include "usdMaya/primReaderContext.h"
 #include "usdMaya/primWriterArgs.h"
@@ -110,6 +111,22 @@ PxrUsdMayaTranslatorModelAssembly::Create(
         return true;
     }
 
+    // Guard against a situation where the prim being referenced has
+    // xformOp's specified in its xformOpOrder but the reference assembly
+    // in Maya has an identity transform. We would normally skip writing out
+    // the xformOpOrder, but that isn't correct since we would inherit the
+    // xformOpOrder, which we don't want.
+    // Instead, always write out an empty xformOpOrder if the transform writer
+    // did not write out an xformOpOrder in its constructor. This guarantees
+    // that we get an identity transform as expected (instead of inheriting).
+    bool resetsXformStack;
+    UsdGeomXformable xformable(prim);
+    std::vector<UsdGeomXformOp> orderedXformOps =
+            xformable.GetOrderedXformOps(&resetsXformStack);
+    if (orderedXformOps.empty() && !resetsXformStack) {
+        xformable.CreateXformOpOrderAttr().Block();
+    }
+
     const MDagPath& currPath = args.GetMDagPath();
 
     // because of how we generate these things and node collapsing, sometimes
@@ -136,12 +153,12 @@ PxrUsdMayaTranslatorModelAssembly::Create(
             }
 
             if (refPrimPathStr.empty()) {
-                refs.AppendReference(refAssetPath);
+                refs.AddReference(refAssetPath);
             } else {
                 SdfPath refPrimPath(refPrimPathStr);
 
                 if (refPrimPath.IsRootPrimPath()) {
-                    refs.AppendReference(SdfReference(refAssetPath, refPrimPath));
+                    refs.AddReference(SdfReference(refAssetPath, refPrimPath));
                 } else {
                     MString errorMsg("Not creating reference for assembly node '");
                     errorMsg += assemblyNode.fullPathName();
@@ -240,18 +257,14 @@ _GetReferenceInfo(
     std::string* assetIdentifier,
     SdfPath* assetPrimPath)
 {
-    SdfReferenceListOp refs;
-    prim.GetMetadata(SdfFieldKeys->References, &refs);
+    SdfReferenceListOp refsOp;
+    SdfReferenceListOp::ItemVector refs;
+    prim.GetMetadata(SdfFieldKeys->References, &refsOp);
+    refsOp.ApplyOperations(&refs);
 
     // this logic is not robust.  awaiting bug 99278.
-    if (!refs.GetAddedItems().empty()) {
-        const SdfReference& ref = refs.GetAddedItems()[0];
-        *assetIdentifier = ref.GetAssetPath();
-        *assetPrimPath = ref.GetPrimPath();
-        return true;
-    }
-    if (!refs.GetExplicitItems().empty()) {
-        const SdfReference& ref = refs.GetExplicitItems()[0];
+    if (!refs.empty()) {
+        const SdfReference& ref = refs[0];
         *assetIdentifier = ref.GetAssetPath();
         *assetPrimPath = ref.GetPrimPath();
         return true;
@@ -321,8 +334,13 @@ PxrUsdMayaTranslatorModelAssembly::Read(
     const PxrUsdMayaPrimReaderArgs& args,
     PxrUsdMayaPrimReaderContext* context,
     const std::string& assemblyTypeName,
-    const std::string& assemblyRep)
+    const TfToken& assemblyRep)
 {
+    // This translator does not apply if assemblyRep == "Import".
+    if (assemblyRep == PxrUsdMayaTranslatorTokens->Import) {
+        return false;
+    }
+
     UsdStageCacheContext stageCacheContext(UsdMayaStageCache::Get());
     UsdStageRefPtr usdStage = UsdStage::Open(assetIdentifier);
     if (!usdStage) {
@@ -330,6 +348,8 @@ PxrUsdMayaTranslatorModelAssembly::Read(
             MString(assetIdentifier.c_str()));
         return false;
     }
+
+    usdStage->SetEditTarget(usdStage->GetSessionLayer());
 
     UsdPrim modelPrim;
     if (!assetPrimPath.IsEmpty()) {
@@ -435,11 +455,11 @@ PxrUsdMayaTranslatorModelAssembly::Read(
     }
 
     // If a representation was supplied, activate it.
-    if (!assemblyRep.empty()) {
+    if (!assemblyRep.IsEmpty()) {
         MFnAssembly assemblyFn(assemblyObj, &status);
         CHECK_MSTATUS_AND_RETURN(status, false);
         if (assemblyFn.canActivate(&status)) {
-            status = assemblyFn.activate(assemblyRep.c_str());
+            status = assemblyFn.activate(assemblyRep.GetText());
             CHECK_MSTATUS_AND_RETURN(status, false);
         }
     }

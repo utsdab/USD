@@ -48,6 +48,7 @@ wrapResolver()
         .def("CreateDefaultContext", &This::CreateDefaultContext)
         .def("CreateDefaultContextForAsset", 
              &This::CreateDefaultContextForAsset)
+        .def("GetCurrentContext", &This::GetCurrentContext)
 
         .def("AnchorRelativePath", &This::AnchorRelativePath)
         .def("Resolve", &This::Resolve)
@@ -55,6 +56,9 @@ wrapResolver()
 
     def("GetResolver", ArGetResolver,
         return_value_policy<reference_existing_object>());
+
+    def("SetPreferredResolver", ArSetPreferredResolver,
+        arg("resolverTypeName"));
 }
 
 TF_REFPTR_CONST_VOLATILE_GET(ArResolver)

@@ -31,6 +31,7 @@
 #include "pxr/usd/usdShade/material.h"
 
 #include "usdMaya/primReaderContext.h"
+#include "usdMaya/shadingModeExporter.h"
 #include "usdMaya/util.h"
 
 #include <maya/MObject.h>
@@ -68,18 +69,16 @@ struct PxrUsdMayaTranslatorMaterial
             MObject shapeObj,
             PxrUsdMayaPrimReaderContext* context);
 
-    // Finds shadingEngines in the maya scene and exports them to \p stage.  This
-    // will call the current export for the shadingMode.
-    // Shaders that are bound to prims under \p bindableRoot paths will get
-    // exported.  If \p bindableRoots is empty, it will export all.
+    /// Finds shadingEngines in the maya scene and exports them to \p stage.  This
+    /// will call the current export for the shadingMode.
+    /// 
     PXRUSDMAYA_API
     static void 
     ExportShadingEngines(
             const UsdStageRefPtr& stage,
-            const PxrUsdMayaUtil::ShapeSet& bindableRoots,
             const TfToken& shadingMode,
-            bool mergeTransformAndShape,
-            SdfPath overrideRootPath);
+            const PxrUsdMayaUtil::MDagPathMap<SdfPath>::Type& dagPathToUsdMap,
+            const PxrUsdMayaExportParams &exportParams);
 };
 
 

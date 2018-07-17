@@ -253,12 +253,14 @@ setMatrix(float *dst, GfMatrix4d const & mat)
 void
 GlfSimpleLightingContext::BindUniformBlocks(GlfBindingMapPtr const &bindingMap)
 {
+    GLF_GROUP_FUNCTION();
+    
     if (!_lightingUniformBlock)
-        _lightingUniformBlock = GlfUniformBlock::New();
+        _lightingUniformBlock = GlfUniformBlock::New("_lightingUniformBlock");
     if (!_shadowUniformBlock)
-        _shadowUniformBlock = GlfUniformBlock::New();
+        _shadowUniformBlock = GlfUniformBlock::New("_shadowUniformBlock");
     if (!_materialUniformBlock)
-        _materialUniformBlock = GlfUniformBlock::New();
+        _materialUniformBlock = GlfUniformBlock::New("_materialUniformBlock");
 
     bool shadowExists = false;
     if ((!_lightingUniformBlockValid ||
@@ -472,6 +474,31 @@ GlfSimpleLightingContext::SetStateFromOpenGL()
             
             glGetLightfv(lightName, GL_SPECULAR, color);
             light.SetSpecular(GfVec4f(color));
+
+            GLfloat spotDirection[3];
+            glGetLightfv(lightName, GL_SPOT_DIRECTION, spotDirection);
+            light.SetSpotDirection(
+                viewToWorldMatrix.TransformDir(GfVec3f(spotDirection)));
+
+            GLfloat floatValue;
+
+            glGetLightfv(lightName, GL_SPOT_CUTOFF, &floatValue);
+            light.SetSpotCutoff(floatValue);
+
+            glGetLightfv(lightName, GL_SPOT_EXPONENT, &floatValue);
+            light.SetSpotFalloff(floatValue);
+
+            GfVec3f attenuation;
+            glGetLightfv(lightName, GL_CONSTANT_ATTENUATION, &floatValue);
+            attenuation[0] = floatValue;
+
+            glGetLightfv(lightName, GL_LINEAR_ATTENUATION, &floatValue);
+            attenuation[1] = floatValue;
+
+            glGetLightfv(lightName, GL_QUADRATIC_ATTENUATION, &floatValue);
+            attenuation[2] = floatValue;
+
+            light.SetAttenuation(attenuation);
 
             lights.push_back(light);
         }

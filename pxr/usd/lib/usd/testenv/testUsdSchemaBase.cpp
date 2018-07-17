@@ -24,6 +24,10 @@
 
 #include "pxr/pxr.h"
 #include "pxr/usd/usd/prim.h"
+#include "pxr/usd/usd/modelAPI.h"
+#include "pxr/usd/usd/clipsAPI.h"
+#include "pxr/usd/usd/collectionAPI.h"
+#include "pxr/usd/usd/stage.h"
 #include "pxr/usd/usd/schemaBase.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -114,13 +118,40 @@ TestEnsureParentCtorForCopying()
     TF_VERIFY( base.foo == MUTATED_VAL );
 }
 
+static void
+TestPrimQueries()
+{
+    printf("TestPrimQueries...\n");
+
+    auto stage = UsdStage::CreateInMemory("TestPrimQueries.usd");
+    auto path = SdfPath("/p");
+    auto prim = stage->DefinePrim(path);
+    
+    printf("--------Ensuring no schemas are applied -------\n");
+    assert(!prim.HasAPI<UsdCollectionAPI>());
+
+    printf("--------Applying UsdCollectionAPI -------\n");
+
+    UsdCollectionAPI coll = UsdCollectionAPI::ApplyCollection(prim, 
+            TfToken("testColl"));
+    assert(prim.HasAPI<UsdCollectionAPI>());
+
+    assert(prim.HasAPI<UsdCollectionAPI>(/*instanceName*/ TfToken("testColl")));
+
+    assert(!prim.HasAPI<UsdCollectionAPI>(
+            /*instanceName*/ TfToken("nonExistentColl")));
+}
+
 int main(int argc, char** argv)
 {
     TestEnsureParentCtorForCopying();
+    TestPrimQueries();
     
     printf("Passed!\n");
     
+#ifdef PXR_PYTHON_SUPPORT_ENABLED
     TF_AXIOM(!Py_IsInitialized());
+#endif // PXR_PYTHON_SUPPORT_ENABLED
 
     return EXIT_SUCCESS;
 }

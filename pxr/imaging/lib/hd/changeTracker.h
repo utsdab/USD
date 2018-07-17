@@ -57,17 +57,17 @@ class HdRenderIndex;
 class HdChangeTracker : public boost::noncopyable {
 public:
 
-    enum RprimDirtyBits {
+    enum RprimDirtyBits : HdDirtyBits {
         Clean                       = 0,
-        ForceSync                   = 1 << 0,
+        InitRepr                    = 1 << 0,
         Varying                     = 1 << 1,
         AllDirty                    = ~Varying,
         DirtyPrimID                 = 1 << 2,
         DirtyExtent                 = 1 << 3,
         DirtyRefineLevel            = 1 << 4,
         DirtyPoints                 = 1 << 5,
-        DirtyPrimVar                = 1 << 6,
-        DirtySurfaceShader          = 1 << 7,
+        DirtyPrimvar                = 1 << 6,
+        DirtyMaterialId             = 1 << 7,
         DirtyTopology               = 1 << 8,
         DirtyTransform              = 1 << 9,
         DirtyVisibility             = 1 << 10,
@@ -79,16 +79,18 @@ public:
         DirtyInstancer              = 1 << 16,
         DirtyInstanceIndex          = 1 << 17,
         DirtyRepr                   = 1 << 18,
-        DirtyPurpose                = 1 << 19,
+        DirtyRenderTag              = 1 << 19,
         DirtyComputationPrimvarDesc = 1 << 20,
         AllSceneDirtyBits           = ((1<<21) - 1),
 
-        CustomBitsBegin             = 1 << 21,
+        NewRepr                     = 1 << 21,
+
+        CustomBitsBegin             = 1 << 22,
         CustomBitsEnd               = 1 << 30,
     };
 
     // Dirty bits for Tasks
-    enum NonRprimDirtyBits {
+    enum NonRprimDirtyBits : HdDirtyBits {
         //Varying               = 1 << 0,
         DirtyType             = 1 << 1,
         DirtyChildren         = 1 << 2,
@@ -137,7 +139,7 @@ public:
 
     /// Mark the primvar for the rprim with \p id as being dirty.
     HD_API
-    void MarkPrimVarDirty(SdfPath const& id, TfToken const& name);
+    void MarkPrimvarDirty(SdfPath const& id, TfToken const& name);
 
     /// Flag all the Rprim with the given \p id as being dirty. Multiple calls
     /// with different dirty bits accumulate.
@@ -172,11 +174,11 @@ public:
     /// Returns true if the rprim identified by \p id with primvar \p name is
     /// dirty.
     HD_API
-    bool IsPrimVarDirty(SdfPath const& id, TfToken const& name);
+    bool IsPrimvarDirty(SdfPath const& id, TfToken const& name);
 
     /// Returns true if the rprim identified by \p id has any dirty primvars.
     HD_API
-    bool IsAnyPrimVarDirty(SdfPath const& id);
+    bool IsAnyPrimvarDirty(SdfPath const& id);
 
     /// Returns true if the rprim identified by \p id has a dirty topology.
     HD_API
@@ -231,13 +233,13 @@ public:
     /// Returns true if the dirtyBits has a dirty primvar \p name.
     /// id is for perflog.
     HD_API
-    static bool IsPrimVarDirty(HdDirtyBits dirtyBits, SdfPath const& id,
+    static bool IsPrimvarDirty(HdDirtyBits dirtyBits, SdfPath const& id,
                                TfToken const& name);
 
     /// Returns true if the dirtyBits has any dirty primvars.
     /// id is for perflog.
     HD_API
-    static bool IsAnyPrimVarDirty(HdDirtyBits dirtyBits, SdfPath const& id);
+    static bool IsAnyPrimvarDirty(HdDirtyBits dirtyBits, SdfPath const& id);
 
     /// Returns true if the dirtyBits has a dirty topology. id is for perflog.
     HD_API
@@ -278,7 +280,7 @@ public:
 
     /// Set the primvar dirty flag to \p dirtyBits.
     HD_API
-    static void MarkPrimVarDirty(HdDirtyBits *dirtyBits, TfToken const &name);
+    static void MarkPrimvarDirty(HdDirtyBits *dirtyBits, TfToken const &name);
 
     // ---------------------------------------------------------------------- //
     /// @}
@@ -403,34 +405,6 @@ public:
 
     // ---------------------------------------------------------------------- //
     /// @}
-    /// \name ExtComputation Object Tracking
-    /// @{
-    // ---------------------------------------------------------------------- //
-
-    /// Start tracking ExtComputation with the given \p id.
-    HD_API
-    void ExtComputationInserted(SdfPath const& id,
-                                HdDirtyBits initialDirtyState);
-
-    /// Stop tracking ExtComputation with the given \p id.
-    HD_API
-    void ExtComputationRemoved(SdfPath const& id);
-
-    /// Set the dirty flags to \p bits.
-    HD_API
-    void MarkExtComputationDirty(SdfPath const& id, HdDirtyBits bits=AllDirty);
-
-    /// Get the dirty bits for ExtComputation with the given \p id.
-    HD_API
-    HdDirtyBits GetExtComputationDirtyBits(SdfPath const& id) const;
-
-    /// Set the dirty flags to \p newBits.
-    HD_API
-    void MarkExtComputationClean(SdfPath const& id, HdDirtyBits newBits=Clean);
-
-
-    // ---------------------------------------------------------------------- //
-    /// @}
     /// \name GarbageCollection Tracking
     /// @{
     // ---------------------------------------------------------------------- //
@@ -472,12 +446,12 @@ public:
 
     /// Returns the current version of the named collection.
     HD_API
-    unsigned GetCollectionVersion(TfToken const& collectionName);
+    unsigned GetCollectionVersion(TfToken const& collectionName) const;
 
     /// Returns the number of changes to visibility. This is intended to be used
     /// to detect when visibility has changed for *any* Rprim.
     HD_API
-    unsigned GetVisibilityChangeCount();
+    unsigned GetVisibilityChangeCount() const;
 
     /// Returns the current version of varying state. This is used to refresh
     /// cached DirtyLists
@@ -550,14 +524,13 @@ private:
     _IDStateMap _taskState;
     _IDStateMap _sprimState;
     _IDStateMap _bprimState;
-    _IDStateMap _extComputationState;
     _GeneralStateMap _generalState;
 
     // Collection versions / state.
     _CollectionStateMap _collectionState;
     bool _needsGarbageCollection;
 
-    // Provides reverse-assosiation between instancers and the rprims that use
+    // Provides reverse-association between instancers and the rprims that use
     // them.
     _InstancerRprimMap _instancerRprimMap;
 
@@ -570,7 +543,7 @@ private:
     // Used for coarse grain invalidation of all RprimCollections.
     unsigned _indexVersion;
 
-    // Used to detect that no changes have occured when building dirty lists.
+    // Used to detect that no changes have occurred when building dirty lists.
     unsigned _changeCount;
 
     // Used to detect that visibility changed somewhere in the render index.

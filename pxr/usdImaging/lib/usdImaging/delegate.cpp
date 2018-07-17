@@ -25,43 +25,45 @@
 
 #include "pxr/usdImaging/usdImaging/adapterRegistry.h"
 #include "pxr/usdImaging/usdImaging/debugCodes.h"
+#include "pxr/usdImaging/usdImaging/indexProxy.h"
 #include "pxr/usdImaging/usdImaging/instanceAdapter.h"
 #include "pxr/usdImaging/usdImaging/primAdapter.h"
-#include "pxr/usdImaging/usdImaging/shaderAdapter.h"
 #include "pxr/usdImaging/usdImaging/tokens.h"
-
-#include "pxr/imaging/glf/ptexTexture.h"
-#include "pxr/imaging/glf/textureRegistry.h"
 
 #include "pxr/imaging/hd/basisCurves.h"
 #include "pxr/imaging/hd/basisCurvesTopology.h"
 #include "pxr/imaging/hd/enums.h"
+#include "pxr/imaging/hd/material.h"
 #include "pxr/imaging/hd/mesh.h"
 #include "pxr/imaging/hd/meshTopology.h"
 #include "pxr/imaging/hd/perfLog.h"
 #include "pxr/imaging/hd/points.h"
-#include "pxr/imaging/hd/shader.h"
+#include "pxr/imaging/hd/primGather.h"
+#include "pxr/imaging/hd/renderDelegate.h"
 #include "pxr/imaging/hd/tokens.h"
 
 #include "pxr/usd/ar/resolver.h"
 #include "pxr/usd/ar/resolverContext.h"
 
+#include "pxr/usd/usd/modelAPI.h"
 #include "pxr/usd/usd/primRange.h"
+#include "pxr/usd/kind/registry.h"
 
 #include "pxr/usd/usdGeom/tokens.h"
-
-#include "pxr/usd/usdHydra/shader.h"
-#include "pxr/usd/usdHydra/uvTexture.h"
+#include "pxr/usd/usdGeom/modelAPI.h"
 
 #include "pxr/usd/usdLux/domeLight.h"
 
 #include "pxr/base/work/loops.h"
 
+#include "pxr/base/tf/envSetting.h"
 #include "pxr/base/tf/pyLock.h"
 #include "pxr/base/tf/fileUtils.h"
+#include "pxr/base/tf/ostreamMethods.h"
 #include "pxr/base/tf/stl.h"
 #include "pxr/base/tf/type.h"
 
+#include <functional>
 #include <limits>
 #include <string>
 
@@ -69,8 +71,8 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 
 // TODO: 
-// reduce shader traversals to a single pass; currently usdImaging will traverse
-// a single shader network multiple times during sync.
+// reduce material traversals to a single pass; currently usdImaging will traverse
+// a single material network multiple times during sync.
 
 // XXX: Perhaps all interpolation tokens for Hydra should come from Hd and
 // UsdGeom tokens should be passed through a mapping function.
@@ -78,7 +80,18 @@ TF_DEFINE_PRIVATE_TOKENS(
     _tokens,
     (instance)
     (texturePath)
+    (Material)
+    (HydraPbsSurface)
 );
+
+// This environment variable matches a set of similar ones in
+// primAdapter.cpp, controlling other attribute caches.
+TF_DEFINE_ENV_SETTING(USDIMAGING_ENABLE_DRAWMODE_CACHE, 1,
+                      "Enable a cache for model:drawMode.");
+static bool _IsEnabledDrawModeCache() {
+    static bool _v = TfGetEnvSetting(USDIMAGING_ENABLE_DRAWMODE_CACHE) == 1;
+    return _v;
+}
 
 // -------------------------------------------------------------------------- //
 // Delegate Implementation.
@@ -90,19 +103,30 @@ UsdImagingDelegate::UsdImagingDelegate(
         SdfPath const& delegateID)
     : HdSceneDelegate(parentIndex, delegateID)
     , _valueCache()
-    , _compensationPath(SdfPath::AbsoluteRootPath())
     , _rootXf(1.0)
     , _rootIsVisible(true)
     , _time(std::numeric_limits<double>::infinity())
     , _refineLevelFallback(0)
     , _reprFallback()
     , _cullStyleFallback(HdCullStyleDontCare)
-    , _xformCache(GetTime(), GetRootCompensation())
-    , _materialBindingCache(GetTime(), GetRootCompensation())
-    , _visCache(GetTime(), GetRootCompensation())
-    , _shaderAdapter(boost::make_shared<UsdImagingShaderAdapter>(this))
+    , _xformCache(GetTime())
+    , _materialBindingImplData(parentIndex->GetRenderDelegate()->
+            CanComputeMaterialNetworks() ? UsdShadeTokens->full 
+                                         : UsdShadeTokens->preview)
+    , _materialBindingCache(GetTime(), &_materialBindingImplData)
+    , _visCache(GetTime())
+    , _drawModeCache(GetTime())
     , _displayGuides(true)
+    , _enableUsdDrawModes(true)
+    , _hasDrawModeAdapter( UsdImagingAdapterRegistry::GetInstance()
+                           .HasAdapter(UsdImagingAdapterKeyTokens
+                                       ->drawModeAdapterKey) )
 {
+    // Default to 2 samples: this frame and the next frame.
+    // XXX In the future this should be configurable via negotation
+    // between frontend and backend, or be provided otherwise.
+    _timeSampleOffsets.push_back(0.0);
+    _timeSampleOffsets.push_back(1.0);
 }
 
 UsdImagingDelegate::~UsdImagingDelegate()
@@ -110,67 +134,72 @@ UsdImagingDelegate::~UsdImagingDelegate()
     TfNotice::Revoke(_objectsChangedNoticeKey);
 
     // Remove all prims from the render index.
+
+    // Even though this delegate is going out of scope
+    // the render index may not be.  So, need to make
+    // sure we properly remove all prims from the
+    // render index.
+    //
+    // Note: This is not going through the adapters
+    // as we are destroying the whole delegate.  It is
+    // assumed that adapters are not shared between delegates.
     HdRenderIndex& index = GetRenderIndex();
-    TF_FOR_ALL(it, _dirtyMap) {
-        index.RemoveRprim(GetPathForIndex(it->first));
-    }
+    index.RemoveSubtree(GetDelegateID(), this);
 
-    TF_FOR_ALL(it, _instancerPrimPaths) {
-        index.RemoveInstancer(GetPathForIndex(*it));
-    }
-    // note texturePath has already been decorated by GetPathForIndex()
-    TF_FOR_ALL(it, _texturePaths) {
-        index.RemoveBprim(HdPrimTypeTokens->texture, *it);
-    }
-    TF_FOR_ALL(it, _shaderMap) {
-        index.RemoveSprim(HdPrimTypeTokens->shader, GetPathForIndex(it->first));
-    }
-    TF_FOR_ALL(it, _lightMap) {
-        index.RemoveSprim(it->second, GetPathForIndex(it->first));
-    }
+    _instancerPrimPaths.clear();
+    _refineLevelMap.clear();
+    _pickablesMap.clear();
+    _primInfoMap.clear();
+    _usdIds.Clear();
+    _adapterMap.clear();
 }
 
-HdDirtyBits*
-UsdImagingDelegate::_GetDirtyBits(SdfPath const& usdPath)
+
+bool
+UsdImagingDelegate::_IsDrawModeApplied(UsdPrim const& prim)
 {
-    _DirtyMap::iterator it = _dirtyMap.find(usdPath);
-    if (!TF_VERIFY(it != _dirtyMap.end(), "%s\n", usdPath.GetText())) {
-        // Should never get here.
-        return nullptr;
+    // Compute the inherited drawMode.
+    TfToken drawMode = _GetModelDrawMode(prim);
+    // If draw mode is "default", no draw mode is applied.
+    if (drawMode == UsdGeomTokens->default_) {
+        return false;
     }
-    return &it->second;
+
+    // Draw mode is only applied on models that are components, or which have
+    // applyDrawMode = true.
+    UsdModelAPI model(prim);
+    bool applyDrawMode = false;
+    TfToken kind;
+    UsdAttribute attr;
+    if (model.GetKind(&kind) && KindRegistry::IsA(kind, KindTokens->component))
+        applyDrawMode = true;
+    else {
+        UsdGeomModelAPI geomModel(prim);
+        if ((attr = geomModel.GetModelApplyDrawModeAttr()))
+            attr.Get(&applyDrawMode);
+    }
+
+    return applyDrawMode;
 }
 
-void 
-UsdImagingDelegate::_MarkRprimOrInstancerDirty(SdfPath const& usdPath,
-                                               HdDirtyBits dirtyFlags,
-                                               bool cacheDirtyFlags)
+
+TfToken
+UsdImagingDelegate::_GetModelDrawMode(UsdPrim const& prim)
 {
-    // This function handles external client driven dirty tracking.
-    // e.g. SetRootTransform, SetRefineLevel, SetCullStyle, ...
-    //
-    // both _dirtyMap and changeTracker are updated below.
-    // XXX: there's a performance concern that _dirtyMap is tracking the stable
-    //      variability state
-    //
+    HD_TRACE_FUNCTION();
 
-    SdfPath const& indexPath = GetPathForIndex(usdPath);
-    HdChangeTracker& tracker = GetRenderIndex().GetChangeTracker();
+    // Draw modes can only be applied to models.
+    if (!prim.IsModel()) { return UsdGeomTokens->default_; }
 
-    _DirtyMap::iterator it = _dirtyMap.find(usdPath);
-    if (!TF_VERIFY(it != _dirtyMap.end(), "%s\n", usdPath.GetText())) {
-        return;
-    }
-    if (cacheDirtyFlags) {
-        it->second |= dirtyFlags;
-    }
+    // Draw modes can't be applied to the pseudo-root.
+    if (!prim.GetParent()) { return UsdGeomTokens->default_; }
 
-    if (_instancerPrimPaths.find(usdPath) != _instancerPrimPaths.end()) {
-        tracker.MarkInstancerDirty(indexPath, dirtyFlags);
-    } else {
-        tracker.MarkRprimDirty(indexPath, dirtyFlags);
-    }
+    if (_IsEnabledDrawModeCache())
+        return _drawModeCache.GetValue(prim);
+    else
+        return UsdImaging_DrawModeStrategy::ComputeDrawMode(prim);
 }
+
 
 UsdImagingDelegate::_AdapterSharedPtr const& 
 UsdImagingDelegate::_AdapterLookup(UsdPrim const& prim, bool ignoreInstancing)
@@ -187,9 +216,21 @@ UsdImagingDelegate::_AdapterLookup(UsdPrim const& prim, bool ignoreInstancing)
     TfToken adapterKey;
     if (!ignoreInstancing && prim.IsInstance()) {
         adapterKey = UsdImagingAdapterKeyTokens->instanceAdapterKey;
-    }
-    else {
+    } else if (_hasDrawModeAdapter && _enableUsdDrawModes &&
+               _IsDrawModeApplied(prim)) {
+        adapterKey = UsdImagingAdapterKeyTokens->drawModeAdapterKey;
+    } else {
         adapterKey = prim.GetTypeName();
+        // XXX: transitional code
+        // If we are using material networks, we want Looks to be 
+        // treated like Materials. When not using networks,
+        // we want Shaders to be treated like HydraPbsSurface
+        // for backwards compatibility.
+        bool useMaterialNetworks = GetRenderIndex().
+            GetRenderDelegate()->CanComputeMaterialNetworks();
+        if (!useMaterialNetworks && adapterKey == _tokens->Material) {
+            adapterKey = _tokens->HydraPbsSurface;
+        }
     }
 
     _AdapterMap::const_iterator it = _adapterMap.find(adapterKey);
@@ -203,7 +244,8 @@ UsdImagingDelegate::_AdapterLookup(UsdPrim const& prim, bool ignoreInstancing)
     // If the adapter type isn't supported by the render index,
     // we force the adapter to be null.
     if (adapter) {
-        if (adapter->IsSupported(&GetRenderIndex())) {
+        UsdImagingIndexProxy indexProxy(this, nullptr);
+        if (adapter->IsSupported(&indexProxy)) {
             adapter->SetDelegate(this);
         } else {
             TF_WARN("Selected hydra renderer doesn't support prim type '%s'",
@@ -217,21 +259,15 @@ UsdImagingDelegate::_AdapterLookup(UsdPrim const& prim, bool ignoreInstancing)
         std::make_pair(adapterKey, adapter)).first->second;
 }
 
-UsdImagingDelegate::_AdapterSharedPtr const& 
-UsdImagingDelegate::_AdapterLookupByPath(SdfPath const& usdPath)
+UsdImagingDelegate::_PrimInfo *
+UsdImagingDelegate::GetPrimInfo(const SdfPath &usdPath)
 {
-    static UsdImagingDelegate::_AdapterSharedPtr const NULL_ADAPTER;
-    _PathAdapterMap::const_iterator it = _pathAdapterMap.find(usdPath);
-    return (it != _pathAdapterMap.end()) 
-                ? it->second 
-                : NULL_ADAPTER;
-}
+    _PrimInfoMap::iterator it = _primInfoMap.find(usdPath);
+    if (it == _primInfoMap.end()) {
+        return nullptr;
+    }
 
-UsdImagingDelegate::_ShaderAdapterSharedPtr 
-UsdImagingDelegate::_ShaderAdapterLookup(
-        SdfPath const& shaderId) const
-{
-    return _shaderAdapter;
+    return &(it->second);
 }
 
 // -------------------------------------------------------------------------- //
@@ -244,55 +280,29 @@ public:
 
 private:
     struct _Task {
-        _Task() : delegate(NULL), requestBits(0) { }
-        _Task(UsdImagingDelegate* delegate_, const SdfPath& path_, 
-                        HdDirtyBits requestBits_)
+        _Task() : delegate(nullptr) { }
+        _Task(UsdImagingDelegate* delegate_, const SdfPath& path_)
             : delegate(delegate_)
             , path(path_)
-            , requestBits(requestBits_)
         {
         }
 
         UsdImagingDelegate* delegate;
         SdfPath path;
-        HdDirtyBits requestBits;
     };
     std::vector<_Task> _tasks;
-
-    ResultVector _results;
-    boost::optional<HdDirtyBits> _requestBits;
 
 public:
     _Worker()
     {
     }
 
-    void SetRequestBits(int flags) {
-        _requestBits = flags;
-    }
-
-    HdDirtyBits GetRequestBits(_Task const& task) {
-         if (_requestBits) {
-            return *_requestBits; 
-         } else {
-            return task.requestBits;
-         }
-    }
-
-    void AddTask(UsdImagingDelegate* delegate, SdfPath const& usdPath, 
-                 HdDirtyBits requestBits=0) {
-        _tasks.push_back(_Task(delegate, usdPath, requestBits));
-        // TODO: This is only used when updating, might be nice to split this
-        // out into two classes.
-        _results.push_back(std::make_pair(usdPath, 0));
+    void AddTask(UsdImagingDelegate* delegate, SdfPath const& usdPath) {
+        _tasks.push_back(_Task(delegate, usdPath));
     }
 
     size_t GetTaskCount() {
         return _tasks.size();
-    }
-
-    ResultVector const& GetResults() {
-        return _results;
     }
 
     // Disables value cache mutations for all imaging delegates that have
@@ -316,13 +326,13 @@ public:
         TF_FOR_ALL(it, _tasks) {
             UsdImagingDelegate* delegate = it->delegate;
             SdfPath const& usdPath = it->path;
-            UsdPrim const& prim = delegate->_GetPrim(usdPath);
-            _AdapterSharedPtr const& adapter = 
-                                        delegate->_AdapterLookupByPath(usdPath);
-            if (TF_VERIFY(adapter, "%s\n", usdPath.GetText())) {
-                adapter->TrackVariabilityPrep(prim, 
-                                              usdPath, 
-                                              GetRequestBits(*it));
+
+            _PrimInfo *primInfo = delegate->GetPrimInfo(usdPath);
+            if (TF_VERIFY(primInfo, "%s\n", usdPath.GetText())) {
+                _AdapterSharedPtr const& adapter = primInfo->adapter;
+                if (TF_VERIFY(adapter, "%s\n", usdPath.GetText())) {
+                    adapter->TrackVariabilityPrep(primInfo->usdPrim, usdPath);
+                }
             }
         }
     }
@@ -332,24 +342,23 @@ public:
     void UpdateVariability(size_t start, size_t end) {
         for (size_t i = start; i < end; i++) {
             UsdImagingDelegate* delegate = _tasks[i].delegate;
+            UsdImagingIndexProxy indexProxy(delegate, nullptr);
             SdfPath const& usdPath = _tasks[i].path;
-            UsdPrim const& prim = delegate->_GetPrim(usdPath);
-            HdDirtyBits* requestBits = NULL;
-            HdDirtyBits* dirtyBits = delegate->_GetDirtyBits(usdPath);
-            if (_requestBits) {
-                requestBits = &(*_requestBits);
-            } else {
-                if (!dirtyBits) {
-                    // Should never get here; _GetDirtyBits will hit a failed
-                    // verify when we do.
-                    continue;
+
+            _PrimInfo *primInfo = delegate->GetPrimInfo(usdPath);
+            if (TF_VERIFY(primInfo, "%s\n", usdPath.GetText())) {
+                _AdapterSharedPtr const& adapter = primInfo->adapter;
+                if (TF_VERIFY(adapter, "%s\n", usdPath.GetText())) {
+                    adapter->TrackVariability(primInfo->usdPrim,
+                                              usdPath,
+                                              &primInfo->timeVaryingBits);
+                    if (primInfo->timeVaryingBits != HdChangeTracker::Clean) {
+                        adapter->MarkDirty(primInfo->usdPrim,
+                                           usdPath,
+                                           primInfo->timeVaryingBits,
+                                           &indexProxy);
+                    }
                 }
-                requestBits = dirtyBits;
-            }
-            _AdapterSharedPtr const& adapter = 
-                                        delegate->_AdapterLookupByPath(usdPath);
-            if (TF_VERIFY(adapter, "%s\n", usdPath.GetText())) {
-                adapter->TrackVariability(prim,usdPath,*requestBits,dirtyBits);
             }
         }
     }
@@ -361,364 +370,29 @@ public:
             UsdImagingDelegate* delegate = _tasks[i].delegate;
             UsdTimeCode const& time = delegate->_time;
             SdfPath const& usdPath = _tasks[i].path;
-            UsdPrim const& prim = delegate->_GetPrim(usdPath);
-            HdDirtyBits requestBits = GetRequestBits(_tasks[i]);
-            if (!requestBits) {
-                if (HdDirtyBits* bits = delegate->_GetDirtyBits(usdPath)) {
-                    requestBits = *bits;
-                } else {
-                    // Should never get here; _GetDirtyBits will hit a failed
-                    // verify when we do.
-                    continue;
+
+            _PrimInfo *primInfo = delegate->GetPrimInfo(usdPath);
+            if (TF_VERIFY(primInfo, "%s\n", usdPath.GetText())) {
+                _AdapterSharedPtr const& adapter = primInfo->adapter;
+                if (TF_VERIFY(adapter, "%s\n", usdPath.GetText())) {
+                    adapter->UpdateForTime(primInfo->usdPrim,
+                                           usdPath,
+                                           time,
+                                           primInfo->dirtyBits);
+
+                    // Prim is now clean
+                    primInfo->dirtyBits = 0;
                 }
             }
-            _AdapterSharedPtr adapter = delegate->_AdapterLookupByPath(usdPath);
-            if (TF_VERIFY(adapter, "%s\n", usdPath.GetText())) {
-                HdDirtyBits resultBits = requestBits;
-                adapter->UpdateForTime(prim, usdPath, time, 
-                                        requestBits, &resultBits);
-                _results[i] = std::make_pair(usdPath, resultBits);
-                _tasks[i].requestBits = resultBits;
-            }
-        }
-    }
-
-    // Updates all delegates that have registered tasks in this worker with
-    // based on the results computed in UpdateForTime.
-    void ProcessUpdateResults()
-    {
-        for (size_t i = 0; i < _tasks.size(); ++i) {
-            UsdImagingDelegate* delegate = _tasks[i].delegate;
-
-            SdfPath const& path = _results[i].first;
-            HdDirtyBits dirtyFlags = _results[i].second;
-
-            TF_DEBUG(USDIMAGING_UPDATES).Msg(
-                    "[Update] RESULT: Dirtying rprim <%s> "
-                    "with dirtyFlags: 0x%llX [%s]\n",
-                    path.GetText(), 
-                    (unsigned long long)dirtyFlags,
-                    HdChangeTracker::StringifyDirtyBits(dirtyFlags).c_str());
-            
-            delegate->_MarkRprimOrInstancerDirty(path, dirtyFlags, true);
         }
     }
 };
 
-// -------------------------------------------------------------------------- //
-// Delegate Proxy 
-// -------------------------------------------------------------------------- //
-
-void
-UsdImagingIndexProxy::AddDependency(SdfPath const& usdPath,
-                                  UsdImagingPrimAdapterSharedPtr const& adapter)
-{
-    UsdImagingPrimAdapterSharedPtr adapterToInsert;
-    if (adapter) {
-        adapterToInsert = adapter;
-    }
-    else {
-        UsdPrim const& prim = _delegate->_GetPrim(usdPath);
-        adapterToInsert = _delegate->_AdapterLookup(prim);
-
-        // When no adapter was provided, look it up based on the type of the
-        // prim.
-        if (!adapterToInsert) {
-            TF_CODING_ERROR("No adapter was found for <%s> (type: %s)\n",
-                usdPath.GetText(),
-                prim ? prim.GetTypeName().GetText() : "<expired prim>");
-            return;
-        }
-    }
-
-    TF_DEBUG(USDIMAGING_CHANGES).Msg(
-        "[Add Dependency] <%s> adapter=%s\n",
-        usdPath.GetText(),
-        TfType::GetCanonicalTypeName(typeid(*(adapterToInsert.get()))).c_str());
-
-    // Currently, we don't support more than one adapter dependency per usd
-    // prim, but we could relax this restriction if it's useful.
-
-    // note: Due to the nature of SdfPath table, we might have an entry
-    // which already exists as a placeholder in _pathAdapterMap.
-    UsdImagingDelegate::_PathAdapterMap::iterator it
-        = _delegate->_pathAdapterMap.find(usdPath);
-    if (it != _delegate->_pathAdapterMap.end()) {
-        // if non-null adapter is already registered and it's different,
-        // raise an error
-        if (it->second && 
-            it->second != adapterToInsert) {
-            TF_CODING_ERROR("Conflicting adapters were registered for "
-                            "path <%s>\n", usdPath.GetText());
-            return;
-        }
-    }
-    _delegate->_pathAdapterMap[usdPath] = adapterToInsert;
-}
-
-void
-UsdImagingIndexProxy::_AddTask(SdfPath const& usdPath) 
-{
-    _delegate->_dirtyMap[usdPath] = 0;
-    _worker->AddTask(_delegate, usdPath);
-}
-
-SdfPath
-UsdImagingIndexProxy::InsertMesh(SdfPath const& usdPath,
-                   SdfPath const& shaderBinding,
-                   UsdImagingInstancerContext const* instancerContext)
-{
-    return _InsertRprim(HdPrimTypeTokens->mesh, usdPath, shaderBinding,
-                        instancerContext);
-}
-
-SdfPath
-UsdImagingIndexProxy::InsertBasisCurves(SdfPath const& usdPath,
-                   SdfPath const& shaderBinding,
-                   UsdImagingInstancerContext const* instancerContext)
-{
-    return _InsertRprim(HdPrimTypeTokens->basisCurves, usdPath, shaderBinding,
-                        instancerContext);
-}
-
-SdfPath
-UsdImagingIndexProxy::InsertPoints(SdfPath const& usdPath,
-                   SdfPath const& shaderBinding,
-                   UsdImagingInstancerContext const* instancerContext)
-{
-    return _InsertRprim(HdPrimTypeTokens->points, usdPath, shaderBinding,
-                        instancerContext);
-}
-
-SdfPath
-UsdImagingIndexProxy::InsertLight(SdfPath const& usdPath, 
-                                  TfToken const& lightType)
-{
-    _delegate->_lightMap[usdPath] = lightType;
-
-    _delegate->GetRenderIndex().InsertSprim(
-                                lightType,
-                                _delegate,
-                                _delegate->GetPathForIndex(usdPath));
-
-    AddDependency(usdPath, UsdImagingPrimAdapterSharedPtr());
-
-    return usdPath;
-}
-
-SdfPath
-UsdImagingIndexProxy::_InsertRprim(TfToken const& primType,
-                            SdfPath const& usdPath,
-                            SdfPath const& shaderBinding,
-                            UsdImagingInstancerContext const* instancerContext)
-{
-    SdfPath const& instancer = instancerContext 
-                             ? instancerContext->instancerId
-                             : SdfPath();
-    TfToken const& childName = instancerContext 
-                             ? instancerContext->childName
-                             : TfToken();
-    SdfPath const& shader = instancerContext 
-                          ? instancerContext->instanceSurfaceShaderPath
-                          : shaderBinding;
-    SdfPath const& rprimPath = instancer.IsEmpty() ? usdPath : instancer;
-
-    SdfPath childPath = childName.IsEmpty()
-                      ? rprimPath
-                      : rprimPath.AppendProperty(childName);
-
-    {
-        _delegate->GetRenderIndex().InsertRprim(
-                                        primType,
-                                        _delegate,
-                                        _delegate->GetPathForIndex(childPath), 
-                                        _delegate->GetPathForIndex(instancer));
-
-        if (shader != SdfPath() && 
-            _delegate->_shaderMap.find(shader) == _delegate->_shaderMap.end()) {
-
-            // Conditionally add shaders if they're supported.
-            if (_delegate->GetRenderIndex().IsSprimTypeSupported(HdPrimTypeTokens->shader)) {
-                _delegate->GetRenderIndex()
-                    .InsertSprim(HdPrimTypeTokens->shader,
-                                 _delegate,
-                                 _delegate->GetPathForIndex(shader));
-            
-                // Detect if the shader has any attribute that is time varying
-                // if so we will tag the shader as time varying so we can 
-                // invalidate it accordingly
-                bool isTimeVarying = _delegate->GetSurfaceShaderIsTimeVarying(shader);
-                _delegate->_shaderMap[shader] = isTimeVarying;
-            }
-
-            // Conditionally add textures if they're supported.
-            if (_delegate->GetRenderIndex().IsBprimTypeSupported(HdPrimTypeTokens->texture)) {
-                SdfPathVector textures = 
-                    _delegate->GetSurfaceShaderTextures(shader);
-                TF_FOR_ALL(textureIt, textures) {
-                    if (_delegate->_texturePaths.find(*textureIt) == _delegate->_texturePaths.end()) {
-                        // note texturePath has already been decorated by
-                        // GetPathForIndex()
-                        _delegate->GetRenderIndex()
-                            .InsertBprim(HdPrimTypeTokens->texture, _delegate, *textureIt);
-                        _delegate->_texturePaths.insert(*textureIt);
-                    }
-                }
-            }
-        }
-        _AddTask(childPath);
-    }
-
-    // For non-instanced prims, childPath and usdPath will be the same, however
-    // for instanced prims, childPath will be something like:
-    //
-    // usdPath: /__Master_1/cube
-    // childPath: /Models/cube_0.proto_cube_id0
-    //
-    // So we always want to add the dependency on the child path, so that
-    // multiple instancers can track the same underlying UsdPrim. The childPath
-    // is also the path by which the Adapter tracks the object, so it's the only
-    // option that will work here.
-    AddDependency(childPath, instancerContext 
-                             ? instancerContext->instancerAdapter
-                             : UsdImagingPrimAdapterSharedPtr());
-    return childPath;
-}
-
-void
-UsdImagingIndexProxy::Repopulate(SdfPath const& usdPath)
-{ 
-    // Repopulation is deferred to enable batch processing in parallel.
-    _pathsToRepopulate.push_back(usdPath); 
-}
-
-void
-UsdImagingIndexProxy::Refresh(SdfPath const& cachePath)
-{
-    _AddTask(cachePath);
-}
-
 void 
-UsdImagingIndexProxy::RefreshInstancer(SdfPath const& instancerPath)
+UsdImagingDelegate::_AddTask(
+    UsdImagingDelegate::_Worker *worker, SdfPath const& usdPath)
 {
-    _AddTask(instancerPath);
-    _delegate->GetRenderIndex().GetChangeTracker()
-        .MarkInstancerDirty(instancerPath);
-}
-
-void
-UsdImagingIndexProxy::_ProcessRemovals()
-{
-    HdRenderIndex& index = _delegate->GetRenderIndex();
-    
-    TF_FOR_ALL(it, _rprimsToRemove) {
-        TF_DEBUG(USDIMAGING_CHANGES).Msg("[Remove Rprim] <%s>\n",
-                                it->GetText());
-
-        // General prim data:
-        _delegate->_valueCache.Clear(*it);
-        _delegate->_dirtyMap.erase(*it);
-        _delegate->_refineLevelMap.erase(*it);
-        _delegate->_pickablesMap.erase(*it);
-
-        // General Rprim-specific data:
-        index.RemoveRprim(_delegate->GetPathForIndex(*it));
-    }
-    _rprimsToRemove.clear();
-
-    TF_FOR_ALL(it, _instancersToRemove) {
-        TF_DEBUG(USDIMAGING_CHANGES).Msg("[Remove Instancer] <%s>\n",
-                                it->GetText());
-        // General prim data:
-        _delegate->_valueCache.Clear(*it);
-        _delegate->_dirtyMap.erase(*it);
-        _delegate->_refineLevelMap.erase(*it);
-        _delegate->_pickablesMap.erase(*it);
-
-        // Instancer-specific data:
-        _delegate->_instancerPrimPaths.erase(*it);
-        index.RemoveInstancer(_delegate->GetPathForIndex(*it));
-    }
-    _instancersToRemove.clear();
-
-    TF_FOR_ALL(it, _lightsToRemove) {
-        TF_DEBUG(USDIMAGING_CHANGES).Msg("[Remove Light Sprim] <%s>\n",
-                                it->GetText());
-
-        index.RemoveSprim(
-            _delegate->_lightMap[_delegate->GetPathForIndex(*it)],
-            _delegate->GetPathForIndex(*it));
-
-        // General Light Sprim-specific data:
-        _delegate->_lightMap.erase(*it);
-    }
-    _lightsToRemove.clear();
-
-    TF_FOR_ALL(it, _depsToRemove) {
-        TF_DEBUG(USDIMAGING_CHANGES).Msg("[Remove Dependency] <%s>\n",
-                                it->GetText());
-        // don't simply remove the entry, if the path has a child path.
-        // (note that PointInstancer may use variant selection path or
-        //  property path to populate prototypes).
-        // _pathAdapterMap is a SdfPathTable, and it removes all children
-        // for the removing path.
-        std::pair<UsdImagingDelegate::_PathAdapterMap::iterator,
-                  UsdImagingDelegate::_PathAdapterMap::iterator> range =
-            _delegate->_pathAdapterMap.FindSubtreeRange(*it);
-
-        if (range.first != _delegate->_pathAdapterMap.end()) {
-            // clear adapter
-            range.first->second = UsdImagingDelegate::_AdapterSharedPtr();
-
-            bool empty = true;
-            for (UsdImagingDelegate::_PathAdapterMap::iterator childIt = range.first;
-                 childIt != range.second; ++childIt) {
-                if (childIt->second) {
-                    empty = false;
-                    break;
-                }
-            }
-            if (empty) {
-                // if there's no valid children, remove it from table
-                _delegate->_pathAdapterMap.erase(range.first);
-            }
-        } else {
-            // XXX: need more solid confirmation of the below statement:
-            //
-            // the entry may have already been deleted, since _depsToRemove
-            // can have duplicated entries for an instance path if there
-            // are multiple instancers (rprim protos)
-        }
-    }
-    _depsToRemove.clear();
-}
-
-void
-UsdImagingIndexProxy::InsertInstancer(SdfPath const& usdPath,
-                    UsdImagingInstancerContext const* instancerContext)
-{
-    SdfPath const& indexPath  = _delegate->GetPathForIndex(usdPath);
-    SdfPath const& parentPath = _delegate->GetPathForIndex(instancerContext 
-                              ? instancerContext->instancerId
-                              : SdfPath());
-
-    _delegate->GetRenderIndex().InsertInstancer(_delegate, 
-                                                indexPath,
-                                                parentPath);
-
-    _delegate->_instancerPrimPaths.insert(usdPath);
-
-    TF_DEBUG(USDIMAGING_INSTANCER).Msg(
-        "[Instancer Inserted] %s, parent = %s, adapter = %s\n",
-        usdPath.GetText(), parentPath.GetText(),
-        ((instancerContext && instancerContext->instancerAdapter)
-         ? TfType::GetCanonicalTypeName(typeid(*(instancerContext->instancerAdapter))).c_str()
-         : "none"));
-
-    AddDependency(usdPath, instancerContext 
-                          ? instancerContext->instancerAdapter
-                          : UsdImagingPrimAdapterSharedPtr());
-    _AddTask(usdPath);
+    worker->AddTask(this, usdPath);
 }
 
 // -------------------------------------------------------------------------- //
@@ -730,59 +404,37 @@ UsdImagingDelegate::SyncAll(bool includeUnvarying)
 {
     UsdImagingDelegate::_Worker worker;
 
-    int allDirty = HdChangeTracker::AllDirty;
-    if (includeUnvarying) {
-        worker.SetRequestBits(HdChangeTracker::AllDirty);
-    }
+    TF_FOR_ALL(it, _primInfoMap) {
+        const SdfPath &usdPath = it->first;
+        _PrimInfo &primInfo    = it->second;
 
-    TF_FOR_ALL(it, _dirtyMap) {
-        int dirtyFlags = includeUnvarying ? allDirty 
-                                           : it->second;
-
-        if (dirtyFlags == HdChangeTracker::Clean)
+        if (includeUnvarying) {
+            primInfo.dirtyBits |= HdChangeTracker::AllDirty;
+        } else if (primInfo.dirtyBits == HdChangeTracker::Clean) {
             continue;
+        }
 
         // In this case, the path is coming from our internal state, so it is
         // not prefixed with the delegate ID.
-        SdfPath usdPath = it->first;
-        UsdPrim prim = _GetPrim(usdPath);
-        _AdapterSharedPtr adapter = _AdapterLookupByPath(usdPath);
+        _AdapterSharedPtr adapter = primInfo.adapter;
 
         if (TF_VERIFY(adapter, "%s\n", usdPath.GetText())) {
             TF_DEBUG(USDIMAGING_UPDATES).Msg(
-                      "[Sync] PREP: <%s> dirtyFlags: %d [%s]\n",
+                      "[Sync] PREP: <%s> dirtyFlags: 0x%x [%s]\n",
                       usdPath.GetText(), 
-                      dirtyFlags,
-                      HdChangeTracker::StringifyDirtyBits(dirtyFlags).c_str());
+                      primInfo.dirtyBits,
+                      HdChangeTracker::StringifyDirtyBits(
+                                                   primInfo.dirtyBits).c_str());
 
-            adapter->UpdateForTimePrep(prim, usdPath, _time, dirtyFlags);
+            adapter->UpdateForTimePrep(primInfo.usdPrim,
+                                       usdPath,
+                                       _time,
+                                       primInfo.dirtyBits);
             worker.AddTask(this, usdPath);
         }
     }
 
-    // We always include instancers.
-    TF_FOR_ALL(it, _instancerPrimPaths) {
-        // In this case, the path is coming from our internal state, so it is
-        // not prefixed with the delegate ID.
-        SdfPath usdPath = *it;
-        UsdPrim prim = _GetPrim(usdPath);
-        int dirtyFlags = includeUnvarying ? allDirty 
-                                          : *_GetDirtyBits(usdPath);
-        _AdapterSharedPtr adapter = _AdapterLookupByPath(usdPath);
-        if (TF_VERIFY(adapter, "%s\n", usdPath.GetText())) {
-            TF_DEBUG(USDIMAGING_UPDATES).Msg(
-                    "[Sync] PREP Instancer: <%s> dirtyFlags: %d [%s]\n",
-                    usdPath.GetText(), 
-                    dirtyFlags,
-                    HdChangeTracker::StringifyDirtyBits(dirtyFlags).c_str());
-            adapter->UpdateForTimePrep(prim, usdPath, _time, dirtyFlags);
-            worker.AddTask(this, usdPath);
-        }
-    }
-
-    // Don't need to update delegates because we expect that has
-    // already happened.
-    _ExecuteWorkForTimeUpdate(&worker, /* updateDelegates = */ false);
+    _ExecuteWorkForTimeUpdate(&worker);
 }
 
 void
@@ -798,29 +450,33 @@ UsdImagingDelegate::Sync(HdSyncRequestVector* request)
 
     // Iterate over each HdSyncRequest.
     for (size_t i = 0; i < request->IDs.size(); i++) {
-        // This is a refernece to allow the Adapter to communicate back to the
-        // render index what was actually updated vs. what was requested.
-        HdDirtyBits dirtyFlags = request->dirtyBits[i];
-
-        if (!TF_VERIFY(dirtyFlags != HdChangeTracker::Clean))
-            continue;
 
         // Note that the incoming ID may be prefixed with the DelegateID, so we
         // must translate it via GetPathForUsd.
         SdfPath usdPath = GetPathForUsd(request->IDs[i]);
-        UsdPrim prim = _GetPrim(usdPath);
-        if (!TF_VERIFY(prim, "%s\n", prim.GetPath().GetText())) {
+        HdDirtyBits dirtyFlags = request->dirtyBits[i];
+
+        _PrimInfo *primInfo = GetPrimInfo(usdPath);
+        if (!TF_VERIFY(primInfo != nullptr, "%s\n", usdPath.GetText())) {
             continue;
         }
-        _AdapterSharedPtr adapter = _AdapterLookupByPath(usdPath);
+
+        // Merge UsdImaging's own dirty flags with those coming from hydra.
+        primInfo->dirtyBits |= dirtyFlags;
+
+        _AdapterSharedPtr &adapter = primInfo->adapter;
         if (TF_VERIFY(adapter, "%s\n", usdPath.GetText())) {
             TF_DEBUG(USDIMAGING_UPDATES).Msg(
-                    "[Sync] PREP: <%s> dirtyFlags: 0x%llX [%s]\n",
+                    "[Sync] PREP: <%s> dirtyFlags: 0x%x [%s]\n",
                     usdPath.GetText(), 
-                    (unsigned long long)dirtyFlags,
-                    HdChangeTracker::StringifyDirtyBits(dirtyFlags).c_str());
-            adapter->UpdateForTimePrep(prim, usdPath, _time, dirtyFlags);
-            worker.AddTask(this, usdPath, dirtyFlags);
+                    primInfo->dirtyBits,
+                    HdChangeTracker::StringifyDirtyBits(primInfo->dirtyBits).c_str());
+
+            adapter->UpdateForTimePrep(primInfo->usdPrim,
+                                       usdPath,
+                                       _time,
+                                       primInfo->dirtyBits);
+            worker.AddTask(this, usdPath);
         }
     }
 
@@ -829,27 +485,29 @@ UsdImagingDelegate::Sync(HdSyncRequestVector* request)
         // In this case, the path is coming from our internal state, so it is
         // not prefixed with the delegate ID.
         SdfPath usdPath = *it;
-        UsdPrim prim = _GetPrim(usdPath);
-        HdDirtyBits* p = _GetDirtyBits(usdPath);
-        if (!TF_VERIFY(p)) {
+
+        _PrimInfo *primInfo = GetPrimInfo(usdPath);
+        if (!TF_VERIFY(primInfo != nullptr, "%s\n", usdPath.GetText())) {
             continue;
         }
-        int dirtyFlags = *p;
-        _AdapterSharedPtr adapter = _AdapterLookupByPath(usdPath);
+
+        _AdapterSharedPtr &adapter = primInfo->adapter;
         if (TF_VERIFY(adapter, "%s\n", usdPath.GetText())) {
             TF_DEBUG(USDIMAGING_UPDATES).Msg(
-                    "[Sync] PREP Instancer: <%s> dirtyFlags: %d [%s]\n",
-                    usdPath.GetText(), 
-                    dirtyFlags,
-                    HdChangeTracker::StringifyDirtyBits(dirtyFlags).c_str());
-            adapter->UpdateForTimePrep(prim, usdPath, _time, dirtyFlags);
+                    "[Sync] PREP Instancer: <%s> dirtyFlags: 0x%x [%s]\n",
+                    usdPath.GetText(),
+                    primInfo->dirtyBits,
+                    HdChangeTracker::StringifyDirtyBits(
+                                              primInfo->dirtyBits).c_str());
+            adapter->UpdateForTimePrep(primInfo->usdPrim,
+                                       usdPath,
+                                       _time,
+                                       primInfo->dirtyBits);
             worker.AddTask(this, usdPath);
         }
     }
 
-    // Don't need to update delegates because we expect that has
-    // already happened.
-    _ExecuteWorkForTimeUpdate(&worker, /* updateDelegates = */ false);
+    _ExecuteWorkForTimeUpdate(&worker);
 }
 
 void
@@ -920,8 +578,16 @@ UsdImagingDelegate::_SetStateForPopulation(
     _excludedPrimPaths = excludedPrimPaths;
     _invisedPrimPaths = invisedPrimPaths;
 
-    // Init compensation to root prim path.
-    _ComputeRootCompensation(rootPrim.GetPath());
+    // Set the root path of the inherited transform cache.
+    // XXX: Ideally, we'd like to deprecate the inherited cache's SetRootPath(),
+    // but the root prim is defined as having identity transform over all time,
+    // even when its transform within the full stage is animated; and transform
+    // overrides are defined as relative to the root prim.  This means resolving
+    // transforms without involving the inherited cache is impossible.
+    //
+    // If the transform override mechanism is deprecated in favor of a USD
+    // session layer, we could do something nicer here.
+    _xformCache.SetRootPath(_rootPrimPath);
 
     // Start listening for change notices from this stage.
     UsdImagingDelegatePtr self = TfCreateWeakPtr(this);
@@ -954,14 +620,6 @@ UsdImagingDelegate::_Populate(UsdImagingIndexProxy* proxy)
     // Force initialization of SchemaRegistry (doing this in parallel causes all
     // threads to block).
     UsdSchemaRegistry::GetInstance();
-
-    UsdImagingDelegate::_Worker* worker = proxy->_GetWorker();
-
-    // TODO: When we get to request-based data fetch, we will no longer need to
-    // explicity exclude SubdivTags.
-    int requestedBits = HdChangeTracker::AllDirty 
-                      & ~HdChangeTracker::DirtySubdivTags;
-    worker->SetRequestBits(requestedBits);
 
     // Build a TfHashSet of excluded prims for fast rejection.
     TfHashSet<SdfPath, SdfPath::Hash> excludedSet;
@@ -1004,9 +662,21 @@ UsdImagingDelegate::_Populate(UsdImagingIndexProxy* proxy)
                 continue;
             }
             if (_AdapterSharedPtr adapter = _AdapterLookup(*iter)) {
+                // We delay populating some parts of the scene (e.g. material)
+                // until they are needed by some other prim.
+                if (adapter->IsPopulatedIndirectly()) {
+                    continue;
+                }
+                // Schedule the prim for population and discovery
+                // of material bindings.
+                //
+                // If we are using full networks, we will populate the 
+                // binding cache that has the strategy to compute the correct
+                // bindings.
                 _PopulateMaterialBindingCache wu = 
-                    { *iter, &_materialBindingCache };
-                bindingDispatcher.Run(wu);
+                    { *iter, &_materialBindingCache};
+                 bindingDispatcher.Run(wu);
+                
                 leafPaths.push_back(std::make_pair(*iter, adapter));
                 if (adapter->ShouldCullChildren(*iter)) {
                    TF_DEBUG(USDIMAGING_CHANGES).Msg("[Repopulate] Pruned "
@@ -1018,7 +688,7 @@ UsdImagingDelegate::_Populate(UsdImagingIndexProxy* proxy)
         }
     }
 
-    // Populate the RenderIndex while we're still discovering shaders.
+    // Populate the RenderIndex while we're still discovering material bindings.
     TF_FOR_ALL(it, leafPaths) {
         it->second->Populate(it->first, proxy);
     }
@@ -1046,8 +716,8 @@ UsdImagingDelegate::_ExecuteWorkForVariabilityUpdate(_Worker* worker)
         TF_PY_ALLOW_THREADS_IN_SCOPE();
         WorkParallelForN(
             worker->GetTaskCount(), 
-            boost::bind(&UsdImagingDelegate::_Worker::UpdateVariability, 
-                        worker, _1, _2));
+            std::bind(&UsdImagingDelegate::_Worker::UpdateVariability, 
+                      worker, std::placeholders::_1, std::placeholders::_2));
     }
     worker->EnableValueCacheMutations();
 }
@@ -1120,8 +790,10 @@ UsdImagingDelegate::_ProcessChangesForTimeUpdate(UsdTimeCode time)
         // Need to invalidate all caches if any stage objects have changed. This
         // invalidation is overly conservative, but correct.
         _xformCache.Clear();
+        _materialBindingImplData.ClearCaches();
         _materialBindingCache.Clear();
         _visCache.Clear();
+        _drawModeCache.Clear();
     }
 
     if (!_pathsToResync.empty()) {
@@ -1131,19 +803,22 @@ UsdImagingDelegate::_ProcessChangesForTimeUpdate(UsdTimeCode time)
         pathsToResync.reserve(_pathsToResync.size());
         std::sort(_pathsToResync.begin(), _pathsToResync.end());
         std::unique_copy(_pathsToResync.begin(), _pathsToResync.end(),
-                        std::back_inserter(pathsToResync),
-                        boost::bind(&SdfPath::HasPrefix, _2, _1));
+                         std::back_inserter(pathsToResync),
+                         [](SdfPath const &l, SdfPath const &r) {
+                             return r.HasPrefix(l);
+                         });
         _pathsToResync.clear();
 
         TF_FOR_ALL(pathIt, pathsToResync) {
             SdfPath path = *pathIt;
             if (path.IsPropertyPath()) {
-                _ResyncProperty(path, &indexProxy);
+                _RefreshObject(path, TfTokenVector(), &indexProxy);
             } else if (path.IsTargetPath()) {
                 // TargetPaths are their own path type, when they change, resync
                 // the relationship at which they're rooted; i.e. per-target
                 // invalidation is not supported.
-                _ResyncProperty(path.GetParentPath(), &indexProxy);
+                _RefreshObject(path.GetParentPath(), TfTokenVector(),
+                               &indexProxy);
             } else if (path.IsAbsoluteRootOrPrimPath()) {
                 _ResyncPrim(path, &indexProxy);
             } else {
@@ -1161,18 +836,24 @@ UsdImagingDelegate::_ProcessChangesForTimeUpdate(UsdTimeCode time)
     // Process Updates.
     //
     if (!_pathsToUpdate.empty()) {
-        SdfPathVector pathsToUpdate;
+        _PathsToUpdateMap pathsToUpdate;
         std::swap(pathsToUpdate, _pathsToUpdate);
         TF_FOR_ALL(pathIt, pathsToUpdate) {
-            if (pathIt->IsPropertyPath() || pathIt->IsAbsoluteRootOrPrimPath()){
-                _RefreshObject(*pathIt, &indexProxy);
+            const SdfPath& path = pathIt->first;
+            const TfTokenVector& changedPrimInfoFields = pathIt->second;
+
+            if (path.IsPropertyPath() || path.IsAbsoluteRootOrPrimPath()){
+                // Note that changedPrimInfoFields will be empty if the
+                // path is a property path.
+                _RefreshObject(path, changedPrimInfoFields, &indexProxy);
+
                 // If any objects were removed as a result of the refresh (if it
                 // internally decided to resync), they must be ejected now,
                 // before the next call to _RefereshObject.
                 indexProxy._ProcessRemovals();
             } else {
                 TF_RUNTIME_ERROR("Unexpected path type to update: <%s>",
-                        pathIt->GetText());
+                        path.GetText());
             }
         }
     }
@@ -1196,34 +877,30 @@ UsdImagingDelegate::_ProcessChangesForTimeUpdate(UsdTimeCode time)
 }
 
 void
-UsdImagingDelegate::_PrepareWorkerForTimeUpdate(_Worker* worker)
+UsdImagingDelegate::_ApplyTimeVaryingState()
 {
     HD_TRACE_FUNCTION();
     HF_MALLOC_TAG_FUNCTION();
 
+    UsdImagingIndexProxy indexProxy(this, nullptr);
+
     // Mark varying attributes as dirty and build a work queue for threads to
     // populate caches for the new time.
-    TF_FOR_ALL(it, _dirtyMap) {
-        HdDirtyBits& dirtyFlags = it->second;
-        if (dirtyFlags == HdChangeTracker::Clean)
-            continue;
-        _MarkRprimOrInstancerDirty(it->first, dirtyFlags, true);
-    }
+    TF_FOR_ALL(it, _primInfoMap) {
+        const SdfPath &usdPath = it->first;
+        _PrimInfo &primInfo    = it->second;
 
-    // If any shader is time varying now it is the time to invalidate it.
-    TF_FOR_ALL(it, _shaderMap) {
-        bool& isTimeVarying = it->second;
-        if (isTimeVarying) {
-            HdChangeTracker &tracker = GetRenderIndex().GetChangeTracker();
-            tracker.MarkSprimDirty(
-                GetPathForIndex(it->first), HdShader::DirtyParams);
+        if (primInfo.timeVaryingBits != HdChangeTracker::Clean) {
+            primInfo.adapter->MarkDirty(primInfo.usdPrim,
+                                        usdPath,
+                                        primInfo.timeVaryingBits,
+                                        &indexProxy);
         }
     }
 }
 
 void
-UsdImagingDelegate::_ExecuteWorkForTimeUpdate(_Worker* worker, 
-                                              bool updateDelegates)
+UsdImagingDelegate::_ExecuteWorkForTimeUpdate(_Worker* worker)
 {
     HD_TRACE_FUNCTION();
     HF_MALLOC_TAG_FUNCTION();
@@ -1235,14 +912,10 @@ UsdImagingDelegate::_ExecuteWorkForTimeUpdate(_Worker* worker,
         TF_PY_ALLOW_THREADS_IN_SCOPE();
         WorkParallelForN(
             worker->GetTaskCount(), 
-            boost::bind(&UsdImagingDelegate::_Worker::UpdateForTime, 
-                        worker, _1, _2));
+            std::bind(&UsdImagingDelegate::_Worker::UpdateForTime, 
+                      worker, std::placeholders::_1, std::placeholders::_2));
     }
     worker->EnableValueCacheMutations();
-
-    if (updateDelegates) {
-        worker->ProcessUpdateResults();
-    }
 }
 
 void
@@ -1252,8 +925,7 @@ UsdImagingDelegate::SetTime(UsdTimeCode time)
     HF_MALLOC_TAG_FUNCTION();
 
     if (_ProcessChangesForTimeUpdate(time)) {
-        UsdImagingDelegate::_Worker worker;
-        _PrepareWorkerForTimeUpdate(&worker);
+        _ApplyTimeVaryingState();
     }
 }
 
@@ -1273,16 +945,20 @@ UsdImagingDelegate::SetTimes(const std::vector<UsdImagingDelegate*>& delegates,
     HD_TRACE_FUNCTION();
     HF_MALLOC_TAG_FUNCTION();
 
-    UsdImagingDelegate::_Worker worker;
-
     // Collect work from the batch of delegates into a single worker.
     // This has to be done single-threaded due to potential mutations
     // to the render index that is shared among these delegates.
     for (size_t i = 0; i < delegates.size(); ++i) {
         if (delegates[i]->_ProcessChangesForTimeUpdate(times[i])) {
-            delegates[i]->_PrepareWorkerForTimeUpdate(&worker);
+            delegates[i]->_ApplyTimeVaryingState();
         }
     }
+}
+
+UsdTimeCode
+UsdImagingDelegate::GetTimeWithOffset(float offset) const
+{
+    return _time.IsNumeric() ? UsdTimeCode(_time.GetValue() + offset) : _time;
 }
 
 // -------------------------------------------------------------------------- //
@@ -1290,7 +966,7 @@ UsdImagingDelegate::SetTimes(const std::vector<UsdImagingDelegate*>& delegates,
 // -------------------------------------------------------------------------- //
 void 
 UsdImagingDelegate::_OnObjectsChanged(UsdNotice::ObjectsChanged const& notice,
-                                UsdStageWeakPtr const& sender)
+                                      UsdStageWeakPtr const& sender)
 {
     if (!sender || !TF_VERIFY(sender == _stage))
         return;
@@ -1298,10 +974,12 @@ UsdImagingDelegate::_OnObjectsChanged(UsdNotice::ObjectsChanged const& notice,
                             "from stage with root layer @%s@\n",
                         sender->GetRootLayer()->GetIdentifier().c_str());
 
+    using PathRange = UsdNotice::ObjectsChanged::PathRange;
+
     // These paths are subtree-roots representing entire subtrees that may have
     // changed. In this case, we must dump all cached data below these points
     // and repopulate those trees.
-    SdfPathVector const& pathsToResync = notice.GetResyncedPaths();
+    const PathRange pathsToResync = notice.GetResyncedPaths();
     _pathsToResync.insert(_pathsToResync.end(), 
                           pathsToResync.begin(), pathsToResync.end());
     
@@ -1309,9 +987,24 @@ UsdImagingDelegate::_OnObjectsChanged(UsdNotice::ObjectsChanged const& notice,
     // non-structural way, for example setting a value. These paths may be paths
     // to prims or properties, in which case we should sparsely invalidate
     // cached data associated with the path.
-    SdfPathVector const& pathsToUpdate = notice.GetChangedInfoOnlyPaths();
-    _pathsToUpdate.insert(_pathsToUpdate.end(), 
-                          pathsToUpdate.begin(), pathsToUpdate.end());
+    const PathRange pathsToUpdate = notice.GetChangedInfoOnlyPaths();
+    for (PathRange::const_iterator it = pathsToUpdate.begin(); 
+         it != pathsToUpdate.end(); ++it) {
+        if (it->IsAbsoluteRootOrPrimPath()) {
+            // Ignore all changes to prims that have not changed any field
+            // values, since these changes cannot affect any composed values 
+            // consumed by the adapters.
+            const TfTokenVector changedFields = it.GetChangedFields();
+            if (!changedFields.empty()) {
+                TfTokenVector& changedPrimInfoFields = _pathsToUpdate[*it];
+                changedPrimInfoFields.insert(
+                    changedPrimInfoFields.end(),
+                    changedFields.begin(), changedFields.end());
+            }
+        } else if (it->IsPropertyPath()) {
+            _pathsToUpdate.emplace(*it, TfTokenVector());
+        }
+    }
 
     if (TfDebug::IsEnabled(USDIMAGING_CHANGES)) {
         TF_FOR_ALL(it, pathsToResync) {
@@ -1327,12 +1020,13 @@ UsdImagingDelegate::_OnObjectsChanged(UsdNotice::ObjectsChanged const& notice,
 
 void 
 UsdImagingDelegate::_ResyncPrim(SdfPath const& rootPath, 
-                                UsdImagingIndexProxy* proxy) 
+                                UsdImagingIndexProxy* proxy,
+                                bool repopulateFromRoot) 
 {
     TF_DEBUG(USDIMAGING_CHANGES).Msg("[Resync Prim]: <%s>\n",
             rootPath.GetText());
 
-    // Note: it is only appropriate to call _AdapterLookupByPath in the code
+    // Note: it is only appropriate to call adapter in the primInfo in the code
     // below, since we want the adapter that was registered to handle change
     // processing, which may be different from the default adapter registered
     // for the UsdPrim type.
@@ -1386,11 +1080,16 @@ UsdImagingDelegate::_ResyncPrim(SdfPath const& rootPath,
                 prunedByParent = true;
             }
 
+            _PrimInfo *primInfo = GetPrimInfo(curPrim.GetPath());
+
             // If we've already seen one of the parent prims and the associated
             // adapter desires the children to be pruned, we shouldn't
             // repopulate this root.
-            if (_AdapterSharedPtr adapter = 
-                                    _AdapterLookupByPath(curPrim.GetPath())) {
+            if (primInfo != nullptr &&
+                TF_VERIFY(primInfo->adapter, "%s\n",
+                          curPrim.GetPath().GetText())) {
+                _AdapterSharedPtr &adapter = primInfo->adapter;
+
                 if (adapter->ShouldCullChildren(prim)) {
                     TF_DEBUG(USDIMAGING_CHANGES).Msg("[Resync Prim]: "
                            "Discovery of new prims below <%s> pruned by "
@@ -1412,28 +1111,50 @@ UsdImagingDelegate::_ResyncPrim(SdfPath const& rootPath,
                 if (prunedByParent)
                     break;
 
+                const UsdPrim &usdPrim = *iter;
+                _PrimInfo *primInfo = GetPrimInfo(usdPrim.GetPath());
+
                 // If this prim in the tree wants to prune children, we must
                 // respect that and ignore any additions under this descendant.
-                if (_AdapterSharedPtr adapter = 
-                                      _AdapterLookupByPath(iter->GetPath())) {
-                    if (adapter->ShouldCullChildren(*iter)) {
+                if (primInfo != nullptr  &&
+                    TF_VERIFY(primInfo->adapter,"%s\n", 
+                              usdPrim.GetPath().GetText())) {
+                    _AdapterSharedPtr &adapter = primInfo->adapter;
+
+                    if (adapter->ShouldCullChildren(usdPrim)) {
                         iter.PruneChildren();
                         TF_DEBUG(USDIMAGING_CHANGES).Msg("[Resync Prim]: "
                                 "[Re]population of children of <%s> pruned by "
                                 "adapter\n",
-                                    iter->GetPath().GetText());
+                                usdPrim.GetPath().GetText());
                     }
                     continue;
                 }
 
-                // The prim wasn't in the _pathAdapterMap, this could happen
+                // The prim wasn't in the _primInfoMap, this could happen
                 // because the prim just came into existence.
 
                 _AdapterSharedPtr adapter = _AdapterLookup(*iter);
                 if (!adapter) {
-                    // This prim has no prim adapter, continue traversing
-                    // descendants.    
-                    continue;
+                    // Special case for adding UsdGeomSubset prims
+                    // (which do not get an adapter); resync the
+                    // containing mesh.
+                    if (UsdGeomSubset(*iter)) {
+                        UsdPrim parentPrim = iter->GetParent();
+                        adapter = _AdapterLookup(parentPrim);
+                        TF_DEBUG(USDIMAGING_CHANGES)
+                            .Msg("[Resync Prim]: Populating <%s> on behalf "
+                                 "of subset <%s>\n",
+                                 parentPrim.GetPath().GetText(),
+                                 iter->GetPath().GetText());
+                        proxy->Repopulate(parentPrim.GetPath());
+                        iter.PruneChildren();
+                        continue;
+                    } else {
+                        // This prim has no prim adapter, continue traversing
+                        // descendants.    
+                        continue;
+                    }
                 }
 
                 // This prim has an adapter, but wasn't in our adapter map, so
@@ -1451,17 +1172,14 @@ UsdImagingDelegate::_ResyncPrim(SdfPath const& rootPath,
 
     // Ensure we resync all prims that may have previously existed, but were
     // removed with this change.
-    SdfPathVector affectedPaths;
-    TF_FOR_ALL(it, _pathAdapterMap) {
-        if (!it->second) {
-            continue; // skip ancestors in SdfPathTable
-        }
-        if (it->first.HasPrefix(rootPath)) {
-            affectedPaths.push_back(it->first);
-        }
-    }
 
-    if (affectedPaths.empty()) {
+
+    SdfPathVector affectedPrims;
+    HdPrimGather gather;
+
+    gather.Subtree(_usdIds.GetIds(), rootPath, &affectedPrims);
+
+    if (affectedPrims.empty()) {
         // When we have no affected prims and all new prims were culled, the
         // instancer may still need to be notified that the child was resync'd,
         // in the event that a new prim came into existence under the root of an
@@ -1480,136 +1198,150 @@ UsdImagingDelegate::_ResyncPrim(SdfPath const& rootPath,
                     "  - affected instancer prim: <%s>\n",
                     instancerPath.GetText());
 
-            _AdapterSharedPtr const& adapter =
-                _AdapterLookupByPath(instancerPath);
-
-            if (!TF_VERIFY(adapter, "%s\n", instancerPath.GetText())) {
+            _PrimInfo *primInfo = GetPrimInfo(instancerPath);
+            if (!TF_VERIFY(primInfo, "%s\n", instancerPath.GetText()) ||
+                !TF_VERIFY(primInfo->adapter, "%s\n",
+                           instancerPath.GetText())) {
                 return;
             }
 
-            adapter->ProcessPrimResync(instancerPath, proxy);
+            primInfo->adapter->ProcessPrimResync(instancerPath, proxy);
             return;
         }
     }
 
     // Apply changes.
-    TF_FOR_ALL(pathIt, affectedPaths) {
-        SdfPath const& usdPath = *pathIt;
+    TF_FOR_ALL(primIt, affectedPrims) {
+        SdfPath const& usdPath = *primIt;
+        _PrimInfo *primInfo = GetPrimInfo(usdPath);
 
         TF_DEBUG(USDIMAGING_CHANGES).Msg("  - affected prim: <%s>\n",
                 usdPath.GetText());
 
-        _AdapterSharedPtr const& adapter = _AdapterLookupByPath(usdPath);
-        // We discovered these paths using the pathAdapter map above, this
+        // We discovered these paths using the _primInfoMap above, this
         // method should never return a null adapter here.
-        if (!TF_VERIFY(adapter, "%s\n", usdPath.GetText()))
+        if (!TF_VERIFY(primInfo, "%s\n", usdPath.GetText()) ||
+            !TF_VERIFY(primInfo->adapter, "%s\n", usdPath.GetText()))
             return;
 
         // PrimResync will:
         //  * Remove the rprim from the index, if it needs to be re-built
         //  * Schedule the prim to be repopulated
-        adapter->ProcessPrimResync(usdPath, proxy);
+        // Note: primInfo may be invalid after this call
+        if (repopulateFromRoot) {
+            primInfo->adapter->ProcessPrimRemoval(usdPath, proxy);
+        } else {
+            primInfo->adapter->ProcessPrimResync(usdPath, proxy);
+        }
+    }
+
+    if (repopulateFromRoot) {
+        proxy->Repopulate(rootPath);
     }
 }
 
 void 
 UsdImagingDelegate::_RefreshObject(SdfPath const& usdPath, 
+                                   TfTokenVector const& changedInfoFields,
                                    UsdImagingIndexProxy* proxy) 
 {
-    TF_DEBUG(USDIMAGING_CHANGES).Msg("[Refresh Object]: %s\n",
-            usdPath.GetText());
+    TF_DEBUG(USDIMAGING_CHANGES).Msg("[Refresh Object]: %s %s\n",
+            usdPath.GetText(), TfStringify(changedInfoFields).c_str());
 
-    // If this is not a property path, resync the prim.
-    if (!usdPath.IsPropertyPath()) {
-        _ResyncPrim(usdPath, proxy);
-        return;
-    }
+    SdfPathVector affectedPrims;
 
-    // We are now dealing with a property path.
-
-    SdfPath const& usdPrimPath = usdPath.GetPrimPath();
-    TfToken const& attrName = usdPath.GetNameToken();
-
-    // If we're sync'ing a non-inherited property on a parent prim, we should
-    // fall through this function without updating anything. The following
-    // if-statement should ensure this.
-
-    // XXX: We must always scan for prefixed children, due to rprim fan-out from
-    // plugins (such as the PointInstancer).
-    
-    std::vector<SdfPath> affectedPrims;
-    if (attrName == UsdGeomTokens->visibility
-        || attrName == UsdGeomTokens->purpose
-        || UsdGeomXformable::IsTransformationAffectedByAttrNamed(attrName))
-    {
-        // Because these are inherited attributes, we must update all
-        // children.
-        TF_FOR_ALL(it, _pathAdapterMap) {
-            if (!it->second) {
-                continue; // skip ancestors in SdfPathTable
-            }
-            if (it->first.HasPrefix(usdPrimPath)) {
-                affectedPrims.push_back(it->first);
-                TF_DEBUG(USDIMAGING_CHANGES).Msg("  - affected prim: %s "
-                                "(visVariability, IsVisible, dirtyVis)\n",
-                                it->first.GetText());
-            }
-        }
-    } else {
-        // Only include non-inherited properties for prims that we are
-        // explicitly tracking in the render index.
-        _PathAdapterMap::const_iterator it = _pathAdapterMap.find(usdPrimPath);
-        if (it == _pathAdapterMap.end()) {
+    if (usdPath.IsAbsoluteRootOrPrimPath()) {
+        if (!GetPrimInfo(usdPath)) {
             return;
         }
-        affectedPrims.push_back(usdPrimPath);
+        affectedPrims.push_back(usdPath);
+    } else if (usdPath.IsPropertyPath()) {
+        SdfPath const& usdPrimPath = usdPath.GetPrimPath();
+        TfToken const& attrName = usdPath.GetNameToken();
+
+        // If either model:drawMode or model:applyDrawMode changes, we need to
+        // repopulate the whole subtree starting at the owning prim.
+        if (attrName == UsdGeomTokens->modelDrawMode ||
+            attrName == UsdGeomTokens->modelApplyDrawMode) {
+            _ResyncPrim(usdPath.GetPrimPath(), proxy, true);
+            return;
+        }
+
+        // If we're sync'ing a non-inherited property on a parent prim, we 
+        // should fall through this function without updating anything. 
+        // The following if-statement should ensure this.
+        
+        // XXX: We must always scan for prefixed children, due to rprim fan-out 
+        // from plugins (such as the PointInstancer).
+        if (attrName == UsdGeomTokens->visibility
+            || attrName == UsdGeomTokens->purpose
+            || UsdGeomXformable::IsTransformationAffectedByAttrNamed(attrName))
+        {
+            // Because these are inherited attributes, we must update all
+            // children.
+            HdPrimGather gather;
+
+            gather.Subtree(_usdIds.GetIds(), usdPrimPath, &affectedPrims);
+        } else {
+            // Only include non-inherited properties for prims that we are
+            // explicitly tracking in the render index.
+            if (!GetPrimInfo(usdPrimPath)) {
+                return;
+            }
+            affectedPrims.push_back(usdPrimPath);
+        }
     }
 
     // PERFORMANCE: We could execute this in parallel, for large numbers of
     // prims.
-    TF_FOR_ALL(usdPathIt, affectedPrims) {
-        SdfPath const& usdPath = *usdPathIt;
-        _AdapterSharedPtr adapter =_AdapterLookupByPath(usdPath);
+    TF_FOR_ALL(affectedPrimPathIt, affectedPrims) {
+        SdfPath const& affectedPrimPath = *affectedPrimPathIt;
+
+        _PrimInfo *primInfo = GetPrimInfo(affectedPrimPath);
 
         // Due to the ResyncPrim condition when AllDirty is returned below, we
-        // may or may not find an associated adapter for every prim in
-        // affectedPrims. If we find no adapter, the prim that was previously
+        // may or may not find an associated primInfo for every prim in
+        // affectedPrims. If we find no primInfo, the prim that was previously
         // affected by this refresh no longer exists and can be ignored.
-        if (adapter) {
-            UsdPrim const& prim = _GetPrim(usdPath);
+        if (primInfo != nullptr &&
+            TF_VERIFY(primInfo->adapter, "%s", affectedPrimPath.GetText())) {
+            _AdapterSharedPtr &adapter = primInfo->adapter;
+
             // For the dirty bits that we've been told changed, go re-discover
             // variability and stage the associated data.
-            int requestBits = adapter->ProcessPropertyChange(prim, usdPath, attrName);
-            if (requestBits != HdChangeTracker::AllDirty) {
-                HdDirtyBits* dirtyBits = _GetDirtyBits(usdPath);
-                if (!TF_VERIFY(dirtyBits)) {
-                    continue;
-                }
-                adapter->TrackVariabilityPrep(prim, usdPath, requestBits);
-                adapter->TrackVariability(prim, usdPath, requestBits,dirtyBits);
-
-                // Propagate the request bits back out to the change tracker.
-                //
-                // The requestBits represent the exact bits that were affected
-                // by the usd change, so we want to use that and not the bits
-                // stored in _dirtyBits, since the _dirtyBits include all
-                // time-varying attributes, not just the ones affected by this
-                // change.
-                _MarkRprimOrInstancerDirty(usdPath, requestBits, true);
+            HdDirtyBits dirtyBits = HdChangeTracker::Clean;
+            if (usdPath.IsAbsoluteRootOrPrimPath()) {
+                dirtyBits = adapter->ProcessPrimChange(
+                    primInfo->usdPrim, affectedPrimPath, changedInfoFields);
+            } else if (usdPath.IsPropertyPath()) {
+                dirtyBits = adapter->ProcessPropertyChange(
+                    primInfo->usdPrim, affectedPrimPath, usdPath.GetNameToken());
             } else {
-                _ResyncPrim(usdPath, proxy);
+                TF_VERIFY(false, "Unexpected path: <%s>", usdPath.GetText());
+            }
+
+            if (dirtyBits == HdChangeTracker::Clean) {
+                // Do nothing
+            } else if (dirtyBits != HdChangeTracker::AllDirty) {
+                // Update Variability
+                adapter->TrackVariabilityPrep(primInfo->usdPrim, 
+                                              affectedPrimPath);
+                adapter->TrackVariability(primInfo->usdPrim,
+                                          affectedPrimPath,
+                                          &primInfo->timeVaryingBits);
+
+                // Propagate the dirty bits back out to the change tracker.
+                HdDirtyBits combinedBits =
+                    dirtyBits | primInfo->timeVaryingBits;
+                if (combinedBits != HdChangeTracker::Clean) {
+                    adapter->MarkDirty(primInfo->usdPrim, affectedPrimPath,
+                                       combinedBits, proxy);
+                }
+            } else {
+                _ResyncPrim(affectedPrimPath, proxy);
             }
         }
     }
-}
-
-void 
-UsdImagingDelegate::_ResyncProperty(SdfPath const& path, 
-                                    UsdImagingIndexProxy* proxy) 
-{
-    // XXX: Continue to do full prim invalidation until buffer source work
-    // lands.
-    _ResyncPrim(path.GetPrimPath(), proxy);
 }
 
 void 
@@ -1629,12 +1361,12 @@ UsdImagingDelegate::_UpdateSingleValue(SdfPath const& usdPath, int requestBits)
     // XXX: potential race condition? UpdateSingleValue may be called from
     // multiple thread on a same path. we should probably need a guard here,
     // or in adapter
-    UsdPrim const& prim = _GetPrim(usdPath);
-    _AdapterSharedPtr adapter = _AdapterLookupByPath(usdPath);
-    if (TF_VERIFY(adapter, "%s\n", usdPath.GetText())) {
-        adapter->UpdateForTimePrep(prim, usdPath, _time, requestBits);
-        HdDirtyBits resultBits = 0;
-        adapter->UpdateForTime(prim, usdPath, _time, requestBits, &resultBits);
+    _PrimInfo *primInfo = GetPrimInfo(usdPath);
+    if (TF_VERIFY(primInfo, "%s\n", usdPath.GetText()) &&
+        TF_VERIFY(primInfo->adapter, "%s\n", usdPath.GetText())) {
+        _AdapterSharedPtr &adapter = primInfo->adapter;
+        adapter->UpdateForTimePrep(primInfo->usdPrim, usdPath, _time, requestBits);
+        adapter->UpdateForTime(primInfo->usdPrim, usdPath, _time, requestBits);
     }
 }
 
@@ -1664,6 +1396,19 @@ UsdImagingDelegate::SetDisplayGuides(bool displayGuides)
     // Geometry that was assigned to a command buffer to be rendered might
     // now be hidden or the contrary, so we need to rebuild the collections.
     GetRenderIndex().GetChangeTracker().MarkAllCollectionsDirty();
+}
+
+void
+UsdImagingDelegate::SetUsdDrawModesEnabled(bool enableUsdDrawModes)
+{
+    if (_enableUsdDrawModes != enableUsdDrawModes) {
+        if (_primInfoMap.size() > 0) {
+            TF_CODING_ERROR("SetUsdDrawModesEnabled() was called after "
+                            "population; this is currently unsupported...");
+        } else {
+            _enableUsdDrawModes = enableUsdDrawModes;
+        }
+    }
 }
 
 /*virtual*/
@@ -1780,16 +1525,6 @@ UsdImagingDelegate::GetExtent(SdfPath const& id)
 }
 
 /*virtual*/ 
-GfVec4f 
-UsdImagingDelegate::GetColorAndOpacity(SdfPath const& id)
-{
-    // XXX: Left for backward compatibility 
-    SdfPath usdPath = GetPathForUsd(id);
-    VtValue value = Get(id, HdTokens->color);
-    return value.UncheckedGet<VtVec4fArray>()[0];
-}
-
-/*virtual*/ 
 bool 
 UsdImagingDelegate::GetDoubleSided(SdfPath const& id)
 {
@@ -1807,6 +1542,18 @@ UsdImagingDelegate::GetDoubleSided(SdfPath const& id)
 HdCullStyle
 UsdImagingDelegate::GetCullStyle(SdfPath const &id)
 {
+    // XXX: Cull style works a bit weirdly. Most adapters aren't
+    // expected to use cullstyle, so: if it's there, use it, but otherwise
+    // just use the fallback value.
+    //
+    // This way, prims that don't care about it don't need to pay the price
+    // of populating it in the value cache.
+    HdCullStyle cullStyle = HdCullStyleDontCare;
+    SdfPath usdPath = GetPathForUsd(id);
+    if (_valueCache.ExtractCullStyle(usdPath, &cullStyle)) {
+        return cullStyle;
+    }
+
     return _cullStyleFallback;
 }
 
@@ -1820,25 +1567,26 @@ UsdImagingDelegate::GetRefineLevel(SdfPath const& id) {
     return GetRefineLevelFallback();
 }
 
-/*virtual*/
-VtVec2iArray
-UsdImagingDelegate::GetInstances(SdfPath const& id)
-{
-    return VtVec2iArray();
-}
-
 void
 UsdImagingDelegate::SetRefineLevelFallback(int level) 
 { 
     if (level == _refineLevelFallback || !_ValidateRefineLevel(level))
         return;
     _refineLevelFallback = level; 
-    TF_FOR_ALL(it, _dirtyMap) {
+
+    UsdImagingIndexProxy indexProxy(this, nullptr);
+
+    TF_FOR_ALL(it, _primInfoMap) {
+        const SdfPath &usdPath = it->first;
+        _PrimInfo &primInfo = it->second;
+
         // Dont mark prims with explicit refine levels as dirty.
-        if (_refineLevelMap.find(it->first) == _refineLevelMap.end()) {
-            _MarkRprimOrInstancerDirty(it->first,
-                                       HdChangeTracker::DirtyRefineLevel,
-                                       false);
+        if (_refineLevelMap.find(usdPath) == _refineLevelMap.end()) {
+            if (TF_VERIFY(primInfo.adapter, "%s", usdPath.GetText())) {
+                primInfo.adapter->MarkRefineLevelDirty(primInfo.usdPrim,
+                                                       usdPath,
+                                                       &indexProxy);
+            }
         }
     }
 }
@@ -1862,9 +1610,15 @@ UsdImagingDelegate::SetRefineLevel(SdfPath const& usdPath, int level)
             return;
     }
 
-    // XXX this might not work with instancing.
-    _MarkRprimOrInstancerDirty(usdPath, HdChangeTracker::DirtyRefineLevel,
-                               false);
+    UsdImagingIndexProxy indexProxy(this, nullptr);
+
+    _PrimInfo *primInfo = GetPrimInfo(usdPath);
+    if (TF_VERIFY(primInfo, "%s", usdPath.GetText()) &&
+        TF_VERIFY(primInfo->adapter, "%s", usdPath.GetText())) {
+        primInfo->adapter->MarkRefineLevelDirty(primInfo->usdPrim,
+                                                usdPath,
+                                                &indexProxy);
+    }
 }
 
 void
@@ -1877,8 +1631,15 @@ UsdImagingDelegate::ClearRefineLevel(SdfPath const& usdPath)
     int oldLevel = it->second;
     _refineLevelMap.erase(it);
     if (oldLevel != _refineLevelFallback) {
-        _MarkRprimOrInstancerDirty(usdPath, HdChangeTracker::DirtyRefineLevel,
-                                   false);
+        UsdImagingIndexProxy indexProxy(this, nullptr);
+
+        _PrimInfo *primInfo = GetPrimInfo(usdPath);
+        if (TF_VERIFY(primInfo, "%s", usdPath.GetText()) &&
+            TF_VERIFY(primInfo->adapter, "%s", usdPath.GetText())) {
+            primInfo->adapter->MarkRefineLevelDirty(primInfo->usdPrim,
+                                                    usdPath,
+                                                    &indexProxy);
+        }
     }
 }
 
@@ -1904,17 +1665,22 @@ UsdImagingDelegate::SetReprFallback(TfToken const &repr)
         return;
     }
     _reprFallback = repr;
-    TF_FOR_ALL(it, _dirtyMap) {
-        // XXX: MarkRprimDirty causes Varying bit set. If a performance
-        // regression observed due to inefficient dirtylist, we might want
-        // to consider to not DirtyRepr provoke Varying state change.
-        _MarkRprimOrInstancerDirty(it->first, HdChangeTracker::DirtyRepr,
-                                   false);
+
+    UsdImagingIndexProxy indexProxy(this, nullptr);
+
+    TF_FOR_ALL(it, _primInfoMap) {
+        const SdfPath &usdPath = it->first;
+        _PrimInfo &primInfo = it->second;
+
+        if (TF_VERIFY(primInfo.adapter, "%s", usdPath.GetText())) {
+            primInfo.adapter->MarkReprDirty(primInfo.usdPrim,
+                                            usdPath,
+                                            &indexProxy);
+        }
     }
 
     // XXX: currently we need to make collection dirty so that
     // HdRenderPass::_PrepareCommandBuffer gathers new drawitem from scratch.
-    // same workaround in PhdDelegate::MarkRprimDirty, should be fixed together.
     GetRenderIndex().GetChangeTracker().MarkAllCollectionsDirty();
 }
 
@@ -1928,74 +1694,57 @@ UsdImagingDelegate::SetCullStyleFallback(HdCullStyle cullStyle)
     }
     _cullStyleFallback = cullStyle;
 
-    TF_FOR_ALL(it, _dirtyMap) {
-        // XXX: MarkRprimDirty causes Varying bit set. If a performance
-        // regression observed due to inefficient dirtylist, we might want
-        // to consider to not DirtyRepr provoke Varying state change.
-        _MarkRprimOrInstancerDirty(it->first, HdChangeTracker::DirtyCullStyle,
-                                   false);
+    UsdImagingIndexProxy indexProxy(this, nullptr);
+
+    TF_FOR_ALL(it, _primInfoMap) {
+        const SdfPath &usdPath = it->first;
+        _PrimInfo &primInfo = it->second;
+
+        if (TF_VERIFY(primInfo.adapter, "%s", usdPath.GetText())) {
+            primInfo.adapter->MarkCullStyleDirty(primInfo.usdPrim,
+                                                 usdPath,
+                                                 &indexProxy);
+        }
     }
 
     // XXX: currently we need to make collection dirty so that
     // HdRenderPass::_PrepareCommandBuffer gathers new drawitem from scratch.
-    // same workaround in PhdDelegate::MarkRprimDirty, should be fixed together.
     GetRenderIndex().GetChangeTracker().MarkAllCollectionsDirty();
 }
 
 void
 UsdImagingDelegate::SetRootTransform(GfMatrix4d const& xf)
 {
+    HD_TRACE_FUNCTION();
+
     // TODO: do IsClose check.
     if (xf == _rootXf)
         return;
 
     _rootXf = xf;
-    _UpdateRootTransform();
-}
 
-bool
-UsdImagingDelegate::_ComputeRootCompensation(SdfPath const & usdPath)
-{
-    if (_compensationPath == usdPath)
-        return false;
-
-    _compensationPath = usdPath;
-    _xformCache.SetRootPath(usdPath);
-    _materialBindingCache.SetRootPath(usdPath);
-    _visCache.SetRootPath(usdPath);
-
-    return true;
-}
-
-void
-UsdImagingDelegate::SetRootCompensation(SdfPath const & usdPath)
-{
-    if (_ComputeRootCompensation(usdPath)) {
-        _UpdateRootTransform();
-    }
-}
-
-void
-UsdImagingDelegate::_UpdateRootTransform()
-{
-    HD_TRACE_FUNCTION();
+    UsdImagingIndexProxy indexProxy(this, nullptr);
 
     // Mark dirty.
-    TF_FOR_ALL(it, _dirtyMap) {
-        SdfPath const& usdPath = it->first;
-        _MarkRprimOrInstancerDirty(usdPath, HdChangeTracker::DirtyTransform,
-                                   true);
+    TF_FOR_ALL(it, _primInfoMap) {
+        const SdfPath &usdPath = it->first;
+        _PrimInfo &primInfo = it->second;
+        if (TF_VERIFY(primInfo.adapter, "%s", usdPath.GetText())) {
+            primInfo.adapter->MarkTransformDirty(primInfo.usdPrim,
+                                                 usdPath,
+                                                 &indexProxy);
+        }
     }
 }
 
 void 
 UsdImagingDelegate::SetInvisedPrimPaths(SdfPathVector const &invisedPaths)
 {
+    HD_TRACE_FUNCTION();
+
     if (_invisedPrimPaths == invisedPaths) {
         return;
     }
-
-    TRACE_FUNCTION();
 
     SdfPathSet sortedNewInvisedPaths(invisedPaths.begin(), invisedPaths.end());
     SdfPathSet sortedExistingInvisedPaths(_invisedPrimPaths.begin(), 
@@ -2017,12 +1766,9 @@ UsdImagingDelegate::SetInvisedPrimPaths(SdfPathVector const &invisedPaths)
             continue;
         }
 
-        TF_DEBUG(USDIMAGING_CHANGES).Msg("[Vis/Invis Rprim] <%s>\n",
+        TF_DEBUG(USDIMAGING_CHANGES).Msg("[Vis/Invis Prim] <%s>\n",
                                          subtreeRoot.GetText());
-
-        _MarkSubtreeDirty(subtreeRoot,
-                          HdChangeTracker::DirtyVisibility,
-                          HdChangeTracker::DirtyVisibility);
+        _MarkSubtreeVisibilityDirty(subtreeRoot);
     }
 
     _invisedPrimPaths = invisedPaths;
@@ -2033,15 +1779,61 @@ UsdImagingDelegate::SetInvisedPrimPaths(SdfPathVector const &invisedPaths)
     _ProcessChangesForTimeUpdate(_time);
 }
 
+void
+UsdImagingDelegate::_MarkSubtreeVisibilityDirty(SdfPath const &subtreeRoot)
+{
+    UsdImagingIndexProxy indexProxy(this, nullptr);
+
+    HdPrimGather gather;
+    SdfPathVector affectedPrims;
+    gather.Subtree(_usdIds.GetIds(), subtreeRoot, &affectedPrims);
+
+    // Propagate dirty bits to all descendents and outside dependent prims.
+    //
+    size_t numPrims = affectedPrims.size();
+    for (size_t primNum = 0; primNum < numPrims; ++primNum) {
+        const SdfPath &usdPath = affectedPrims[primNum];
+
+        _PrimInfo *primInfo = GetPrimInfo(usdPath);
+        if (primInfo == nullptr) {
+            TF_CODING_ERROR("Prim in id list is not in prim info: %s",
+                    usdPath.GetText());
+            continue;
+        }
+        if (!TF_VERIFY(primInfo->adapter, "%s", usdPath.GetText())) {
+            continue;
+        }
+
+        _AdapterSharedPtr const &adapter = primInfo->adapter;
+
+        SdfPath instancer = adapter->GetInstancer(usdPath);
+        if (!instancer.IsEmpty()) {
+            // XXX: workaround for per-instance visibility in nested case.
+            // testPxUsdGeomGLPopOut/test_*_5, test_*_6
+            _pathsToResync.push_back(subtreeRoot);
+            return;
+        } else if (_instancerPrimPaths.find(usdPath) != _instancerPrimPaths.end()) {
+            // XXX: workaround for per-instance visibility in nested case.
+            // testPxUsdGeomGLPopOut/test_*_5, test_*_6
+            _pathsToResync.push_back(subtreeRoot);
+            return;
+        } else {
+            adapter->MarkVisibilityDirty(primInfo->usdPrim,
+                                         usdPath,
+                                         &indexProxy);
+        }
+    }
+}
+
 void 
 UsdImagingDelegate::SetRigidXformOverrides(
     RigidXformOverridesMap const &rigidXformOverrides)
 {
+    HD_TRACE_FUNCTION();
+
     if (_rigidXformOverrides == rigidXformOverrides) {
         return;
     }
-
-    TRACE_FUNCTION();
 
     TfHashMap<UsdPrim, GfMatrix4d, boost::hash<UsdPrim> > overridesToUpdate;
 
@@ -2097,78 +1889,79 @@ UsdImagingDelegate::SetRigidXformOverrides(
         TF_DEBUG(USDIMAGING_CHANGES).Msg("[RigidXform override] <%s>\n",
                                          subtreeRoot.GetText());
 
-        // note that instancer populates each instance transforms as
-        // instance primvars.
-        _MarkSubtreeDirty(subtreeRoot,
-                          /*rprim=*/HdChangeTracker::DirtyTransform,
-                          /*instancer=*/HdChangeTracker::DirtyPrimVar|
-                                        HdChangeTracker::DirtyTransform);
+        _MarkSubtreeTransformDirty(subtreeRoot);
     }
 
     _rigidXformOverrides = rigidXformOverrides;
 }
 
 void
-UsdImagingDelegate::_MarkSubtreeDirty(SdfPath const &subtreeRoot,
-                                      HdDirtyBits rprimDirtyFlag,
-                                      HdDirtyBits instancerDirtyFlag)
+UsdImagingDelegate::_MarkSubtreeTransformDirty(SdfPath const &subtreeRoot)
 {
-    std::pair<_PathAdapterMap::const_iterator,
-        _PathAdapterMap::const_iterator> range =
-        _pathAdapterMap.FindSubtreeRange(subtreeRoot);
+    UsdImagingIndexProxy indexProxy(this, nullptr);
+
+    HdPrimGather gather;
+    SdfPathVector affectedPrims;
+    gather.Subtree(_usdIds.GetIds(), subtreeRoot, &affectedPrims);
 
     // Propagate dirty bits to all descendents and outside dependent prims.
     //
-    for (_PathAdapterMap::const_iterator it = range.first; it != range.second; ++it) {
-        _AdapterSharedPtr const &adapter = it->second;
-        if (!adapter) {
-            continue; // skip ancestors in SdfPathTable
+    size_t numPrims = affectedPrims.size();
+    for (size_t primNum = 0; primNum < numPrims; ++primNum) {
+        const SdfPath &usdPath = affectedPrims[primNum];
+
+        _PrimInfo *primInfo = GetPrimInfo(usdPath);
+        if (primInfo == nullptr) {
+            TF_CODING_ERROR("Prim in id list is not in prim info: %s",
+                            usdPath.GetText());
+            continue;
+        }
+        if (!TF_VERIFY(primInfo->adapter, "%s", usdPath.GetText())) {
+            continue;
         }
 
-        SdfPath instancer = adapter->GetInstancer(it->first);
+        _AdapterSharedPtr const &adapter = primInfo->adapter;
+
+        SdfPath instancer = adapter->GetInstancer(usdPath);
         if (!instancer.IsEmpty()) {
-            // XXX: workaround for per-instance visibility in nested case.
-            // testPxUsdGeomGLPopOut/test_instance_6, test_pi_6, test_pi_ni_6
-            if (instancerDirtyFlag & HdChangeTracker::DirtyVisibility) {
-                _pathsToUpdate.push_back(subtreeRoot);
-               return;
+            _PrimInfo *instancerInfo = GetPrimInfo(instancer);
+            if (!TF_VERIFY(instancerInfo, "%s", usdPath.GetText()) ||
+                !TF_VERIFY(instancerInfo->adapter, "%s", usdPath.GetText())) {
+                continue;
             }
 
             // redirect to native instancer.
-            _MarkRprimOrInstancerDirty(instancer, instancerDirtyFlag, true);
+            instancerInfo->adapter->MarkTransformDirty(instancerInfo->usdPrim,
+                                                       instancer,
+                                                       &indexProxy);
 
-
-            // also communicate adapter to get the list of instanced proto rprims
+            // also communicate adapter to get the list of instanced proto prims
             // to be marked as dirty. for those are not in the namespace children
             // of the instancer (needed for NI-PI cases).
             SdfPathVector const &paths = adapter->GetDependPaths(instancer);
             TF_FOR_ALL (instIt, paths) {
                 // recurse
-                _MarkSubtreeDirty(*instIt, rprimDirtyFlag, instancerDirtyFlag);
+                _MarkSubtreeTransformDirty(*instIt);
             }
-
-        } else if (_instancerPrimPaths.find(it->first) != _instancerPrimPaths.end()) {
-            // XXX: workaround for per-instance visibility in nested case.
-            // testPxUsdGeomGLPopOut/test_*_5, test_*_6
-            if (instancerDirtyFlag & HdChangeTracker::DirtyVisibility) {
-                _pathsToUpdate.push_back(subtreeRoot);
-               return;
-            }
+        } else if (_instancerPrimPaths.find(usdPath) != _instancerPrimPaths.end()) {
 
             // instancer itself
-            _MarkRprimOrInstancerDirty(it->first, instancerDirtyFlag, true);
+            adapter->MarkTransformDirty(primInfo->usdPrim,
+                                        usdPath,
+                                        &indexProxy);
 
-            // also communicate adapter to get the list of instanced proto rprims
+            // also communicate adapter to get the list of instanced proto prims
             // to be marked as dirty. for those are not in the namespace children
             // of the instancer.
-            SdfPathVector const &paths = adapter->GetDependPaths(it->first);
+            SdfPathVector const &paths = adapter->GetDependPaths(usdPath);
             TF_FOR_ALL (instIt, paths) {
                 // recurse
-                _MarkSubtreeDirty(*instIt, rprimDirtyFlag, instancerDirtyFlag);
+                _MarkSubtreeTransformDirty(*instIt);
             }
         } else {
-            // rprim
-            _MarkRprimOrInstancerDirty(it->first, rprimDirtyFlag, true);
+            adapter->MarkTransformDirty(primInfo->usdPrim,
+                                        usdPath,
+                                        &indexProxy);
         }
     }
 }
@@ -2180,9 +1973,17 @@ UsdImagingDelegate::SetRootVisibility(bool isVisible)
         return;
     _rootIsVisible = isVisible;
 
-    TF_FOR_ALL(it, _dirtyMap) {
-        _MarkRprimOrInstancerDirty(it->first, HdChangeTracker::DirtyVisibility,
-                                   true);
+    UsdImagingIndexProxy indexProxy(this, nullptr);
+
+    TF_FOR_ALL(it, _primInfoMap) {
+        const SdfPath &usdPath = it->first;
+        _PrimInfo &primInfo = it->second;
+
+        if (TF_VERIFY(primInfo.adapter, "%s", usdPath.GetText())) {
+            primInfo.adapter->MarkVisibilityDirty(primInfo.usdPrim,
+                                                  usdPath,
+                                                  &indexProxy);
+        }
     }
 }
 
@@ -2206,12 +2007,13 @@ UsdImagingDelegate::GetPathForInstanceIndex(SdfPath const& protoPrimPath,
     SdfPathVector resolvedInstanceContext;
     SdfPath resolvedRprimPath;
     do {
-        _AdapterSharedPtr const& adapter = _AdapterLookupByPath(usdPath);
-        if (!TF_VERIFY(adapter, "can't find primAdapter for %s",
-                          usdPath.GetText())) {
+        _PrimInfo *primInfo = GetPrimInfo(usdPath);
+        if (!TF_VERIFY(primInfo, "%s\n", usdPath.GetText()) ||
+            !TF_VERIFY(primInfo->adapter, "%s\n", usdPath.GetText())) {
             return GetPathForIndex(usdPath);
         }
 
+        _AdapterSharedPtr const& adapter = primInfo->adapter;
         usdPath = adapter->GetPathForInstanceIndex(
             usdPath, instanceIndex, &instanceCount, &absIndex, 
             &resolvedRprimPath, &resolvedInstanceContext);
@@ -2254,9 +2056,11 @@ UsdImagingDelegate::GetPathForInstanceIndex(SdfPath const& protoPrimPath,
 }
 
 bool
-UsdImagingDelegate::PopulateSelection(SdfPath const &path,
-                                      int instanceIndex,
-                                      HdxSelectionSharedPtr const &result)
+UsdImagingDelegate::PopulateSelection(
+              HdxSelectionHighlightMode const& highlightMode,
+              SdfPath const &path,
+              int instanceIndex,
+              HdxSelectionSharedPtr const &result)
 {
     HD_TRACE_FUNCTION();
 
@@ -2292,7 +2096,8 @@ UsdImagingDelegate::PopulateSelection(SdfPath const &path,
         }
     }
     
-    _AdapterSharedPtr const& adapter = _AdapterLookupByPath(usdPath);
+    _PrimInfo *primInfo = GetPrimInfo(usdPath);
+
     bool added = false;
 
     // UsdImagingDelegate only supports top-most level per-instance highlighting
@@ -2301,49 +2106,49 @@ UsdImagingDelegate::PopulateSelection(SdfPath const &path,
         instanceIndices.push_back(instanceIndex);
     }
 
-    if (adapter) {
+    if (primInfo && TF_VERIFY(primInfo->adapter, "%s\n", usdPath.GetText())) {
+        _AdapterSharedPtr const& adapter = primInfo->adapter;
+
         // Prim, or instancer
-        return adapter->PopulateSelection(usdPath, instanceIndices, result);
+        return adapter->PopulateSelection(highlightMode, usdPath,
+                                          instanceIndices, result);
     } else {
-        // Select rprims that are part of the path subtree. Exclude proto paths 
-        // since they will be added later in this function when iterating 
-        // through the different instances.
-        SdfPathVector const& rprimPaths = GetRenderIndex().GetRprimSubtree(path);
-        TF_FOR_ALL (rprimPath, rprimPaths) {
-            if ((*rprimPath).IsPropertyPath()) {
+
+        // Select prims that are part of the path subtree. Exclude prototypes
+        // since they are handled by their instancers' PopulateSelection calls.
+        SdfPathVector affectedPrims;
+        HdPrimGather gather;
+        gather.Subtree(_usdIds.GetIds(), usdPath, &affectedPrims);
+
+        size_t numPrims = affectedPrims.size();
+        for (size_t primNum = 0; primNum < numPrims; ++primNum) {
+            const SdfPath &primPath = affectedPrims[primNum];
+
+            _PrimInfo *primInfo = GetPrimInfo(primPath);
+            if (primInfo == nullptr) {
+                TF_CODING_ERROR("Prim in usd ids is not in prim info: %s",
+                                primPath.GetText());
                 continue;
             }
-            result->AddRprim(*rprimPath);
-            added = true;
-        }
-
-        // Iterate the adapter map to figure out if there is (at least) one
-        // instancer under the selected path, and then populate the selection
-        std::pair<UsdImagingDelegate::_PathAdapterMap::iterator,
-                  UsdImagingDelegate::_PathAdapterMap::iterator> 
-                  range = _pathAdapterMap.FindSubtreeRange(usdPath);
-        for (UsdImagingDelegate::_PathAdapterMap::iterator it = range.first; 
-             it != range.second; it++) {
-
-            // We are looking for instancers, so if there is 
-            // no adapter let's ignore it and keep iterating
-            _AdapterSharedPtr const &adapter = it->second;
-            if (!adapter) {
+            if (!TF_VERIFY(primInfo->adapter, "%s\n", primPath.GetText())) {
                 continue;
             }
-            
-            // Check if the there is an instancer associated to that path
-            // if so, let's populate the selection to that instance.
-            SdfPath instancePath = it->first;
-            SdfPath instancerPath = adapter->GetInstancer(instancePath);
-            if (!instancerPath.IsEmpty()) {                
-                // We don't need to take into account specific indices when 
-                // doing subtree selections.
-                added |= adapter->PopulateSelection(usdPath,
-                                                  VtIntArray(), 
-                                                  result);
-                break;
+
+            _AdapterSharedPtr const &adapter = primInfo->adapter;
+
+            // PopulateSelection works as expected on un-instanced rprims.
+            // For PointInstancers, PopulateSelection adds all of their
+            // children. For native instances, PopulateSelection will add
+            // selections for all of the prims/instances that are logically
+            // below primPath.
+            //
+            // This means that if we run across a property path (instanced
+            // rprim), we should skip it so the instance adapters can work.
+            if (primPath.IsPropertyPath()) {
+                continue;
             }
+            added |= adapter->PopulateSelection(highlightMode, primPath,
+                                                VtIntArray(), result);
         }
     }
     return added;
@@ -2354,6 +2159,7 @@ GfMatrix4d
 UsdImagingDelegate::GetTransform(SdfPath const& id)
 {
     HD_TRACE_FUNCTION();
+
     SdfPath usdPath = GetPathForUsd(id);
     GfMatrix4d ctm(1.0);
     if (_valueCache.ExtractTransform(usdPath, &ctm)) {
@@ -2368,35 +2174,40 @@ UsdImagingDelegate::GetTransform(SdfPath const& id)
     return ctm;
 }
 
-GfMatrix4d 
-UsdImagingDelegate::_GetTransform(UsdPrim prim) const
+size_t
+UsdImagingDelegate::SampleTransform(SdfPath const & id, size_t maxNumSamples,
+                                    float *times, GfMatrix4d *samples)
 {
-    HD_TRACE_FUNCTION();
-    GfMatrix4d ctm(1.0);
+    SdfPath usdPath = GetPathForUsd(id);
+    UsdPrim prim = _stage->GetPrimAtPath(usdPath);
 
-    if (!TF_VERIFY(prim)) {
-        return ctm;
+    // Provide the number of time samples configured in _timeSampleOffsets,
+    // but limited to the caller's declared capacity.
+    size_t numSamples = std::min(maxNumSamples, _timeSampleOffsets.size());
+
+    // XXX: We should add caching to the transform computation if this shows
+    // up in profiling, but all of our current caches are cleared on time change
+    // so we'd need to write a new structure.
+    UsdGeomXformCache xformCache(0.0);
+    for (size_t i=0; i < numSamples; ++i) {
+        UsdTimeCode offsetTime = GetTimeWithOffset(_timeSampleOffsets[i]);
+        times[i] = _timeSampleOffsets[i];
+        samples[i] = UsdImaging_XfStrategy::ComputeTransform(
+            prim, _rootPrimPath, offsetTime, _rigidXformOverrides) * _rootXf;
     }
 
-    // XXX could probably use an xformCache here in case this has
-    // a long way to traverse.
-    SdfPath rootPath = _compensationPath;
-    while (prim.GetPath() != rootPath) {
-        if (UsdGeomXformable xfPrim = UsdGeomXformable(prim)) {
-            GfMatrix4d xf;
-            bool resetsXformStack = false;
-            if (xfPrim.GetLocalTransformation(&xf, &resetsXformStack, _time)) {
-                if (resetsXformStack)
-                    ctm = xf;
-                else
-                    ctm = ctm * xf;
-
-            }
+    // Some backends benefit if they can avoid time sample animation
+    // for fixed transforms.  This is difficult to compute explicitly
+    // due to the hierarchial nature of concated transforms, so we
+    // do a post-pass sweep to detect static transforms here.
+    for (size_t i=1; i < numSamples; ++i) {
+        if (samples[i] != samples[0]) {
+            // At least 1 sample is different, so return them all.
+            return numSamples;
         }
-        prim = prim.GetParent();
     }
-    
-    return ctm;
+    // All samples are the same, so just return 1.
+    return 1;
 }
 
 bool
@@ -2452,8 +2263,17 @@ UsdImagingDelegate::Get(SdfPath const& id, TfToken const& key)
 
     SdfPath usdPath = GetPathForUsd(id);
     VtValue value;
-    
-    if (!_valueCache.ExtractPrimvar(usdPath, key, &value)) {
+
+    if (key == HdShaderTokens->material) {
+        SdfPath pathValue;
+        if (!_valueCache.ExtractMaterialId(usdPath, &pathValue)) {
+            _UpdateSingleValue(usdPath, HdChangeTracker::DirtyMaterialId);
+            TF_VERIFY(_valueCache.ExtractMaterialId(usdPath, &pathValue));
+        }
+        value = VtValue(GetPathForIndex(pathValue));
+    }
+
+    else if (!_valueCache.ExtractPrimvar(usdPath, key, &value)) {
         if (key == HdTokens->points) {
             _UpdateSingleValue(usdPath,HdChangeTracker::DirtyPoints);
             if (!TF_VERIFY(_valueCache.ExtractPoints(usdPath, &value))) {
@@ -2462,7 +2282,7 @@ UsdImagingDelegate::Get(SdfPath const& id, TfToken const& key)
             }
         } else if (key == HdTokens->color) {
             // XXX: Getting all primvars here when we only want color is wrong.
-            _UpdateSingleValue(usdPath,HdChangeTracker::DirtyPrimVar);
+            _UpdateSingleValue(usdPath,HdChangeTracker::DirtyPrimvar);
             if (!TF_VERIFY(_valueCache.ExtractColor(usdPath, &value))){
                 VtVec4fArray vec(1);
                 vec.push_back(GfVec4f(.5,.5,.5,1.0));
@@ -2475,11 +2295,6 @@ UsdImagingDelegate::Get(SdfPath const& id, TfToken const& key)
                 vec.push_back(1.0f);
                 value = VtValue(vec);
             }
-        } else if (key == HdShaderTokens->surfaceShader) {
-            _UpdateSingleValue(usdPath,HdChangeTracker::DirtySurfaceShader);
-            SdfPath pathValue;
-            TF_VERIFY(_valueCache.ExtractSurfaceShader(usdPath, &pathValue));
-            value = VtValue(GetPathForIndex(pathValue));
         } else if (key == HdTokens->transform) {
             GfMatrix4d xform(1.);
             bool resetsXformStack=false;
@@ -2505,15 +2320,10 @@ UsdImagingDelegate::Get(SdfPath const& id, TfToken const& key)
             TF_VERIFY(_GetPrim(usdPath).GetAttribute(key).Get(&value, _time),
                   "%s, %s\n", id.GetText(), key.GetText());
         }
+    }
 
-        if (value.IsEmpty()) {
-            TF_WARN("Empty VtValue: <%s> %s\n", id.GetText(), key.GetText());
-        }
-    } else {
-        if (value.IsEmpty()) {
-            TF_WARN("Empty VtValue (cached): <%s> %s\n", id.GetText(),
-                    key.GetText());
-        }
+    if (value.IsEmpty()) {
+        TF_WARN("Empty VtValue: <%s> %s\n", id.GetText(), key.GetText());
     }
 
     // We generally don't want Vec2d arrays, convert to vec2f.
@@ -2525,6 +2335,23 @@ UsdImagingDelegate::Get(SdfPath const& id, TfToken const& key)
 }
 
 /*virtual*/
+size_t
+UsdImagingDelegate::SamplePrimvar(SdfPath const& id, TfToken const& key,
+                                  size_t maxNumSamples,
+                                  float *times, VtValue *samples)
+{
+    SdfPath usdPath = GetPathForUsd(id);
+    _PrimInfo *primInfo = GetPrimInfo(usdPath);
+    if (TF_VERIFY(primInfo)) {
+        return primInfo->adapter
+            ->SamplePrimvar(primInfo->usdPrim, usdPath, key,
+                            _time, _timeSampleOffsets,
+                            maxNumSamples, times, samples);
+    }
+    return 0;
+}
+
+/*virtual*/
 TfToken
 UsdImagingDelegate::GetReprName(SdfPath const &id)
 {
@@ -2532,87 +2359,31 @@ UsdImagingDelegate::GetReprName(SdfPath const &id)
 }
 
 // -------------------------------------------------------------------------- //
-// PrimVar Support Methods
+// Primvar Support Methods
 // -------------------------------------------------------------------------- //
 
-TfTokenVector
-UsdImagingDelegate::_GetPrimvarNames(SdfPath const& usdPath,
-                                     TfToken const& interpolation)
+HdPrimvarDescriptorVector
+UsdImagingDelegate::GetPrimvarDescriptors(SdfPath const& id,
+                                          HdInterpolation interpolation)
 {
     HD_TRACE_FUNCTION();
-
-    TfTokenVector names;
-    typedef UsdImagingValueCache::PrimvarInfoVector PrimvarInfoVector;
-    PrimvarInfoVector primvars;
-
-    if (!TF_VERIFY(_valueCache.FindPrimvars(usdPath, &primvars), 
-                "<%s> interpolation: %s",
-                usdPath.GetText(),
-            interpolation.GetText()))
-        return names;
-
-    TF_VERIFY(!primvars.empty(), "No primvars found for <%s>\n", usdPath.GetText());
-
-    TF_FOR_ALL(pvIt, primvars) {
-        if (interpolation.IsEmpty() || pvIt->interpolation == interpolation)
-            names.push_back(pvIt->name);
+    SdfPath usdPath = GetPathForUsd(id);
+    // Filter the stored primvars to just ones of the requested type.
+    HdPrimvarDescriptorVector primvars;
+    HdPrimvarDescriptorVector allPrimvars;
+    if (!TF_VERIFY(_valueCache.FindPrimvars(usdPath, &allPrimvars), 
+                   "<%s> interpolation: %s", usdPath.GetText(),
+                   TfEnum::GetName(interpolation).c_str())) {
+        return primvars;
     }
-
-    return names;
-}
-
-/* virtual */
-TfTokenVector
-UsdImagingDelegate::GetPrimVarVertexNames(SdfPath const& id)
-{
-    HD_TRACE_FUNCTION();
-    SdfPath usdPath = GetPathForUsd(id);
-    return _GetPrimvarNames(usdPath, UsdGeomTokens->vertex);
-}
-
-/* virtual */
-TfTokenVector
-UsdImagingDelegate::GetPrimVarVaryingNames(SdfPath const& id)
-{
-    HD_TRACE_FUNCTION();
-    SdfPath usdPath = GetPathForUsd(id);
-    return _GetPrimvarNames(usdPath, UsdGeomTokens->varying);
-}
-
-/* virtual */
-TfTokenVector
-UsdImagingDelegate::GetPrimVarFacevaryingNames(SdfPath const& id)
-{
-    HD_TRACE_FUNCTION();
-    SdfPath usdPath = GetPathForUsd(id);
-    return _GetPrimvarNames(usdPath, UsdGeomTokens->faceVarying);
-}
-
-/* virtual */
-TfTokenVector
-UsdImagingDelegate::GetPrimVarUniformNames(SdfPath const& id)
-{
-    HD_TRACE_FUNCTION();
-    SdfPath usdPath = GetPathForUsd(id);
-    return _GetPrimvarNames(usdPath, UsdGeomTokens->uniform);
-}
-
-/* virtual */
-TfTokenVector
-UsdImagingDelegate::GetPrimVarConstantNames(SdfPath const& id)
-{
-    HD_TRACE_FUNCTION();
-    SdfPath usdPath = GetPathForUsd(id);
-    return _GetPrimvarNames(usdPath, UsdGeomTokens->constant);
-}
-
-/* virtual */
-TfTokenVector
-UsdImagingDelegate::GetPrimVarInstanceNames(SdfPath const& id)
-{
-    HD_TRACE_FUNCTION();
-    SdfPath usdPath = GetPathForUsd(id);
-    return _GetPrimvarNames(usdPath, _tokens->instance);
+    TF_VERIFY(!allPrimvars.empty(),
+              "No primvars found for <%s>\n", usdPath.GetText());
+    for (HdPrimvarDescriptor const& pv: allPrimvars) {
+        if (pv.interpolation == interpolation) {
+            primvars.push_back(pv);
+        }
+    }
+    return primvars;
 }
 
 /*virtual*/
@@ -2649,7 +2420,7 @@ UsdImagingDelegate::GetInstanceIndices(SdfPath const &instancerId,
         TF_DEBUG(HD_SAFE_MODE).Msg(
                                 "WARNING: Slow instance indices fetch for %s\n", 
                                 prototypeId.GetText());
-        _UpdateSingleValue(usdPath, HdChangeTracker::DirtyPrimVar);
+        _UpdateSingleValue(usdPath, HdChangeTracker::DirtyInstanceIndex);
         TF_VERIFY(_valueCache.FindInstanceIndices(usdPath, &indices));
     }
 
@@ -2689,171 +2460,175 @@ UsdImagingDelegate::GetInstancerTransform(SdfPath const &instancerId,
     return ctm;
 }
 
-bool
-UsdImagingDelegate::GetSurfaceShaderIsTimeVarying(SdfPath const& shaderId)
+/*virtual*/
+size_t
+UsdImagingDelegate::SampleInstancerTransform(SdfPath const &instancerId,
+                                             SdfPath const &prototypeId,
+                                             size_t maxSampleCount,
+                                             float *times,
+                                             GfMatrix4d *samples)
 {
-    if (_ShaderAdapterSharedPtr adapter = _ShaderAdapterLookup(shaderId)) {
-        return adapter->GetSurfaceShaderIsTimeVarying(GetPathForUsd(shaderId));
+    SdfPath usdPath = GetPathForUsd(instancerId);
+    _PrimInfo *primInfo = GetPrimInfo(usdPath);
+    if (TF_VERIFY(primInfo)) {
+        return primInfo->adapter
+            ->SampleInstancerTransform(primInfo->usdPrim, usdPath,
+                                       _time, _timeSampleOffsets,
+                                       maxSampleCount, times, samples);
     }
-
-    TF_CODING_ERROR("Unable to find a shader adapter.");
-    return false;
+    return 0;
 }
 
 /*virtual*/
 std::string
-UsdImagingDelegate::GetSurfaceShaderSource(SdfPath const &shaderId)
+UsdImagingDelegate::GetSurfaceShaderSource(SdfPath const &materialId)
 {
-    // PERFORMANCE: We should schedule this to be updated during Sync, rather
-    // than pulling values on demand.
+    HD_TRACE_FUNCTION();
 
-    if (_ShaderAdapterSharedPtr adapter = _ShaderAdapterLookup(shaderId)) {
-        return adapter->GetSurfaceShaderSource(GetPathForUsd(shaderId));
+    if (materialId.IsEmpty()) {
+        // Handle fallback shader
+        return std::string();
     }
 
-    TF_CODING_ERROR("Unable to find a shader adapter.");
-    return "";
+    SdfPath usdPath = GetPathForUsd(materialId);
+    std::string source;
+
+    if (!_valueCache.ExtractSurfaceShaderSource(usdPath, &source)) {
+        TF_DEBUG(HD_SAFE_MODE).Msg(
+            "WARNING: Slow surface shader source fetch for %s\n",
+            materialId.GetText());
+        _UpdateSingleValue(usdPath, HdMaterial::DirtySurfaceShader);
+        TF_VERIFY(_valueCache.ExtractSurfaceShaderSource(usdPath, &source));
+    }
+
+    return source;
+}
+
+/*virtual*/
+std::string
+UsdImagingDelegate::GetDisplacementShaderSource(SdfPath const &materialId)
+{
+    HD_TRACE_FUNCTION();
+
+    if (materialId.IsEmpty()) {
+        // Handle fallback shader
+        return std::string();
+    }
+
+    SdfPath usdPath = GetPathForUsd(materialId);
+    std::string source;
+
+    if (!_valueCache.ExtractDisplacementShaderSource(usdPath, &source)) {
+        TF_DEBUG(HD_SAFE_MODE).Msg(
+            "WARNING: Slow displacement shader source fetch for %s\n",
+            materialId.GetText());
+        _UpdateSingleValue(usdPath, HdMaterial::DirtySurfaceShader);
+        TF_VERIFY(_valueCache.ExtractDisplacementShaderSource(
+                  usdPath, &source));
+    }
+
+    return source;
 }
 
 /*virtual*/
 VtValue
-UsdImagingDelegate::GetSurfaceShaderParamValue(SdfPath const &shaderId, 
-                                               TfToken const &paramName)
+UsdImagingDelegate::GetMaterialParamValue(SdfPath const &materialId, 
+                                          TfToken const &paramName)
 {
-    // PERFORMANCE: We should schedule this to be updated during Sync, rather
-    // than pulling values on demand.
+    HD_TRACE_FUNCTION();
 
-    if (_ShaderAdapterSharedPtr adapter = _ShaderAdapterLookup(shaderId)) {
-        return adapter->GetSurfaceShaderParamValue(GetPathForUsd(shaderId), paramName);
+    if (materialId.IsEmpty()) {
+        // Handle fallback material
+        VtFloatArray dummy;
+        dummy.resize(1);
+        return VtValue(dummy);
     }
 
-    TF_CODING_ERROR("Unable to find a shader adapter.");
-    return VtValue();
-}
+    SdfPath usdPath = GetPathForUsd(materialId);
+    VtValue param;
 
-HdShaderParamVector
-UsdImagingDelegate::GetSurfaceShaderParams(SdfPath const &shaderId)
-{
-    if (_ShaderAdapterSharedPtr adapter = _ShaderAdapterLookup(shaderId)) {
-        return adapter->GetSurfaceShaderParams(GetPathForUsd(shaderId));
+    // XXX: See comment in GetMaterialParams.
+    TF_VERIFY(_valueCache.ExtractMaterialParam(
+                usdPath, paramName, &param));
+
+    if (param.IsEmpty()) {
+        // XXX: hydra crashes with empty vt values, should fix
+        VtFloatArray dummy;
+        dummy.resize(1);
+        param = VtValue(dummy);
     }
-
-    // PERFORMANCE: We should schedule this to be updated during Sync, rather
-    // than pulling values on demand.
-
-    TF_CODING_ERROR("Unable to find a shader adapter.");
-    HdShaderParamVector params;
-    return params;
+    return param;
 }
 
 /*virtual*/
-SdfPathVector
-UsdImagingDelegate::GetSurfaceShaderTextures(SdfPath const &shaderId)
+HdMaterialParamVector
+UsdImagingDelegate::GetMaterialParams(SdfPath const &materialId)
 {
-    if (_ShaderAdapterSharedPtr adapter = _ShaderAdapterLookup(shaderId)) {
-        return adapter->GetSurfaceShaderTextures(GetPathForUsd(shaderId));
+    HD_TRACE_FUNCTION();
+
+    if (materialId.IsEmpty()) {
+        // Handle fallback material
+        return HdMaterialParamVector();
     }
 
-    // PERFORMANCE: We should schedule this to be updated during Sync, rather
-    // than pulling values on demand.
+    SdfPath usdPath = GetPathForUsd(materialId);
+    HdMaterialParamVector params;
 
-    TF_CODING_ERROR("Unable to find a shader adapter.");
-    SdfPathVector textureIDs;
-    return textureIDs;
+    // XXX: This is a little complicated. Materials aren't part of the
+    // delegate sync, since they aren't rprims. We can manually call
+    // UpdateForTime() on materials via _UpdateSingleValue, but we can't rely
+    // on the value cache's "ExtractFoo" to fail if unpopulated, like we do
+    // elsewhere, because the value cache GarbageCollect is called *ONLY* on
+    // delegates with rprims that participated in delegate sync.  So if a
+    // material is the only thing changing this frame, you'll have stale empty
+    // values from the last time you called Extract (since Extract just
+    // swap()s with an empty value, and doesn't delete the cache entry until
+    // GC).
+    //
+    // As a workaround: Every time we update materials, we'll call
+    // GetSurfaceShaderParams() once, and then GetSurfaceShaderParamValue()
+    // many times.  We unconditionally update params here, and let GetParamValue
+    // hitch a free ride. This happens to work with HdStShader's implementation.
+    //
+    // The correct long-term solution is to include sprims in delegate sync!
+
+    _UpdateSingleValue(usdPath, HdMaterial::DirtyParams);
+    TF_VERIFY(_valueCache.FindMaterialParams(usdPath, &params));
+
+    // Connections need to be represented as index paths...
+    TF_FOR_ALL(paramIt, params) {
+        if (paramIt->IsTexture()) {
+            // Unfortunately, HdMaterialParam is immutable;
+            // fortunately, it has relatively lightweight members.
+            *paramIt = HdMaterialParam(
+                paramIt->GetName(),
+                paramIt->GetFallbackValue(),
+                GetPathForIndex(paramIt->GetConnection()),
+                paramIt->GetSamplerCoordinates(),
+                paramIt->IsPtex());
+        }
+    }
+
+    return params;
 }
 
 HdTextureResource::ID
 UsdImagingDelegate::GetTextureResourceID(SdfPath const &textureId)
 {
-    if (textureId == SdfPath()) {
-        size_t hash = textureId.GetHash();
-        // salt with renderindex to prevent hash collision in non-shared imaging
-        boost::hash_combine(hash, &GetRenderIndex());
-        return HdTextureResource::ID(hash);
-    }
-
     SdfPath usdPath = GetPathForUsd(textureId);
+    _PrimInfo *primInfo = GetPrimInfo(usdPath);
+    if (primInfo) {
+        return primInfo->adapter
+            ->GetTextureResourceID(primInfo->usdPrim, usdPath, _time,
+                                   (size_t) &GetRenderIndex() );
+    } 
 
-    UsdObject object = _stage->GetPrimAtPath(usdPath.GetPrimPath());
-    if (!object) {
-        size_t hash = textureId.GetHash();
-        // salt with renderindex to prevent hash collision in non-shared imaging
-        boost::hash_combine(hash, &GetRenderIndex());
-        return HdTextureResource::ID(hash);
-    }
+    // A bad asset can cause GetPrimInfo() to fail. Hence, issue a warning and 
+    // return an invalid resource ID.
+    TF_WARN("Could not get prim tracking data for path <%s>. Unable to get "
+            "associated texture resource ID.", textureId.GetText());
 
-    bool isPtex = false;
-    SdfAssetPath asset;
-
-    if (usdPath.IsPropertyPath()) {
-        // Attribute-based texture. 
-        UsdAttribute attr = object.As<UsdPrim>().GetAttribute(
-                                                        usdPath.GetNameToken());
-        if (!attr) {
-            size_t hash = textureId.GetHash();
-            // salt with renderindex to prevent hash collision in non-shared imaging
-            boost::hash_combine(hash, &GetRenderIndex());
-            return HdTextureResource::ID(hash);
-        }
-        if (!attr.Get(&asset, _time)) {
-            size_t hash = textureId.GetHash();
-            // salt with renderindex to prevent hash collision in non-shared imaging
-            boost::hash_combine(hash, &GetRenderIndex());
-            return HdTextureResource::ID(hash);
-        }
-    } else {
-        TfToken id;
-        UsdShadeShader shader(_stage->GetPrimAtPath(usdPath));
-
-        if (!shader){
-            size_t hash = textureId.GetHash();
-            // salt with renderindex to prevent hash collision in non-shared imaging
-            boost::hash_combine(hash, &GetRenderIndex());
-            return HdTextureResource::ID(hash);
-        }
-        if (!UsdHydraTexture(shader).GetFilenameAttr().Get(&asset)) {
-            size_t hash = textureId.GetHash();
-            // salt with renderindex to prevent hash collision in non-shared imaging
-            boost::hash_combine(hash, &GetRenderIndex());
-            return HdTextureResource::ID(hash);
-        }
-    }
-
-    TfToken filePath = TfToken(asset.GetResolvedPath());
-
-    // Fallback to the literal path if it couldn't be resolved.
-    if (filePath.IsEmpty())
-        filePath = TfToken(asset.GetAssetPath());
-
-    isPtex = GlfIsSupportedPtexTexture(filePath);
-    
-    if (!TfPathExists(filePath)) {
-        if (isPtex) {
-            TF_WARN("Unable to find Texture '%s' with path '%s'. Fallback" 
-                 "textures are not supported for ptex", 
-            filePath.GetText(), usdPath.GetText());
-
-            HdTextureResource::ID hash = 
-                HdTextureResource::ComputeFallbackPtexHash(); 
-            // Don't salt default values
-            return hash;
-        } else {
-            TF_WARN("Unable to find Texture '%s' with path '%s'. A black" 
-                 "texture will be substituted in its place.", 
-            filePath.GetText(), usdPath.GetText());
-
-            HdTextureResource::ID hash = 
-                HdTextureResource::ComputeFallbackUVHash();
-            // Don't salt default values
-            return hash; 
-        }
-    }
-
-    size_t hash = textureId.GetHash();
-    // salt with renderindex to prevent hash collision in non-shared imaging
-    boost::hash_combine(hash, &GetRenderIndex());
-
-    return HdTextureResource::ID(hash);
+    return HdTextureResource::ID(-1);
 }
 
 HdTextureResourceSharedPtr
@@ -2861,134 +2636,13 @@ UsdImagingDelegate::GetTextureResource(SdfPath const &textureId)
 {
     // PERFORMANCE: We should schedule this to be updated during Sync, rather
     // than pulling values on demand.
- 
-    if (!TF_VERIFY(textureId != SdfPath()))
-        return HdTextureResourceSharedPtr();
-
     SdfPath usdPath = GetPathForUsd(textureId);
-
-    UsdObject object = _stage->GetPrimAtPath(usdPath.GetPrimPath());
-    if (!TF_VERIFY(object))
-        return HdTextureResourceSharedPtr();
-
-    TfToken filePath;
-    TfToken wrapS = UsdHydraTokens->repeat;
-    TfToken wrapT = UsdHydraTokens->repeat;
-    TfToken minFilter = UsdHydraTokens->linear;
-    TfToken magFilter = UsdHydraTokens->linear;
-
-    bool isPtex = false;
-    float memoryLimit = 0.0f;
-
-    if (usdPath.IsPropertyPath()) {
-        // Attribute-based texture. 
-        SdfAssetPath asset;
-        UsdAttribute attr = object.As<UsdPrim>().GetAttribute(
-                                                        usdPath.GetNameToken());
-        if (!TF_VERIFY(attr))
-            return HdTextureResourceSharedPtr();
-        if (!TF_VERIFY(attr.Get(&asset, _time)))
-            return HdTextureResourceSharedPtr();
-
-        filePath = TfToken(asset.GetResolvedPath());
-
-        // Fallback to the literal path if it couldn't be resolved.
-        if (filePath.IsEmpty())
-            filePath = TfToken(asset.GetAssetPath());
-
-        isPtex = GlfIsSupportedPtexTexture(filePath);
-
-        TF_DEBUG(USDIMAGING_TEXTURES).Msg(
-                "Loading texture: id(%s), isPtex(%s)\n",
-                usdPath.GetText(),
-                isPtex ? "true" : "false");
- 
-        // TODO: read memory limit.
-    } else {
-        TF_DEBUG(USDIMAGING_TEXTURES).Msg(
-                " Loading prim-based texture <%s>\n",
-                usdPath.GetText());
-        SdfAssetPath asset;
-        TfToken id;
-        UsdShadeShader shader(_stage->GetPrimAtPath(usdPath));
-
-        if (!TF_VERIFY(shader)) {
-            return HdTextureResourceSharedPtr();
-        }
-        if (!UsdHydraTexture(shader).GetFilenameAttr().Get(&asset)) {
-            TF_WARN("Filename not readable for texture <%s>\n",
-                    shader.GetPath().GetText());
-            return HdTextureResourceSharedPtr();
-        }
-
-        UsdHydraTexture(shader).GetTextureMemoryAttr().Get(&memoryLimit);
-        
-        filePath = TfToken(asset.GetResolvedPath());
-
-        // Fallback to the literal path if it couldn't be resolved.
-        if (filePath.IsEmpty())
-            filePath = TfToken(asset.GetAssetPath());
-
-        isPtex = GlfIsSupportedPtexTexture(filePath);
-        if (!isPtex) {
-            UsdHydraUvTexture uvt(shader);
-            uvt.GetWrapSAttr().Get(&wrapS);
-            uvt.GetWrapTAttr().Get(&wrapT);
-            uvt.GetMinFilterAttr().Get(&minFilter);
-            uvt.GetMagFilterAttr().Get(&magFilter);
-        }
-
-        TF_DEBUG(USDIMAGING_TEXTURES).Msg(
-                "Loading texture: id(%s), isPtex(%s)\n",
-                usdPath.GetText(),
-                isPtex ? "true" : "false");
+    _PrimInfo *primInfo = GetPrimInfo(usdPath);
+    if (TF_VERIFY(primInfo)) {
+        return primInfo->adapter
+            ->GetTextureResource(primInfo->usdPrim, usdPath, _time);
     }
-
-    if (!TfPathExists(filePath)) {
-        TF_WARN("Unable to find Texture '%s' with path '%s'.", 
-            filePath.GetText(), usdPath.GetText());
-        return HdTextureResourceSharedPtr();
-    }
-
-    HdTextureResourceSharedPtr texResource;
-
-    TF_DEBUG(USDIMAGING_TEXTURES).Msg("    Loading texture: %s\n", 
-                                    filePath.GetText());
-    TfStopwatch timer;
-    timer.Start();
-    GlfTextureHandleRefPtr texture =
-        GlfTextureRegistry::GetInstance().GetTextureHandle(filePath);
-    texture->AddMemoryRequest(memoryLimit);
-    HdWrap wrapShd = (wrapS == UsdHydraTokens->clamp) ? HdWrapClamp
-                 : (wrapS == UsdHydraTokens->repeat) ? HdWrapRepeat
-                 : HdWrapBlack; 
-    HdWrap wrapThd = (wrapT == UsdHydraTokens->clamp) ? HdWrapClamp
-                 : (wrapT == UsdHydraTokens->repeat) ? HdWrapRepeat
-                 : HdWrapBlack; 
-    HdMagFilter magFilterHd = 
-                 (magFilter == UsdHydraTokens->nearest) ? HdMagFilterNearest
-                 : HdMagFilterLinear; 
-    HdMinFilter minFilterHd = 
-                 (minFilter == UsdHydraTokens->nearest) ? HdMinFilterNearest
-                 : (minFilter == UsdHydraTokens->nearestMipmapNearest) 
-                                ? HdMinFilterNearestMipmapNearest
-                 : (minFilter == UsdHydraTokens->nearestMipmapLinear) 
-                                ? HdMinFilterNearestMipmapLinear
-                 : (minFilter == UsdHydraTokens->linearMipmapNearest) 
-                                ? HdMinFilterLinearMipmapNearest
-                 : (minFilter == UsdHydraTokens->linearMipmapLinear) 
-                                ? HdMinFilterLinearMipmapLinear
-                 : HdMinFilterLinear; 
-
-    texResource = HdTextureResourceSharedPtr(
-        new HdSimpleTextureResource(texture, isPtex, wrapShd, wrapThd,
-                                    minFilterHd, magFilterHd));
-    timer.Stop();
-
-    TF_DEBUG(USDIMAGING_TEXTURES).Msg("    Load time: %.3f s\n", 
-                                     timer.GetSeconds());
-
-    return texResource;
+    return nullptr;
 }
 
 VtValue 
@@ -3023,26 +2677,55 @@ UsdImagingDelegate::GetLightParamValue(SdfPath const &id,
                 return VtValue();
             }
             return VtValue(asset.GetResolvedPath());
-
-        // XXX : As soon as we have sprim dirty bits and time variability 
-        // we can use another mechanism
-        } else if (paramName == HdTokens->transform) {
-            GfMatrix4d ctm = UsdImaging_XfStrategy::ComputeTransform(
-                prim, _xformCache.GetRootPath(), UsdTimeCode(1.0), 
-                _rigidXformOverrides) * GetRootTransform();
-            return VtValue(ctm);
         }
-        
-        TF_WARN("Unable to find attribute '%s' in prim '%s'.", 
-            paramName.GetText(), id.GetText());
-        return VtValue();
+
+        return Get(id, paramName);
     }
 
     // Reading the value may fail, should we warn here when it does?
     attr.Get(&value, GetTime());
-    return value;    
+    return value;
 }
 
+VtValue
+UsdImagingDelegate::GetMaterialResource(SdfPath const &materialId)
+{
+    VtValue vtMatResource;
+
+    if (!TF_VERIFY(materialId != SdfPath())) {
+        return vtMatResource;
+    }
+
+    SdfPath usdPath = GetPathForUsd(materialId);
+
+    if (!_valueCache.ExtractMaterialResource(usdPath, &vtMatResource)) {
+        TF_DEBUG(HD_SAFE_MODE).Msg(
+            "WARNING: Slow material resource fetch for %s\n",
+            materialId.GetText());
+        _UpdateSingleValue(usdPath, HdMaterial::DirtyResource);
+        TF_VERIFY(_valueCache.ExtractMaterialResource(usdPath, &vtMatResource));
+    }
+
+    return vtMatResource;
+}
+
+TfTokenVector 
+UsdImagingDelegate::GetMaterialPrimvars(SdfPath const &materialId)
+{
+    if (!TF_VERIFY(materialId != SdfPath())) {
+        return TfTokenVector();
+    }
+
+    SdfPath usdPath = GetPathForUsd(materialId);
+
+    VtValue vtMaterialPrimvars;
+    if (_valueCache.FindMaterialPrimvars(usdPath, &vtMaterialPrimvars)) {
+        if (vtMaterialPrimvars.IsHolding<TfTokenVector>()) {
+            return vtMaterialPrimvars.Get<TfTokenVector>();
+        }
+    }
+    return TfTokenVector();
+}
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

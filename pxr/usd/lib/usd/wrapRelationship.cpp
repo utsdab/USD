@@ -75,7 +75,9 @@ void wrapUsdRelationship()
     class_<UsdRelationship, bases<UsdProperty> >("Relationship")
         .def(Usd_ObjectSubclass())
         .def("__repr__", __repr__)
-        .def("AppendTarget", &UsdRelationship::AppendTarget, arg("target"))
+        .def("AddTarget", &UsdRelationship::AddTarget,
+             (arg("target"),
+              arg("position")=UsdListPositionTempDefault))
         .def("RemoveTarget", &UsdRelationship::RemoveTarget, arg("target"))
         .def("BlockTargets", &UsdRelationship::BlockTargets)
         .def("SetTargets", &UsdRelationship::SetTargets, arg("targets"))
@@ -87,4 +89,6 @@ void wrapUsdRelationship()
         .def("HasAuthoredTargets", &UsdRelationship::HasAuthoredTargets)
         ;
     TfPyRegisterStlSequencesFromPython<UsdRelationship>();
+    to_python_converter<std::vector<UsdRelationship>,
+                        TfPySequenceToPython<std::vector<UsdRelationship>>>();
 }

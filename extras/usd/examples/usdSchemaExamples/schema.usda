@@ -4,7 +4,7 @@
         usdGenSchema.
     """
     subLayers = [
-        @../../../../pxr/usd/lib/usd/schema.usda@
+        @usd/schema.usda@
     ]
 ) 
 
@@ -53,7 +53,9 @@ class ComplexPrim "ComplexPrim" (
     string complexString = "somethingComplex"
 }
     
-class "ParamsAPI"
+class "ParamsAPI" (
+    inherits = </APISchemaBase>
+)
 {
     double params:mass (
         # Informs schema generator to create GetMassAttr() method

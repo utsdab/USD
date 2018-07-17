@@ -78,12 +78,42 @@ void wrap{{ cls.cppClassName }}()
 
         .def("Get", &This::Get, (arg("stage"), arg("path")))
         .staticmethod("Get")
+{% if cls.isConcrete %}
 
-{% if cls.isConcrete == "true" %}
         .def("Define", &This::Define, (arg("stage"), arg("path")))
         .staticmethod("Define")
 {% endif %}
+{% if cls.isAppliedAPISchema and not cls.isMultipleApply and not cls.isPrivateApply %}
 
+        .def("Apply", &This::Apply, (arg("prim")))
+        .staticmethod("Apply")
+{% endif %}
+{% if cls.isAppliedAPISchema and cls.isMultipleApply and not cls.isPrivateApply %}
+
+        .def("Apply", &This::Apply, (arg("prim"), arg("name")))
+        .staticmethod("Apply")
+{% endif %}
+
+        .def("IsConcrete",
+            static_cast<bool (*)(void)>( [](){ return This::IsConcrete; }))
+        .staticmethod("IsConcrete")
+
+        .def("IsTyped",
+            static_cast<bool (*)(void)>( [](){ return This::IsTyped; } ))
+        .staticmethod("IsTyped")
+
+{% if cls.isApi %}
+        .def("IsApplied", 
+            static_cast<bool (*)(void)>( [](){ return This::IsApplied; } ))
+        .staticmethod("IsApplied")
+
+{% endif %}
+{% if cls.isAppliedAPISchema %}
+        .def("IsMultipleApply", 
+            static_cast<bool (*)(void)>( [](){ return This::IsMultipleApply; } ))
+        .staticmethod("IsMultipleApply")
+
+{% endif %}
         .def("GetSchemaAttributeNames",
              &This::GetSchemaAttributeNames,
              arg("includeInherited")=true,

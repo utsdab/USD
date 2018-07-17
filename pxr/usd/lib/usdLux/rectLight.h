@@ -54,7 +54,7 @@ class SdfAssetPath;
 ///
 /// Light emitted from one side of a rectangle.
 /// The rectangle is centered in the XY plane and emits light along the -Z axis.
-/// The rectangle is 1 unit long in local space.
+/// The rectangle is 1 unit in length in the X and Y axis.
 ///
 class UsdLuxRectLight : public UsdLuxLight
 {
@@ -64,6 +64,11 @@ public:
     /// true, GetStaticPrimDefinition() will return a valid prim definition with
     /// a non-empty typeName.
     static const bool IsConcrete = true;
+
+    /// Compile-time constant indicating whether or not this class inherits from
+    /// UsdTyped. Types which inherit from UsdTyped can impart a typename on a
+    /// UsdPrim.
+    static const bool IsTyped = true;
 
     /// Construct a UsdLuxRectLight on UsdPrim \p prim .
     /// Equivalent to UsdLuxRectLight::Get(prim.GetStage(), prim.GetPath())
@@ -143,6 +148,48 @@ private:
     // override SchemaBase virtuals.
     USDLUX_API
     virtual const TfType &_GetTfType() const;
+
+public:
+    // --------------------------------------------------------------------- //
+    // WIDTH 
+    // --------------------------------------------------------------------- //
+    /// Width of the rectangle, in the local X axis.
+    ///
+    /// \n  C++ Type: float
+    /// \n  Usd Type: SdfValueTypeNames->Float
+    /// \n  Variability: SdfVariabilityVarying
+    /// \n  Fallback Value: 1.0
+    USDLUX_API
+    UsdAttribute GetWidthAttr() const;
+
+    /// See GetWidthAttr(), and also 
+    /// \ref Usd_Create_Or_Get_Property for when to use Get vs Create.
+    /// If specified, author \p defaultValue as the attribute's default,
+    /// sparsely (when it makes sense to do so) if \p writeSparsely is \c true -
+    /// the default for \p writeSparsely is \c false.
+    USDLUX_API
+    UsdAttribute CreateWidthAttr(VtValue const &defaultValue = VtValue(), bool writeSparsely=false) const;
+
+public:
+    // --------------------------------------------------------------------- //
+    // HEIGHT 
+    // --------------------------------------------------------------------- //
+    /// Height of the rectangle, in the local Y axis.
+    ///
+    /// \n  C++ Type: float
+    /// \n  Usd Type: SdfValueTypeNames->Float
+    /// \n  Variability: SdfVariabilityVarying
+    /// \n  Fallback Value: 1.0
+    USDLUX_API
+    UsdAttribute GetHeightAttr() const;
+
+    /// See GetHeightAttr(), and also 
+    /// \ref Usd_Create_Or_Get_Property for when to use Get vs Create.
+    /// If specified, author \p defaultValue as the attribute's default,
+    /// sparsely (when it makes sense to do so) if \p writeSparsely is \c true -
+    /// the default for \p writeSparsely is \c false.
+    USDLUX_API
+    UsdAttribute CreateHeightAttr(VtValue const &defaultValue = VtValue(), bool writeSparsely=false) const;
 
 public:
     // --------------------------------------------------------------------- //

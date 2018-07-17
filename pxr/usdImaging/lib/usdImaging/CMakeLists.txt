@@ -7,19 +7,17 @@ pxr_library(usdImaging
         gf
         tf
         plug
-        tracelite
+        trace
         vt
         work
-        garch
-        glf
         hd
         hdx
         pxOsd
         sdf
         usd
         usdGeom
-        usdHydra
         usdLux
+        usdRi
         usdShade
         ar
         ${Boost_PYTHON_LIBRARY}
@@ -35,29 +33,30 @@ pxr_library(usdImaging
         adapterRegistry
         debugCodes
         delegate
-        domeLightAdapter
+        indexProxy
         inheritedCache
         instancerContext
-        shaderAdapter
         tokens
+        unitTestHelper
         valueCache
         basisCurvesAdapter
         capsuleAdapter
         coneAdapter
         cubeAdapter
         cylinderAdapter
+        domeLightAdapter
         gprimAdapter
         instanceAdapter
         lightAdapter
+        materialAdapter
         meshAdapter
+        nurbsPatchAdapter
         pointsAdapter
         pointInstancerAdapter
         primAdapter
         rectLightAdapter
         sphereAdapter
         sphereLightAdapter
-        nurbsPatchAdapter
-        unitTestHelper
 
     PUBLIC_HEADERS
         api.h

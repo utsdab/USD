@@ -28,7 +28,7 @@
 
 #include "pxr/pxr.h"
 #include "usdKatana/api.h"
-#include "pxr/usd/usd/schemaBase.h"
+#include "pxr/usd/usd/apiSchemaBase.h"
 #include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/stage.h"
 #include "usdKatana/tokens.h"
@@ -54,21 +54,37 @@ class SdfAssetPath;
 ///
 /// Katana-specific extensions of UsdShadeMaterial.
 ///
-class UsdKatanaLookAPI : public UsdSchemaBase
+class UsdKatanaLookAPI : public UsdAPISchemaBase
 {
 public:
     /// Compile-time constant indicating whether or not this class corresponds
     /// to a concrete instantiable prim type in scene description.  If this is
     /// true, GetStaticPrimDefinition() will return a valid prim definition with
     /// a non-empty typeName.
-    static const bool IsConcrete = true;
+    static const bool IsConcrete = false;
+
+    /// Compile-time constant indicating whether or not this class inherits from
+    /// UsdTyped. Types which inherit from UsdTyped can impart a typename on a
+    /// UsdPrim.
+    static const bool IsTyped = false;
+
+    /// Compile-time constant indicating whether or not this class represents an 
+    /// applied API schema, i.e. an API schema that has to be applied to a prim
+    /// with a call to auto-generated Apply() method before any schema 
+    /// properties are authored.
+    static const bool IsApplied = true;
+    
+    /// Compile-time constant indicating whether or not this class represents a 
+    /// multiple-apply API schema. Mutiple-apply API schemas can be applied 
+    /// to the same prim multiple times with different instance names. 
+    static const bool IsMultipleApply = false;
 
     /// Construct a UsdKatanaLookAPI on UsdPrim \p prim .
     /// Equivalent to UsdKatanaLookAPI::Get(prim.GetStage(), prim.GetPath())
     /// for a \em valid \p prim, but will not immediately throw an error for
     /// an invalid \p prim
     explicit UsdKatanaLookAPI(const UsdPrim& prim=UsdPrim())
-        : UsdSchemaBase(prim)
+        : UsdAPISchemaBase(prim)
     {
     }
 
@@ -76,7 +92,7 @@ public:
     /// Should be preferred over UsdKatanaLookAPI(schemaObj.GetPrim()),
     /// as it preserves SchemaBase state.
     explicit UsdKatanaLookAPI(const UsdSchemaBase& schemaObj)
-        : UsdSchemaBase(schemaObj)
+        : UsdAPISchemaBase(schemaObj)
     {
     }
 
@@ -104,31 +120,22 @@ public:
     static UsdKatanaLookAPI
     Get(const UsdStagePtr &stage, const SdfPath &path);
 
-    /// Attempt to ensure a \a UsdPrim adhering to this schema at \p path
-    /// is defined (according to UsdPrim::IsDefined()) on this stage.
-    ///
-    /// If a prim adhering to this schema at \p path is already defined on this
-    /// stage, return that prim.  Otherwise author an \a SdfPrimSpec with
-    /// \a specifier == \a SdfSpecifierDef and this schema's prim type name for
-    /// the prim at \p path at the current EditTarget.  Author \a SdfPrimSpec s
-    /// with \p specifier == \a SdfSpecifierDef and empty typeName at the
-    /// current EditTarget for any nonexistent, or existing but not \a Defined
-    /// ancestors.
-    ///
-    /// The given \a path must be an absolute prim path that does not contain
-    /// any variant selections.
-    ///
-    /// If it is impossible to author any of the necessary PrimSpecs, (for
-    /// example, in case \a path cannot map to the current UsdEditTarget's
-    /// namespace) issue an error and return an invalid \a UsdPrim.
-    ///
-    /// Note that this method may return a defined prim whose typeName does not
-    /// specify this schema class, in case a stronger typeName opinion overrides
-    /// the opinion at the current EditTarget.
+
+    /// Applies this <b>single-apply</b> API schema to the given \p prim.
+    /// This information is stored by adding "LookAPI" to the 
+    /// token-valued, listOp metadata \em apiSchemas on the prim.
+    /// 
+    /// \return A valid UsdKatanaLookAPI object is returned upon success. 
+    /// An invalid (or empty) UsdKatanaLookAPI object is returned upon 
+    /// failure. See \ref UsdAPISchemaBase::_ApplyAPISchema() for conditions 
+    /// resulting in failure. 
+    /// 
+    /// \sa UsdPrim::GetAppliedSchemas()
+    /// \sa UsdPrim::HasAPI()
     ///
     USDKATANA_API
-    static UsdKatanaLookAPI
-    Define(const UsdStagePtr &stage, const SdfPath &path);
+    static UsdKatanaLookAPI 
+    Apply(const UsdPrim &prim);
 
 private:
     // needs to invoke _GetStaticTfType.
@@ -141,6 +148,11 @@ private:
     // override SchemaBase virtuals.
     USDKATANA_API
     virtual const TfType &_GetTfType() const;
+
+    // This override returns true since UsdKatanaLookAPI is an 
+    // applied API schema.
+    USDKATANA_API
+    virtual bool _IsAppliedAPISchema() const override;
 
 public:
     // --------------------------------------------------------------------- //

@@ -2,7 +2,21 @@
 <ui version="4.0">
  <class>MainWindow</class>
  <widget class="QMainWindow" name="MainWindow">
- <property name="comment" stdset="0">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1145</width>
+    <height>1002</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>MainWindow</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true"/>
+  </property>
+  <property name="comment" stdset="0">
    <string>
      Copyright 2016 Pixar                                                                   
                                                                                             
@@ -26,20 +40,6 @@
      KIND, either express or implied. See the Apache License for the specific               
      language governing permissions and limitations under the Apache License.               
   </string>
-  </property>
-  <property name="geometry">
-   <rect>
-    <x>0</x>
-    <y>0</y>
-    <width>1145</width>
-    <height>1002</height>
-   </rect>
-  </property>
-  <property name="windowTitle">
-   <string>MainWindow</string>
-  </property>
-  <property name="styleSheet">
-   <string notr="true"/>
   </property>
   <widget class="QWidget" name="centralwidget">
    <property name="statusTip">
@@ -79,14 +79,14 @@
       <property name="handleWidth">
        <number>2</number>
       </property>
-      <widget class="QSplitter" name="nodeStageSplitter">
+      <widget class="QSplitter" name="primStageSplitter">
        <property name="orientation">
         <enum>Qt::Horizontal</enum>
        </property>
        <property name="handleWidth">
         <number>2</number>
        </property>
-       <widget class="QFrame" name="nodeFrame">
+       <widget class="QFrame" name="primFrame">
         <property name="frameShape">
          <enum>QFrame::NoFrame</enum>
         </property>
@@ -110,7 +110,7 @@
           <number>6</number>
          </property>
          <item>
-          <widget class="QTreeWidget" name="nodeView">
+          <widget class="QTreeWidget" name="primView">
            <property name="font">
             <font>
              <family>Gotham Rounded</family>
@@ -154,7 +154,7 @@
             <number>150</number>
            </attribute>
            <attribute name="headerMinimumSectionSize">
-            <number>28</number>
+            <number>20</number>
            </attribute>
            <attribute name="headerStretchLastSection">
             <bool>false</bool>
@@ -179,183 +179,14 @@
            </column>
           </widget>
          </item>
-
          <item>
-            <widget class="QWidget" name="nodeLegendContainer">
-                <property name="maximumSize">
-                    <size>
-                        <width>400</width>
-                        <height>0</height>
-                    </size>
-                </property>
-                <property name="sizePolicy">
-                   <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
-                       <horstretch>0</horstretch>
-                       <verstretch>0</verstretch>
-                   </sizepolicy>
-                </property>
-                <layout class="QVBoxLayout" name="nodeLegendLayoutContainer">
-                <item>
-                <layout class="QGridLayout" name="nodeLegendLayout">
-                <item row="0" column="0">
-                     <widget class="QGraphicsView" name="nodeLegendColorHasArcs">
-                         <property name="maximumSize">
-                             <size>
-                                 <width>20</width>
-                                 <height>15</height>
-                             </size>
-                         </property>
-                     </widget>
-                 </item>
-
-                 <item row="0" column="1">
-                     <widget class="QLabel" name="nodeLegendLabelHasArcs">
-                         <property name="font">
-                             <font>
-                                 <family>Gotham Rounded</family>
-                                 <pointsize>9</pointsize>
-                                 <weight>50</weight>
-                                 <italic>false</italic>
-                                 <bold>false</bold>
-                             </font>
-                         </property>
-                         <property name="text">
-                             <string>HasArcs</string>
-                         </property>
-                     </widget>
-                 </item> 
-
-
-                 <item row="0" column="2">
-                     <widget class="QGraphicsView" name="nodeLegendColorInstance">
-                         <property name="maximumSize">
-                             <size>
-                                 <width>20</width>
-                                 <height>15</height>
-                             </size>
-                         </property>
-                     </widget>
-                 </item>
-
-                 <item row="0" column="3">
-                     <widget class="QLabel" name="nodeLegendLabelInstance">
-                         <property name="font">
-                             <font>
-                                 <family>Gotham Rounded</family>
-                                 <pointsize>9</pointsize>
-                                 <weight>50</weight>
-                                 <italic>false</italic>
-                                 <bold>false</bold>
-                             </font>
-                         </property>
-                         <property name="text">
-                             <string>Instance</string>
-                         </property>
-                     </widget>
-                 </item> 
-
-                 <item row="0" column="4">
-                     <widget class="QGraphicsView" name="nodeLegendColorMaster">
-                         <property name="maximumSize">
-                             <size>
-                                 <width>20</width>
-                                 <height>15</height>
-                             </size>
-                         </property>
-                     </widget>
-                 </item>
-
-                 <item row="0" column="5">
-                     <widget class="QLabel" name="nodeLegendLabelMaster">
-                         <property name="font">
-                             <font>
-                                 <family>Gotham Rounded</family>
-                                 <pointsize>9</pointsize>
-                                 <weight>50</weight>
-                                 <italic>false</italic>
-                                 <bold>false</bold>
-                             </font>
-                         </property>
-                         <property name="text">
-                             <string>Master</string>
-                         </property>
-                     </widget>
-                 </item> 
-
-                 <item row="0" column="6">
-                     <widget class="QGraphicsView" name="nodeLegendColorNormal">
-                         <property name="maximumSize">
-                             <size>
-                                 <width>20</width>
-                                 <height>15</height>
-                             </size>
-                         </property>
-                     </widget>
-                 </item>
-
-                 <item row="0" column="7">
-                     <widget class="QLabel" name="nodeLegendLabelNormal">
-                         <property name="font">
-                             <font>
-                                 <family>Gotham Rounded</family>
-                                 <pointsize>9</pointsize>
-                                 <weight>50</weight>
-                                 <italic>false</italic>
-                                 <bold>false</bold>
-                             </font>
-                         </property>
-                         <property name="text">
-                             <string>Normal</string>
-                         </property>
-                     </widget>
-                 </item> 
-                </layout>
-                </item>
-                
-                <item>
-                <layout class="QVBoxLayout" name="nodeLegendLabelContainer">
-                <item>
-                    <widget class="QLabel" name="nodeLegendLabelDimmed">
-                        <property name="text">
-                            <string>Dimmed colors denote inactive prims</string>
-                        </property>
-                    </widget>
-                </item>
-                <item>
-                    <widget class="QLabel" name="nodeLegendLabelFontsAbstract">
-                        <property name="text">
-                            <string>Normal font indicates abstract prims(class and children)</string>
-                        </property>
-                    </widget>
-                </item>
-                <item>
-                    <widget class="QLabel" name="nodeLegendLabelFontsUndefined">
-                        <property name="text">
-                            <string>Italic font indicates undefined prims(declared with over)</string>
-                        </property>
-                    </widget>
-                </item>
-                <item>
-                    <widget class="QLabel" name="nodeLegendLabelFontsDefined">
-                        <property name="text">
-                            <string>Bold font indicates defined prims(declared with def)</string>
-                        </property>
-                    </widget>
-                </item>
-
-                </layout>
-                </item>
-
-                </layout>
-            </widget>
+          <widget class="PrimLegend" name="primLegendContainer" native="true"/>
          </item>
-
          <item>
-          <layout class="QHBoxLayout" name="nodeFindContainer">
+          <layout class="QHBoxLayout" name="primFindContainer">
            <property name="topMargin">
             <number>0</number>
            </property>
-
            <item>
             <spacer name="horizontalSpacer_10">
              <property name="orientation">
@@ -372,14 +203,27 @@
              </property>
             </spacer>
            </item>
-
            <item>
-            <widget class="QPushButton" name="nodeLegendQButton">
+            <widget class="QPushButton" name="primLegendQButton">
              <property name="maximumSize">
               <size>
                <width>32</width>
                <height>24</height>
               </size>
+             </property>
+             <property name="font">
+              <font>
+               <family>Gotham Rounded</family>
+               <pointsize>9</pointsize>
+               <weight>75</weight>
+               <bold>true</bold>
+              </font>
+             </property>
+             <property name="focusPolicy">
+              <enum>Qt::NoFocus</enum>
+             </property>
+             <property name="text">
+              <string>?</string>
              </property>
              <property name="iconSize">
               <size>
@@ -387,21 +231,10 @@
                <height>12</height>
               </size>
              </property>
-             <property name="font">
-              <font>
-               <family>Gotham Rounded</family>
-               <pointsize>9</pointsize>
-               <weight>50</weight>
-               <bold>true</bold>
-              </font>
-             </property>
-             <property name="text">
-              <string>?</string>
-             </property>
             </widget>
            </item>
            <item>
-            <widget class="QLineEdit" name="nodeViewLineEdit">
+            <widget class="QLineEdit" name="primViewLineEdit">
              <property name="maximumSize">
               <size>
                <width>16777215</width>
@@ -423,7 +256,7 @@
             </widget>
            </item>
            <item>
-            <widget class="QPushButton" name="nodeViewFindNext">
+            <widget class="QPushButton" name="primViewFindNext">
              <property name="maximumSize">
               <size>
                <width>16777215</width>
@@ -522,7 +355,7 @@
           <number>5</number>
          </property>
          <item>
-          <widget class="QTableWidget" name="propertyView">
+          <widget class="QTreeWidget" name="propertyView">
            <property name="toolTip">
             <string/>
            </property>
@@ -535,57 +368,20 @@
            <property name="frameShadow">
             <enum>QFrame::Plain</enum>
            </property>
-           <property name="editTriggers">
-            <set>QAbstractItemView::NoEditTriggers</set>
-           </property>
            <property name="alternatingRowColors">
             <bool>true</bool>
            </property>
-           <property name="selectionMode">
-            <enum>QAbstractItemView::SingleSelection</enum>
-           </property>
-           <property name="selectionBehavior">
-            <enum>QAbstractItemView::SelectRows</enum>
-           </property>
-           <property name="showGrid">
-            <bool>false</bool>
-           </property>
-           <property name="gridStyle">
-            <enum>Qt::SolidLine</enum>
-           </property>
            <property name="columnCount">
-            <number>2</number>
+            <number>3</number>
            </property>
-           <attribute name="horizontalHeaderCascadingSectionResizes">
-            <bool>true</bool>
-           </attribute>
-           <attribute name="horizontalHeaderDefaultSectionSize">
-            <number>220</number>
-           </attribute>
-           <attribute name="horizontalHeaderMinimumSectionSize">
-            <number>30</number>
-           </attribute>
-           <attribute name="horizontalHeaderShowSortIndicator" stdset="0">
-            <bool>false</bool>
-           </attribute>
-           <attribute name="horizontalHeaderStretchLastSection">
-            <bool>false</bool>
-           </attribute>
-           <attribute name="verticalHeaderVisible">
-            <bool>false</bool>
-           </attribute>
-           <attribute name="verticalHeaderDefaultSectionSize">
-            <number>30</number>
-           </attribute>
-           <attribute name="verticalHeaderMinimumSectionSize">
-            <number>20</number>
-           </attribute>
-           <attribute name="verticalHeaderStretchLastSection">
-            <bool>false</bool>
-           </attribute>
            <column>
             <property name="text">
-             <string>Attribute</string>
+             <string>Type</string>
+            </property>
+           </column>
+           <column>
+            <property name="text">
+             <string>Property Name</string>
             </property>
            </column>
            <column>
@@ -595,187 +391,10 @@
            </column>
           </widget>
          </item>
-         <!-- Property Value Inspector Key Begin -->
          <item>
-             <widget class="QWidget" name="propertyLegendContainer">
-                <property name="maximumSize">
-                 <size>
-                     <width>500</width>
-                     <height>0</height>
-                 </size>
-                </property>
-                <property name="sizePolicy">
-                   <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
-                       <horstretch>0</horstretch>
-                       <verstretch>0</verstretch>
-                   </sizepolicy>
-                </property>
-                 <layout class="QGridLayout" name="propertyLegendLayout">
-                 <item row="0" column="0">
-                     <widget class="QGraphicsView" name="propertyLegendColorFallback">
-                         <property name="maximumSize">
-                             <size>
-                                 <width>20</width>
-                                 <height>15</height>
-                             </size>
-                         </property>
-                     </widget>
-                 </item>
-
-                 <item row="0" column="1">
-                     <widget class="QLabel" name="propertyLegendLabelFallback">
-                         <property name="font">
-                             <font>
-                                 <family>Gotham Rounded</family>
-                                 <pointsize>9</pointsize>
-                                 <weight>50</weight>
-                                 <italic>false</italic>
-                                 <bold>false</bold>
-                             </font>
-                         </property>
-                         <property name="text">
-                             <string>Fallback</string>
-                         </property>
-                     </widget>
-                 </item> 
-
-                 <item row="0" column="2">
-                     <widget class="QGraphicsView" name="propertyLegendColorDefault">
-                         <property name="maximumSize">
-                             <size>
-                                 <width>20</width>
-                                 <height>15</height>
-                             </size>
-                         </property>
-                     </widget>
-                 </item>
-
-                 <item row="0" column="3">
-                     <widget class="QLabel" name="propertyLegendLabelDefault">
-                         <property name="font">
-                             <font>
-                                 <family>Gotham Rounded</family>
-                                 <pointsize>9</pointsize>
-                                 <weight>50</weight>
-                                 <italic>false</italic>
-                                 <bold>false</bold>
-                             </font>
-                         </property>
-                         <property name="text">
-                             <string>Default</string>
-                         </property>
-                     </widget>
-                 </item> 
-
-                 <item row="0" column="4">
-                     <widget class="QGraphicsView" name="propertyLegendColorTimeSample">
-                         <property name="maximumSize">
-                             <size>
-                                 <width>20</width>
-                                 <height>15</height>
-                             </size>
-                         </property>
-                     </widget>
-                 </item>
-
-                 <item row="0" column="5">
-                     <widget class="QLabel" name="propertyLegendLabelTimeSample">
-                         <property name="font">
-                             <font>
-                                 <family>Gotham Rounded</family>
-                                 <pointsize>9</pointsize>
-                                 <weight>50</weight>
-                                 <italic>false</italic>
-                                 <bold>false</bold>
-                             </font>
-                         </property>
-                         <property name="text">
-                             <string>Time Samples (Interpolated) </string>
-                         </property>
-                     </widget>
-                 </item> 
-
-                 
-                 <item row="1" column="0">
-                     <widget class="QGraphicsView" name="propertyLegendColorNoValue">
-                         <property name="maximumSize">
-                             <size>
-                                 <width>20</width>
-                                 <height>15</height>
-                             </size>
-                         </property>
-                     </widget>
-                 </item>
-
-                 <item row="1" column="1">
-                     <widget class="QLabel" name="propertyLegendLabelNoValue">
-                         <property name="font">
-                             <font>
-                                 <family>Gotham Rounded</family>
-                                 <pointsize>9</pointsize>
-                                 <weight>50</weight>
-                                 <italic>false</italic>
-                                 <bold>false</bold>
-                             </font>
-                         </property>
-                         <property name="text">
-                             <string>No Value</string>
-                         </property>
-                     </widget>
-                 </item>
-
-
-                 <item row="1" column="2">
-                     <widget class="QGraphicsView" name="propertyLegendColorCustom">
-                         <property name="maximumSize">
-                             <size>
-                                 <width>20</width>
-                                 <height>15</height>
-                             </size>
-                         </property>
-                     </widget>
-                 </item>
-
-                 <item row="1" column="3">
-                     <widget class="QLabel" name="propertyLegendLabelCustom">
-                         <property name="text">
-                             <string>Custom</string>
-                         </property>
-                     </widget>
-                 </item>
-                 <item row="1" column="4">
-                     <widget class="QGraphicsView" name="propertyLegendColorValueClips">
-                         <property name="maximumSize">
-                             <size>
-                                 <width>20</width>
-                                 <height>15</height>
-                             </size>
-                         </property>
-                     </widget>
-                 </item>
-
-                 <item row="1" column="5">
-                     <widget class="QLabel" name="propertyLegendLabelValueClips">
-                         <property name="font">
-                             <font>
-                                 <family>Gotham Rounded</family>
-                                 <pointsize>9</pointsize>
-                                 <weight>50</weight>
-                                 <italic>false</italic>
-                                 <bold>false</bold>
-                             </font>
-                         </property>
-                         <property name="text">
-                             <string>Value Clips (Interpolated)</string>
-                         </property>
-                     </widget>
-                 </item> 
-             </layout>  <!-- End QGridLayout -->
-
-             </widget> <!-- End Container Widget -->
-          </item>    <!-- Property Value Inspector Key End -->
-
-          <item>
+          <widget class="PropertyLegend" name="propertyLegendContainer" native="true"/>
+         </item>
+         <item>
           <layout class="QHBoxLayout" name="propertyFindContainer">
            <property name="leftMargin">
             <number>5</number>
@@ -784,37 +403,36 @@
             <number>5</number>
            </property>
            <item>
-              <widget class="QPushButton" name="propertyLegendQButton">
-                <property name="maximumSize">
-                  <size>
-                   <width>32</width>
-                   <height>24</height>
-                  </size>
-                 </property>
-                 <property name="font">
-                      <font>
-                          <family>Gotham Rounded</family>
-                          <pointsize>9</pointsize>
-                          <weight>50</weight>
-                          <italic>false</italic>
-                          <bold>false</bold>
-                      </font>
-                  </property>
-                  <property name="focusPolicy">
-                      <enum>Qt::NoFocus</enum>
-                  </property>
-                  <property name="iconSize">
-                      <size>
-                          <width>12</width>
-                          <height>12</height>
-                      </size>
-                  </property>
-                  <property name="text">
-                      <string>?</string>
-                  </property>
-              </widget>
+            <widget class="QPushButton" name="propertyLegendQButton">
+             <property name="maximumSize">
+              <size>
+               <width>32</width>
+               <height>24</height>
+              </size>
+             </property>
+             <property name="font">
+              <font>
+               <family>Gotham Rounded</family>
+               <pointsize>9</pointsize>
+               <weight>50</weight>
+               <italic>false</italic>
+               <bold>false</bold>
+              </font>
+             </property>
+             <property name="focusPolicy">
+              <enum>Qt::NoFocus</enum>
+             </property>
+             <property name="text">
+              <string>?</string>
+             </property>
+             <property name="iconSize">
+              <size>
+               <width>12</width>
+               <height>12</height>
+              </size>
+             </property>
+            </widget>
            </item>
-
            <item>
             <widget class="QLineEdit" name="attrViewLineEdit">
              <property name="maximumSize">
@@ -833,7 +451,7 @@
               </font>
              </property>
              <property name="placeholderText">
-              <string>Search for attribute by name</string>
+              <string>Search for property by name</string>
              </property>
             </widget>
            </item>
@@ -858,7 +476,7 @@
               <enum>Qt::NoFocus</enum>
              </property>
              <property name="text">
-              <string>Find Attr</string>
+              <string>Find Prop</string>
              </property>
              <property name="iconSize">
               <size>
@@ -1480,7 +1098,7 @@
      <x>0</x>
      <y>0</y>
      <width>1145</width>
-     <height>27</height>
+     <height>23</height>
     </rect>
    </property>
    <property name="minimumSize">
@@ -1498,7 +1116,7 @@
     <addaction name="actionReload_All_Layers"/>
     <addaction name="separator"/>
     <addaction name="actionSave_Overrides_As"/>
-    <addaction name="actionSave_Overrides_To_Scene"/>
+    <addaction name="actionSave_Flattened_As"/>
     <addaction name="separator"/>
     <addaction name="actionQuit"/>
    </widget>
@@ -1506,7 +1124,7 @@
     <property name="title">
      <string>&amp;Options</string>
     </property>
-    <widget class="QMenu" name="menuNode_View_Depth">
+    <widget class="QMenu" name="menuPrim_View_Depth">
      <property name="title">
       <string>Prim View Depth</string>
      </property>
@@ -1522,80 +1140,6 @@
      <addaction name="actionExpand_All"/>
      <addaction name="actionCollapse_All"/>
     </widget>
-    <widget class="QMenu" name="menuCameraMask">
-     <property name="title">
-      <string>Camera Masking</string>
-     </property>
-     <addaction name="separator"/>
-     <actiongroup name="actionGroupCameraMask">
-      <action name="actionCameraMask_Full">
-       <property name="checkable">
-        <bool>true</bool>
-       </property>
-       <property name="checked">
-        <bool>false</bool>
-       </property>
-       <property name="text">
-        <string>Full Mask</string>
-       </property>
-      </action>
-      <action name="actionCameraMask_Partial">
-       <property name="checkable">
-        <bool>true</bool>
-       </property>
-       <property name="checked">
-        <bool>false</bool>
-       </property>
-       <property name="text">
-        <string>Partial Mask</string>
-       </property>
-      </action>
-      <action name="actionCameraMask_None">
-       <property name="checkable">
-        <bool>true</bool>
-       </property>
-       <property name="checked">
-        <bool>true</bool>
-       </property>
-       <property name="text">
-        <string>No Mask</string>
-       </property>
-      </action>
-      <property name="exclusive">
-        <bool>true</bool>
-      </property>
-     </actiongroup>
-     <action name="actionCameraMask_Color">
-      <property name="checkable">
-       <bool>false</bool>
-      </property>
-      <property name="text">
-       <string>Select Color...</string>
-      </property>
-     </action>
-     <addaction name="actionCameraMask_Full"/>
-     <addaction name="actionCameraMask_Partial"/>
-     <addaction name="actionCameraMask_None"/>
-     <addaction name="separator"/>
-     <addaction name="actionCameraMask_Color"/>
-    </widget>
-    <widget class="QMenu" name="menuCameraReticles">
-     <property name="title">
-      <string>Camera Reticles</string>
-     </property>
-     <action name="actionCameraReticles_Color">
-      <property name="checkable">
-       <bool>false</bool>
-      </property>
-      <property name="text">
-       <string>Select Color...</string>
-      </property>
-     </action>
-     <addaction name="actionCameraReticles_Inside"/>
-     <addaction name="actionCameraReticles_Outside"/>
-     <addaction name="separator"/>
-     <addaction name="actionCameraReticles_Color"/>
-    </widget>
     <widget class="QMenu" name="menuHUD">
      <property name="title">
       <string>Heads-Up Display</string>
@@ -1609,7 +1153,7 @@
     </widget>
     <widget class="QMenu" name="menuPickMode">
      <property name="title">
-      <string>Pick mode...</string>
+      <string>Pick mode</string>
      </property>
      <addaction name="actionPick_Prims"/>
      <addaction name="actionPick_Models"/>
@@ -1617,7 +1161,7 @@
     </widget>
     <widget class="QMenu" name="menuSelection_Highlighting">
      <property name="title">
-      <string>Selection Highlighting...</string>
+      <string>Selection Highlighting</string>
      </property>
      <widget class="QMenu" name="menuHighlightColor">
       <property name="title">
@@ -1634,8 +1178,8 @@
     </widget>
     <addaction name="menuHUD"/>
     <addaction name="separator"/>
-    <addaction name="menuNode_View_Depth"/>
-    <addaction name="actionShow_Inactive_Nodes"/>
+    <addaction name="menuPrim_View_Depth"/>
+    <addaction name="actionShow_Inactive_Prims"/>
     <addaction name="actionShow_All_Master_Prims"/>
     <addaction name="actionShow_Undefined_Prims"/>
     <addaction name="actionShow_Abstract_Prims"/>
@@ -1654,7 +1198,7 @@
       <bool>true</bool>
      </property>
      <property name="title">
-      <string>Lights...</string>
+      <string>Lights</string>
      </property>
      <addaction name="actionAmbient_Only"/>
      <addaction name="separator"/>
@@ -1664,7 +1208,7 @@
     </widget>
     <widget class="QMenu" name="menuShading_Mode">
      <property name="title">
-      <string>Shading Mode...</string>
+      <string>Shading Mode</string>
      </property>
      <addaction name="actionWireframe"/>
      <addaction name="actionWireframeOnSurface"/>
@@ -1690,7 +1234,7 @@
       <bool>true</bool>
      </property>
      <property name="title">
-      <string>Camera...</string>
+      <string>Camera</string>
      </property>
      <addaction name="actionFreeCam"/>
     </widget>
@@ -1699,16 +1243,35 @@
       <bool>true</bool>
      </property>
      <property name="title">
-      <string>Camera Guides...</string>
+      <string>Camera Guides</string>
      </property>
+     <widget class="QMenu" name="menuCamera_Masking">
+      <property name="title">
+       <string>Camera Masking</string>
+      </property>
+      <addaction name="actionCameraMask_Full"/>
+      <addaction name="actionCameraMask_Partial"/>
+      <addaction name="actionCameraMask_None"/>
+      <addaction name="separator"/>
+      <addaction name="actionCameraMask_Color"/>
+     </widget>
+     <widget class="QMenu" name="menuCamera_Reticles">
+      <property name="title">
+       <string>Camera Reticles</string>
+      </property>
+      <addaction name="actionCameraReticles_Inside"/>
+      <addaction name="actionCameraReticles_Outside"/>
+      <addaction name="separator"/>
+      <addaction name="actionCameraReticles_Color"/>
+     </widget>
      <addaction name="actionCameraMask_Outline"/>
      <addaction name="actionDisplay_Camera_Oracles"/>
-     <addaction name="menuCameraMask"/>
-     <addaction name="menuCameraReticles"/>
+     <addaction name="menuCamera_Masking"/>
+     <addaction name="menuCamera_Reticles"/>
     </widget>
     <widget class="QMenu" name="menuDisplay">
      <property name="title">
-      <string>Display Purposes...</string>
+      <string>Display Purposes</string>
      </property>
      <addaction name="actionDisplay_Guide"/>
      <addaction name="actionDisplay_Proxy"/>
@@ -1733,8 +1296,17 @@
     </widget>
     <widget class="QMenu" name="menuRendererPlugin">
      <property name="title">
-      <string>Hydra Renderer...</string>
+      <string>Hydra Renderer</string>
      </property>
+    </widget>
+    <widget class="QMenu" name="menuComplexity">
+     <property name="title">
+      <string>Complexity</string>
+     </property>
+     <addaction name="actionLow"/>
+     <addaction name="actionMedium"/>
+     <addaction name="actionHigh"/>
+     <addaction name="actionVery_High"/>
     </widget>
     <addaction name="actionToggle_Viewer_Mode"/>
     <addaction name="separator"/>
@@ -1745,7 +1317,7 @@
     <addaction name="actionRecompute_Clipping_Planes"/>
     <addaction name="actionAdjust_Clipping"/>
     <addaction name="actionAdjust_Default_Material"/>
-    <addaction name="actionComplexity"/>
+    <addaction name="menuComplexity"/>
     <addaction name="menuBBox"/>
     <addaction name="separator"/>
     <addaction name="actionFrame_Selection"/>
@@ -1775,17 +1347,20 @@
     <property name="title">
      <string>Window</string>
     </property>
-    <addaction name="actionWatch_Window"/>
     <addaction name="showInterpreter"/>
    </widget>
-   <widget class="QMenu" name="menuEdit_Node">
+   <widget class="QMenu" name="menuEdit_Prim">
     <property name="title">
      <string>Edit Prim(s)</string>
     </property>
     <addaction name="actionFind_Prims"/>
     <addaction name="actionJump_to_Stage_Root"/>
     <addaction name="actionJump_to_Model_Root"/>
-    <addaction name="actionJump_to_Bound_Material"/>
+    <addaction name="separator"/>
+    <addaction name="actionJump_to_Bound_Preview_Material"/>
+    <addaction name="actionJump_to_Bound_Full_Material"/>
+    <addaction name="actionSelect_Preview_Binding_Relationship"/>
+    <addaction name="actionSelect_Full_Binding_Relationship"/>
     <addaction name="separator"/>
     <addaction name="actionMake_Visible"/>
     <addaction name="actionVis_Only"/>
@@ -1805,7 +1380,7 @@
     </property>
    </widget>
    <addaction name="menuFile"/>
-   <addaction name="menuEdit_Node"/>
+   <addaction name="menuEdit_Prim"/>
    <addaction name="menuOptions"/>
    <addaction name="menuView"/>
    <addaction name="menuWindow"/>
@@ -1841,9 +1416,6 @@
   <action name="actionReset_View">
    <property name="text">
     <string>Reset View</string>
-   </property>
-   <property name="shortcut">
-    <string>Ctrl+R</string>
    </property>
    <property name="shortcutContext">
     <enum>Qt::ApplicationShortcut</enum>
@@ -1895,16 +1467,10 @@
    <property name="text">
     <string>Frame Forward</string>
    </property>
-   <property name="shortcut">
-    <string>Right</string>
-   </property>
   </action>
   <action name="actionFrame_Backwards">
    <property name="text">
     <string>Frame Backward</string>
-   </property>
-   <property name="shortcut">
-    <string>Left</string>
    </property>
   </action>
   <action name="actionAdjust_FOV">
@@ -2015,9 +1581,6 @@
    <property name="text">
     <string>Key</string>
    </property>
-   <property name="shortcut">
-    <string>Ctrl+S</string>
-   </property>
   </action>
   <action name="actionFill">
    <property name="checkable">
@@ -2028,9 +1591,6 @@
    </property>
    <property name="text">
     <string>Fill</string>
-   </property>
-   <property name="shortcut">
-    <string>Ctrl+D</string>
    </property>
   </action>
   <action name="actionBack">
@@ -2043,9 +1603,6 @@
    <property name="text">
     <string>Back</string>
    </property>
-   <property name="shortcut">
-    <string>Ctrl+F</string>
-   </property>
   </action>
   <action name="actionAmbient_Only">
    <property name="checkable">
@@ -2056,9 +1613,6 @@
    </property>
    <property name="text">
     <string>Camera Light</string>
-   </property>
-   <property name="shortcut">
-    <string>Ctrl+A</string>
    </property>
   </action>
   <action name="actionLevel_6">
@@ -2198,11 +1752,6 @@
     <string>Redraw While Frame Scrubbing</string>
    </property>
   </action>
-  <action name="actionComplexity">
-   <property name="text">
-    <string>Adjust Complexity...</string>
-   </property>
-  </action>
   <action name="actionIncrementComplexity1">
    <property name="text">
     <string>IncrementComplexity</string>
@@ -2338,12 +1887,21 @@
     <string>Save Overrides As...</string>
    </property>
    <property name="toolTip">
-    <string>Save Overrides As...</string>
+    <string>Save property and metadata overrides</string>
    </property>
   </action>
-  <action name="actionLoad_Overrides">
+  <action name="actionSave_Flattened_As">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
    <property name="text">
-    <string>Load Overrides</string>
+    <string>Save Flattened As...</string>
+   </property>
+   <property name="iconText">
+    <string>Save Flattened As...</string>
+   </property>
+   <property name="toolTip">
+    <string>Save a flattened version of the current stage</string>
    </property>
   </action>
   <action name="showInterpreter">
@@ -2451,28 +2009,6 @@
     <string>Camera Frame</string>
    </property>
   </action>
-  <action name="actionCameraReticles_Inside">
-   <property name="checkable">
-    <bool>true</bool>
-   </property>
-   <property name="checked">
-    <bool>false</bool>
-   </property>
-   <property name="text">
-    <string>Camera Reticles Inside</string>
-   </property>
-  </action>
-  <action name="actionCameraReticles_Outside">
-   <property name="checkable">
-    <bool>true</bool>
-   </property>
-   <property name="checked">
-    <bool>false</bool>
-   </property>
-   <property name="text">
-    <string>Camera Reticles Outside</string>
-   </property>
-  </action>
   <action name="actionDisplay_Guide">
    <property name="checkable">
     <bool>true</bool>
@@ -2505,7 +2041,7 @@
     <string>Enable Hardware Shading</string>
    </property>
   </action>
-  <action name="actionShow_Inactive_Nodes">
+  <action name="actionShow_Inactive_Prims">
    <property name="checkable">
     <bool>true</bool>
    </property>
@@ -2662,6 +2198,9 @@
   <action name="actionReload_All_Layers">
    <property name="text">
     <string>Reload All Layers</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+R</string>
    </property>
   </action>
   <action name="actionHD_Flags">
@@ -2847,9 +2386,9 @@
     <string>Unload</string>
    </property>
   </action>
-  <action name="actionJump_to_Bound_Material">
+  <action name="actionJump_to_Bound_Preview_Material">
    <property name="text">
-    <string>Jump to Bound Material</string>
+    <string>Jump to Bound Preview Material</string>
    </property>
    <property name="shortcut">
     <string>Shift+L</string>
@@ -2914,12 +2453,141 @@
     <string>Adjust Default Material...</string>
    </property>
   </action>
+  <action name="actionCameraReticles_Inside">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Camera Reticles Inside</string>
+   </property>
+  </action>
+  <action name="actionCameraReticles_Outside">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="checked">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Camera Reticles Outside</string>
+   </property>
+  </action>
+  <action name="actionCameraReticles_Color">
+   <property name="text">
+    <string>Select Color...</string>
+   </property>
+  </action>
+  <action name="actionLow">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Low</string>
+   </property>
+  </action>
+  <action name="actionMedium">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Medium</string>
+   </property>
+  </action>
+  <action name="actionHigh">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>High</string>
+   </property>
+  </action>
+  <action name="actionVery_High">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Very High</string>
+   </property>
+  </action>
+  <action name="actionJump_to_Bound_Full_Material">
+   <property name="text">
+    <string>Jump to Bound Full Material</string>
+   </property>
+  </action>
+  <action name="actionSelect_Preview_Binding_Relationship">
+   <property name="text">
+    <string>Select Preview Binding Relationship</string>
+   </property>
+  </action>
+  <action name="actionSelect_Full_Binding_Relationship">
+   <property name="text">
+    <string>Select Full Binding Relationship</string>
+   </property>
+  </action>
+  <actiongroup name="actionGroupCameraMask">
+   <action name="actionCameraMask_Full">
+    <property name="checkable">
+     <bool>true</bool>
+    </property>
+    <property name="checked">
+     <bool>false</bool>
+    </property>
+    <property name="text">
+     <string>Full Mask</string>
+    </property>
+   </action>
+   <action name="actionCameraMask_Partial">
+    <property name="checkable">
+     <bool>true</bool>
+    </property>
+    <property name="checked">
+     <bool>false</bool>
+    </property>
+    <property name="text">
+     <string>Partial Mask</string>
+    </property>
+   </action>
+   <action name="actionCameraMask_None">
+    <property name="checkable">
+     <bool>true</bool>
+    </property>
+    <property name="checked">
+     <bool>true</bool>
+    </property>
+    <property name="text">
+     <string>No Mask</string>
+    </property>
+   </action>
+   <action name="actionCameraMask_Color">
+    <property name="checkable">
+     <bool>false</bool>
+    </property>
+    <property name="text">
+     <string>Select Color...</string>
+    </property>
+   </action>
+  </actiongroup>
  </widget>
  <customwidgets>
   <customwidget>
    <class>AttributeValueEditor</class>
    <extends>QWidget</extends>
    <header>attributeValueEditor</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>PrimLegend</class>
+   <extends>QWidget</extends>
+   <header>primLegend</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>PropertyLegend</class>
+   <extends>QWidget</extends>
+   <header>propertyLegend</header>
    <container>1</container>
   </customwidget>
  </customwidgets>

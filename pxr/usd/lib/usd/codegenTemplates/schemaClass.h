@@ -81,7 +81,25 @@ public:
     /// to a concrete instantiable prim type in scene description.  If this is
     /// true, GetStaticPrimDefinition() will return a valid prim definition with
     /// a non-empty typeName.
-    static const bool IsConcrete = {{ cls.isConcrete }};
+    static const bool IsConcrete = {{ "true" if cls.isConcrete else "false" }};
+
+    /// Compile-time constant indicating whether or not this class inherits from
+    /// UsdTyped. Types which inherit from UsdTyped can impart a typename on a
+    /// UsdPrim.
+    static const bool IsTyped = {{ "true" if cls.isTyped else "false" }};
+{% if cls.isApi %}
+
+    /// Compile-time constant indicating whether or not this class represents an 
+    /// applied API schema, i.e. an API schema that has to be applied to a prim
+    /// with a call to auto-generated Apply() method before any schema 
+    /// properties are authored.
+    static const bool IsApplied = {{ "true" if cls.isAppliedAPISchema else "false" }};
+    
+    /// Compile-time constant indicating whether or not this class represents a 
+    /// multiple-apply API schema. Mutiple-apply API schemas can be applied 
+    /// to the same prim multiple times with different instance names. 
+    static const bool IsMultipleApply = {{ "true" if cls.isMultipleApply else "false" }};
+{% endif %}
 
     /// Construct a {{ cls.cppClassName }} on UsdPrim \p prim .
     /// Equivalent to {{ cls.cppClassName }}::Get(prim.GetStage(), prim.GetPath())
@@ -130,7 +148,7 @@ public:
     static {{ cls.cppClassName }}
     Get(const UsdStagePtr &stage, const SdfPath &path);
 
-{% if cls.isConcrete == "true" %}
+{% if cls.isConcrete %}
     /// Attempt to ensure a \a UsdPrim adhering to this schema at \p path
     /// is defined (according to UsdPrim::IsDefined()) on this stage.
     ///
@@ -159,6 +177,61 @@ public:
     static {{ cls.cppClassName }}
     Define(const UsdStagePtr &stage, const SdfPath &path);
 {% endif %}
+{% if cls.isPrivateApply %}
+private:
+{% endif %}
+{% if cls.isAppliedAPISchema and not cls.isMultipleApply %}
+
+    /// Applies this <b>single-apply</b> API schema to the given \p prim.
+    /// This information is stored by adding "{{ cls.primName }}" to the 
+    /// token-valued, listOp metadata \em apiSchemas on the prim.
+    /// 
+    /// \return A valid {{ cls.cppClassName }} object is returned upon success. 
+    /// An invalid (or empty) {{ cls.cppClassName }} object is returned upon 
+    /// failure. See \ref UsdAPISchemaBase::_ApplyAPISchema() for conditions 
+    /// resulting in failure. 
+    /// 
+    /// \sa UsdPrim::GetAppliedSchemas()
+    /// \sa UsdPrim::HasAPI()
+    ///
+    {% if useExportAPI and not cls.isPrivateApply -%}
+    {{ Upper(libraryName) }}_API
+    {% endif -%}
+    static {{ cls.cppClassName }} 
+{% if cls.isPrivateApply %}
+    _Apply(const UsdPrim &prim);
+{% else %}
+    Apply(const UsdPrim &prim);
+{% endif %}
+{% endif %}
+{% if cls.isAppliedAPISchema and cls.isMultipleApply %}
+
+    /// Applies this <b>multiple-apply</b> API schema to the given \p prim 
+    /// along with the given instance name, \p name. 
+    /// 
+    /// This information is stored by adding "{{ cls.primName }}:<i>name</i>" 
+    /// to the token-valued, listOp metadata \em apiSchemas on the prim.
+    /// For example, if \p name is 'instance1', the token 
+    /// '{{ cls.primName }}:instance1' is added to 'apiSchemas'.
+    /// 
+    /// \return A valid {{ cls.cppClassName }} object is returned upon success. 
+    /// An invalid (or empty) {{ cls.cppClassName }} object is returned upon 
+    /// failure. See \ref UsdAPISchemaBase::_MultipleApplyAPISchema() for 
+    /// conditions resulting in failure. 
+    /// 
+    /// \sa UsdPrim::GetAppliedSchemas()
+    /// \sa UsdPrim::HasAPI()
+    ///
+    {% if useExportAPI and not cls.isPrivateApply -%}
+    {{ Upper(libraryName) }}_API
+    {% endif -%}
+    static {{ cls.cppClassName }} 
+{% if cls.isPrivateApply %}
+    _Apply(const UsdPrim &prim, const TfToken &name);
+{% else %}
+    Apply(const UsdPrim &prim, const TfToken &name);
+{% endif %}
+{% endif %}
 
 private:
     // needs to invoke _GetStaticTfType.
@@ -176,6 +249,15 @@ private:
     {% endif -%}
     virtual const TfType &_GetTfType() const;
 
+{% if cls.isAppliedAPISchema %}
+    // This override returns true since {{ cls.cppClassName }} is an 
+    // applied API schema.
+    {% if useExportAPI -%}
+    {{ Upper(libraryName) }}_API
+    {% endif -%}
+    virtual bool _IsAppliedAPISchema() const override;
+
+{% endif %}
 {% for attrName in cls.attrOrder %}
 {% set attr = cls.attrs[attrName]%}
 public:

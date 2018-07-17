@@ -106,7 +106,7 @@ GfMatrix2f::SetDiagonal(const GfVec2f& v)
 }
 
 float *
-GfMatrix2f::Get(float m[2][2])
+GfMatrix2f::Get(float m[2][2]) const
 {
     m[0][0] = _mtx[0][0];
     m[0][1] = _mtx[0][1];
@@ -250,5 +250,19 @@ GfMatrix2f::operator*=(const GfMatrix2f &m)
 
     return *this;
 }
+
+
+bool
+GfIsClose(GfMatrix2f const &m1, GfMatrix2f const &m2, double tolerance)
+{
+    for(size_t row = 0; row < 2; ++row) {
+        for(size_t col = 0; col < 2; ++col) {
+            if(!GfIsClose(m1[row][col], m2[row][col], tolerance))
+                return false;
+        }
+    }
+    return true;
+}
+
 
 PXR_NAMESPACE_CLOSE_SCOPE

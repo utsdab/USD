@@ -33,6 +33,7 @@
 #include "pxr/usd/usd/prim.h"
 
 #include "pxr/base/tf/getenv.h"
+#include "pxr/base/tf/envSetting.h"
 
 #include "pxr/usd/usdUtils/pipeline.h"
 
@@ -47,18 +48,25 @@
 
 #include "pxr/usd/usdShade/material.h"
 
-#include "pxr/usd/usdRi/statements.h"
+#include "pxr/usd/usdRi/statementsAPI.h"
 
 #include "pxr/usd/sdf/path.h"
-#include "pxr/usd/usd/stage.h"
+#include "pxr/usd/usd/collectionAPI.h"
 #include "pxr/usd/usd/prim.h" 
 #include "pxr/usd/usd/modelAPI.h"
+#include "pxr/usd/usd/stage.h"
 
 #include <pystring/pystring.h>
 #include <FnLogging/FnLogging.h>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
+TF_DEFINE_ENV_SETTING(USD_KATANA_IMPORT_OLD_STYLE_COLLECTIONS, true, 
+        "Whether old-style collections encoded using UsdGeomCollectionAPI "
+        "must be imported by katana.");
+TF_DEFINE_ENV_SETTING(USD_KATANA_ALLOW_CUSTOM_MATERIAL_SCOPES, false,
+        "Set to true to enable custom names for the parent scope "
+        "of materials. Otherwise only scopes named Looks are allowed.");
 
 FnLogSetup("PxrUsdKatanaReadPrim");
 
@@ -140,12 +148,15 @@ _GetMaterialAssignAttr(
             // path mapping
             std::string location =
                 PxrUsdKatanaUtils::ConvertUsdMaterialPathToKatLocation(targetPath, data);
+
+            static const bool allowCustomScopes = 
+                TfGetEnvSetting(USD_KATANA_ALLOW_CUSTOM_MATERIAL_SCOPES);
                 
             // XXX Materials containing only display terminals are causing issues
             //     with katana material manipulation workflows.
             //     For now: exclude any material assign which doesn't include
             //     /Looks/ in the path
-            if (location.find(UsdKatanaTokens->katanaLooksScopePathSubstring)
+            if (!allowCustomScopes && location.find(UsdKatanaTokens->katanaLooksScopePathSubstring)
                     == std::string::npos)
             {
                 return FnKat::Attribute();
@@ -170,8 +181,8 @@ _GatherRibAttributes(
     bool hasAttrs = false;
 
     // USD SHADING STYLE ATTRIBUTES
-    UsdRiStatements riStatements(prim);
-    if (riStatements) {
+    if (prim) {
+        UsdRiStatementsAPI riStatements(prim);
         const std::vector<UsdProperty> props = 
             riStatements.GetRiAttributes();
         std::string attrName;
@@ -298,7 +309,7 @@ _BuildScopedCoordinateSystems(
 
     TF_FOR_ALL(childIt, prim.GetChildren()) {
 
-        UsdRiStatements riStmts(*childIt);
+        UsdRiStatementsAPI riStmts(*childIt);
 
         if (!riStmts.HasCoordinateSystem()) {
             continue;
@@ -331,22 +342,206 @@ _BuildScopedCoordinateSystems(
     return foundCoordSys;
 }
 
+static 
+void
+_AppendPathToIncludeExcludeStr(
+    const SdfPath &path,
+    bool isIncludePath,
+    const UsdPrim &prim, 
+    const TfToken &srcCollectionName,
+    std::stringstream &incExcStr)
+{
+    // Skip property paths as properties can't be included in a katana 
+    // collection (although they can be included by CEL).
+    if (path.IsPropertyPath()) {
+        return;
+    }
+
+    if (path.HasPrefix(prim.GetPath())) {
+        const size_t prefixLength = prim.GetPath().GetString().length();
+        std::string relativePath = path.GetString().substr(prefixLength);
+
+        // Follow katana convention for collections the "self" location relative 
+        // path is "/". Absolute paths start with "/root/" relative paths start 
+        // without the "/" though.
+        if (relativePath == "")
+            relativePath = "/";
+        // Add the path and all descendants
+        incExcStr << relativePath << " " 
+                  << ((relativePath != "/") ? relativePath : "") << "//* ";
+
+    } else {
+        FnLogWarn("Collection " << srcCollectionName  << 
+                  (isIncludePath ? "includes" : "excludes") << " path "
+                  << path.GetString() << " which is not a descendant of the "
+                  "collection-owning prim <" << prim.GetPath().GetString() 
+                  << ">");
+    }
+}
+
+static 
+std::string
+_GetKatanaCollectionPath(
+    const SdfPath &collPrimPath, 
+    const TfToken &collectionName,
+    const UsdPrim &prim, 
+    const TfToken &srcCollectionName,
+    const PxrUsdKatanaUsdInPrivateData& data)
+{
+    if (collPrimPath.HasPrefix(prim.GetPath())) {
+        const size_t prefixLength = prim.GetPath().GetString().length();
+        std::string relativePath = collPrimPath.GetString().substr(prefixLength);
+        // follow katana convention for collections
+        // the "self" location relative path is "/". 
+        // Absolute paths start with "/root/"
+        // relative paths start without the "/" though.
+        if (relativePath == "")
+            relativePath = "/";
+
+        return TfStringPrintf("(%s/$%s)", relativePath.c_str(), 
+                              collectionName.GetText());
+    } else {
+        FnLogWarn("Collection " << srcCollectionName   
+            << " includes collection " << collPrimPath << ".collection:" << 
+            collectionName << " which is not a descendant of the collection-"
+            "owning prim <" << prim.GetPath().GetString() << ">");
+
+        // If the collection is not a descendant, add the full 
+        // katana location of the collection. 
+        // This won't cause the collection to be included, but
+        // does not cause any errors either and might give us 
+        // a way to roundtrip the include back to USD.
+
+        const std::string katPrimPath = 
+                PxrUsdKatanaUtils::ConvertUsdPathToKatLocation(
+                    collPrimPath, data);
+        return TfStringPrintf("(%s/$%s)", katPrimPath.c_str(), 
+                              collectionName.GetText());
+    }
+}
+
 static bool
 _BuildCollections(
-        const UsdPrim& prim,
-        FnKat::GroupBuilder& collectionsBuilder)
+    const UsdPrim& prim,
+    const PxrUsdKatanaUsdInPrivateData& data,
+    FnKat::GroupBuilder& collectionsBuilder)
 {
-    std::vector<UsdGeomCollectionAPI> collections = 
-        UsdGeomCollectionAPI::GetCollections(prim);
+    std::vector<UsdCollectionAPI> collections = 
+        UsdCollectionAPI::GetAllCollections(prim);
 
-    size_t prefixLength = prim.GetPath().GetString().length();
-    for (size_t iCollection = 0; iCollection < collections.size(); ++iCollection)
-    {
+    const size_t prefixLength = prim.GetPath().GetString().length();
+
+    for (const UsdCollectionAPI &collection : collections) {
+        TfToken expansionRule; 
+        collection.GetExpansionRuleAttr().Get(&expansionRule);
+
+        if (expansionRule != UsdTokens->explicitOnly) {
+            UsdRelationship includesRel = collection.GetIncludesRel();
+            UsdRelationship excludesRel = collection.GetExcludesRel();
+            
+            SdfPathVector includes, excludes; 
+            includesRel.GetTargets(&includes);
+            excludesRel.GetTargets(&excludes);
+
+            // Exclude the collection if it's empty.
+            if (includes.empty()) {
+                continue;
+            }
+
+            FnKat::StringBuilder collectionBuilder;
+
+            std::stringstream incExcStr;
+            incExcStr << "((";
+            for (const SdfPath &p : includes) {
+                TfToken collectionName;
+                if (UsdCollectionAPI::IsCollectionPath(p, &collectionName)) {
+                    SdfPath collPrimPath= p.GetPrimPath();
+                    std::string katCollStr = _GetKatanaCollectionPath(collPrimPath, 
+                        collectionName, prim, collection.GetName(), data);
+                    collectionBuilder.push_back(katCollStr);
+                } else {
+                    _AppendPathToIncludeExcludeStr(p, /*isIncludePath */ true, 
+                            prim, collection.GetName(), incExcStr);
+                }
+            }
+            incExcStr << ")";
+
+            if (!excludes.empty()) {
+                incExcStr << " - (";
+                for (const SdfPath &p: excludes) {
+                    _AppendPathToIncludeExcludeStr(p, /* isIncludePath */ false,
+                            prim, collection.GetName(), incExcStr);
+                }
+                incExcStr << ")";
+            }
+            incExcStr << ")";
+
+            // Add the string that encodes the includes and excludes if it's 
+            // not empty.
+            if (incExcStr.str() != "(())") {
+                collectionBuilder.push_back(incExcStr.str());
+            }
+
+            FnKat::StringAttribute collectionAttr = collectionBuilder.build();
+            if (collectionAttr.getNearestSample(0).size() > 0) {
+                collectionsBuilder.set(
+                        collection.GetName().GetString() + ".cel",
+                        collectionAttr);
+            }
+        } else {
+            // Bake the collection as a flat list of member paths.
+            const auto &mquery = collection.ComputeMembershipQuery();
+            SdfPathSet includedPaths = UsdCollectionAPI::ComputeIncludedPaths(
+                    mquery, prim.GetStage()); 
+            FnKat::StringBuilder collectionBuilder;
+            for (const SdfPath &p : includedPaths) {
+                if (p.HasPrefix(prim.GetPath())) {
+                    std::string relativePath = p.GetString().substr(prefixLength);
+                    // follow katana convention for collections
+                    // the "self" location relative path is "/". 
+                    // Absolute paths start with "/root/"
+                    // relative paths start without the "/" though.
+                    if (relativePath == "")
+                        relativePath = "/";
+                    collectionBuilder.push_back(relativePath);
+                        
+                } else {
+                    FnLogWarn("Collection " << collection.GetName()  << " includes "
+                        "path " << p.GetString() << " which is not a descendant "
+                        "of the collection-owning prim <" 
+                        << prim.GetPath().GetString() << ">");
+                }
+            }
+
+            // If empty, no point creating collection
+            FnKat::StringAttribute collectionAttr = collectionBuilder.build();
+            if (collectionAttr.getNearestSample(0).size() > 0) {
+                collectionsBuilder.set(collection.GetName().GetString() + ".baked",
+                                    collectionAttr);
+            }
+        }
+    }
+
+
+    // Import old-style collections
+    if (!TfGetEnvSetting(USD_KATANA_IMPORT_OLD_STYLE_COLLECTIONS))
+        return collections.size() > 0;
+
+    std::vector<UsdGeomCollectionAPI> oldCollections = 
+        UsdGeomCollectionAPI::GetCollections(prim);
+    for (const auto &collection : oldCollections) {
+        TfToken name = collection.GetCollectionName();
+        // Skip if this is a property belonging to the new-style collection
+        // schema.
+        TfTokenVector nameTokens = SdfPath::TokenizeIdentifierAsTokens(name);
+        TfToken baseName = *nameTokens.rbegin();
+        if (nameTokens.size() > 2 &&
+            UsdCollectionAPI::IsSchemaPropertyBaseName(baseName)) {
+            continue; 
+        }
+
         SdfPathVector targets;
         FnKat::StringBuilder collectionBuilder;
-        UsdGeomCollectionAPI &collection = collections[iCollection];
-        TfToken name = collection.GetCollectionName();
-
         // XXX: This code probably needs some work to be made
         // instancing-aware.
         collection.GetTargets(&targets);
@@ -375,7 +570,7 @@ _BuildCollections(
         }
     }
 
-    return (collections.size() > 0);
+    return (collections.size() + oldCollections.size()) > 0;
 }
 
 
@@ -570,10 +765,22 @@ PxrUsdKatanaGeomGetPrimvarGroup(
 
     std::vector<UsdGeomPrimvar> primvarAttrs = imageable.GetPrimvars();
     TF_FOR_ALL(primvar, primvarAttrs) {
+        // Katana backends (such as RFK) are not prepared to handle
+        // groups of primvars under geometry.arbitrary, which leaves us
+        // without a ready-made way to incorporate namespaced primvars like
+        // "primvars:skel:jointIndices".  Until we untangle that, skip importing
+        // any namespaced primvars.
+        if (primvar->NameContainsNamespaces())
+            continue;
+
         // If there is a block from blind data, skip to avoid the cost
         UsdKatanaBlindDataObject kbd(imageable.GetPrim());
+
+        // XXX If we allow namespaced primvars (by eliminating the 
+        // short-circuit above), we will require GetKbdAttribute to be able
+        // to translate namespaced names...
         UsdAttribute blindAttr = kbd.GetKbdAttribute("geometry.arbitrary." + 
-                                        primvar->GetBaseName().GetString());
+                                        primvar->GetPrimvarName().GetString());
         if (blindAttr) {
             VtValue vtValue;
             if (!blindAttr.Get(&vtValue) && blindAttr.HasAuthoredValueOpinion()) {
@@ -585,11 +792,12 @@ PxrUsdKatanaGeomGetPrimvarGroup(
         SdfValueTypeName typeName;
         int              elementSize;
 
+        // GetDeclarationInfo inclues all namespaces other than "primvars:" in
+        // 'name'
         primvar->GetDeclarationInfo(&name, &typeName, 
                                     &interpolation, &elementSize);
 
-        // Name: this will eventually want to be GetBaseName() to strip
-        // off prefixes
+        // Name: this will eventually need to know how to translate namespaces
         std::string gdName = name;
 
         // Convert interpolation -> scope
@@ -728,7 +936,12 @@ PxrUsdKatanaReadPrim(
         {
             FnKat::GroupBuilder arbBuilder;
             arbBuilder.update(primvarGroup);
-            attrs.set("geometry.arbitrary", arbBuilder.build());
+            
+            FnKat::GroupAttribute arbGroup = arbBuilder.build();
+            if (arbGroup.getNumberOfChildren() > 0)
+            {
+                attrs.set("geometry.arbitrary", arbGroup);
+            }
         }
     }
 
@@ -748,7 +961,7 @@ PxrUsdKatanaReadPrim(
     //
 
     FnKat::GroupBuilder collectionsBuilder;
-    if (_BuildCollections(prim, collectionsBuilder))
+    if (_BuildCollections(prim, data, collectionsBuilder))
     {
         attrs.set("collections", collectionsBuilder.build());
     }
@@ -765,6 +978,19 @@ PxrUsdKatanaReadPrim(
     }
 
     _AddExtraAttributesOrNamespaces(prim, data, attrs);
+
+    // 
+    // Store the applied apiSchemas metadata as a list of typeName strings
+    //
+    TfTokenVector appliedSchemaTokens = prim.GetAppliedSchemas();
+    if (!appliedSchemaTokens.empty()){
+        std::vector<std::string> appliedSchemas(appliedSchemaTokens.size());
+        std::transform(appliedSchemaTokens.begin(), appliedSchemaTokens.end(), 
+                       appliedSchemas.begin(), [](const TfToken& token){ 
+            return token.GetString();
+        });
+        attrs.set("info.usd.apiSchemas", FnKat::StringAttribute(appliedSchemas));
+    }
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

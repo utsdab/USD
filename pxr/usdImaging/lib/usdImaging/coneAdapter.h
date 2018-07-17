@@ -24,6 +24,8 @@
 #ifndef USDIMAGING_CONE_ADAPTER_H
 #define USDIMAGING_CONE_ADAPTER_H
 
+/// \file usdImaging/coneAdapter.h
+
 #include "pxr/pxr.h"
 #include "pxr/usdImaging/usdImaging/api.h"
 #include "pxr/usdImaging/usdImaging/gprimAdapter.h"
@@ -53,35 +55,19 @@ public:
                      UsdImagingInstancerContext const* instancerContext = NULL);
 
     USDIMAGING_API
-    virtual bool IsSupported(HdRenderIndex* renderIndex);
+    virtual bool IsSupported(UsdImagingIndexProxy const* index) const;
 
     // ---------------------------------------------------------------------- //
     /// \name Parallel Setup and Resolve
     // ---------------------------------------------------------------------- //
-    
-    USDIMAGING_API
-    virtual void TrackVariabilityPrep(UsdPrim const& prim,
-                                      SdfPath const& cachePath,
-                                      HdDirtyBits requestedBits,
-                                      UsdImagingInstancerContext const* 
-                                          instancerContext = NULL);
 
     /// Thread Safe.
     USDIMAGING_API
     virtual void TrackVariability(UsdPrim const& prim,
                                   SdfPath const& cachePath,
-                                  HdDirtyBits requestedBits,
-                                  HdDirtyBits* dirtyBits,
+                                  HdDirtyBits* timeVaryingBits,
                                   UsdImagingInstancerContext const* 
-                                      instancerContext = NULL);
-
-    USDIMAGING_API
-    virtual void UpdateForTimePrep(UsdPrim const& prim,
-                                   SdfPath const& cachePath, 
-                                   UsdTimeCode time,
-                                   HdDirtyBits requestedBits,
-                                   UsdImagingInstancerContext const* 
-                                       instancerContext = NULL);
+                                      instancerContext = NULL) const;
 
     /// Thread Safe.
     USDIMAGING_API
@@ -89,9 +75,8 @@ public:
                                SdfPath const& cachePath, 
                                UsdTimeCode time,
                                HdDirtyBits requestedBits,
-                               HdDirtyBits* dirtyBits,
                                UsdImagingInstancerContext const* 
-                                   instancerContext = NULL);
+                                   instancerContext = NULL) const;
 
     USDIMAGING_API
     static VtValue GetMeshPoints(UsdPrim const& prim, 

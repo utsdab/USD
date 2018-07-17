@@ -24,11 +24,11 @@
 #include "pxr/usdImaging/usdImaging/cubeAdapter.h"
 
 #include "pxr/usdImaging/usdImaging/delegate.h"
+#include "pxr/usdImaging/usdImaging/indexProxy.h"
 #include "pxr/usdImaging/usdImaging/tokens.h"
 
 #include "pxr/imaging/hd/mesh.h"
 #include "pxr/imaging/hd/perfLog.h"
-#include "pxr/imaging/hd/renderIndex.h"
 #include "pxr/imaging/hd/tokens.h"
 
 #include "pxr/imaging/pxOsd/tokens.h"
@@ -53,9 +53,9 @@ UsdImagingCubeAdapter::~UsdImagingCubeAdapter()
 }
 
 bool
-UsdImagingCubeAdapter::IsSupported(HdRenderIndex* renderIndex)
+UsdImagingCubeAdapter::IsSupported(UsdImagingIndexProxy const* index) const
 {
-    return renderIndex->IsRprimTypeSupported(HdPrimTypeTokens->mesh);
+    return index->IsRprimTypeSupported(HdPrimTypeTokens->mesh);
 }
 
 SdfPath
@@ -63,67 +63,32 @@ UsdImagingCubeAdapter::Populate(UsdPrim const& prim,
                             UsdImagingIndexProxy* index,
                             UsdImagingInstancerContext const* instancerContext)
 {
-    index->InsertMesh(prim.GetPath(),
-                      GetShaderBinding(prim),
-                      instancerContext);
-    HD_PERF_COUNTER_INCR(UsdImagingTokens->usdPopulatedPrimCount);
-
-    return prim.GetPath();
-}
-
-void 
-UsdImagingCubeAdapter::TrackVariabilityPrep(UsdPrim const& prim,
-                                            SdfPath const& cachePath,
-                                            HdDirtyBits requestedBits,
-                                            UsdImagingInstancerContext const* 
-                                                instancerContext)
-{
-    // Let the base class track what it needs.
-    BaseAdapter::TrackVariabilityPrep(
-        prim, cachePath, requestedBits, instancerContext);
+    return _AddRprim(HdPrimTypeTokens->mesh,
+                     prim, index, GetMaterialId(prim), instancerContext);
 }
 
 void 
 UsdImagingCubeAdapter::TrackVariability(UsdPrim const& prim,
                                         SdfPath const& cachePath,
-                                        HdDirtyBits requestedBits,
-                                        HdDirtyBits* dirtyBits,
+                                        HdDirtyBits* timeVaryingBits,
                                         UsdImagingInstancerContext const* 
-                                            instancerContext)
+                                            instancerContext) const
 {
     BaseAdapter::TrackVariability(
-        prim, cachePath, requestedBits, dirtyBits, instancerContext);
+        prim, cachePath, timeVaryingBits, instancerContext);
     // WARNING: This method is executed from multiple threads, the value cache
     // has been carefully pre-populated to avoid mutating the underlying
     // container during update.
     
-    UsdTimeCode time(1.0);
-    if (requestedBits & HdChangeTracker::DirtyTransform) {
-        if (!(*dirtyBits & HdChangeTracker::DirtyTransform)) {
-            _IsVarying(prim, UsdGeomTokens->size,
-                          HdChangeTracker::DirtyTransform,
-                          UsdImagingTokens->usdVaryingXform,
-                          dirtyBits, /*inherited*/false);
-        }
+    // The base adapter may already be setting that transform dirty bit.
+    // _IsVarying will clear it, so check it isn't already marked as
+    // varying before checking for additional set cases.
+     if ((*timeVaryingBits & HdChangeTracker::DirtyTransform) == 0) {
+        _IsVarying(prim, UsdGeomTokens->size,
+                      HdChangeTracker::DirtyTransform,
+                      UsdImagingTokens->usdVaryingXform,
+                      timeVaryingBits, /*inherited*/false);
     }
-}
-
-void 
-UsdImagingCubeAdapter::UpdateForTimePrep(UsdPrim const& prim,
-                                         SdfPath const& cachePath, 
-                                         UsdTimeCode time,
-                                         HdDirtyBits requestedBits,
-                                         UsdImagingInstancerContext const* 
-                                             instancerContext)
-{
-    BaseAdapter::UpdateForTimePrep(prim, cachePath, time, requestedBits);
-    UsdImagingValueCache* valueCache = _GetValueCache();
-    // This adapter will never mark these as dirty, however the client may
-    // explicitly ask for them, after the initial cached value is gone.
-    if (requestedBits & HdChangeTracker::DirtyPoints)
-        valueCache->GetPoints(cachePath);
-    if (requestedBits & HdChangeTracker::DirtyTopology)
-        valueCache->GetTopology(cachePath);
 }
 
 void 
@@ -131,12 +96,11 @@ UsdImagingCubeAdapter::UpdateForTime(UsdPrim const& prim,
                                      SdfPath const& cachePath, 
                                      UsdTimeCode time,
                                      HdDirtyBits requestedBits,
-                                     HdDirtyBits* resultBits,
                                      UsdImagingInstancerContext const* 
-                                         instancerContext)
+                                         instancerContext) const
 {
     BaseAdapter::UpdateForTime(
-        prim, cachePath, time, requestedBits, resultBits, instancerContext);
+        prim, cachePath, time, requestedBits, instancerContext);
 
     UsdImagingValueCache* valueCache = _GetValueCache();
 
@@ -153,11 +117,10 @@ UsdImagingCubeAdapter::UpdateForTime(UsdPrim const& prim,
         valueCache->GetPoints(cachePath)= GetMeshPoints(prim, time);
 
         // Expose points as a primvar.
-        UsdImagingValueCache::PrimvarInfo primvar;
-        primvar.name = HdTokens->points;
-        primvar.interpolation = UsdGeomTokens->vertex;
-        PrimvarInfoVector& primvars = valueCache->GetPrimvars(cachePath);
-        _MergePrimvar(primvar, &primvars);
+        _MergePrimvar(&valueCache->GetPrimvars(cachePath),
+                      HdTokens->points,
+                      HdInterpolationVertex,
+                      HdPrimvarRoleTokens->point);
     }
 }
 

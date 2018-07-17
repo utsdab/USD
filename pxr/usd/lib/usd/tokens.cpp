@@ -25,6 +25,58 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-TF_DEFINE_PUBLIC_TOKENS(UsdTokens, USD_TOKENS);
+UsdTokensType::UsdTokensType() :
+    apiSchemas("apiSchemas", TfToken::Immortal),
+    apiSchemaType("apiSchemaType", TfToken::Immortal),
+    clipActive("clipActive", TfToken::Immortal),
+    clipAssetPaths("clipAssetPaths", TfToken::Immortal),
+    clipManifestAssetPath("clipManifestAssetPath", TfToken::Immortal),
+    clipPrimPath("clipPrimPath", TfToken::Immortal),
+    clips("clips", TfToken::Immortal),
+    clipSets("clipSets", TfToken::Immortal),
+    clipTemplateAssetPath("clipTemplateAssetPath", TfToken::Immortal),
+    clipTemplateEndTime("clipTemplateEndTime", TfToken::Immortal),
+    clipTemplateStartTime("clipTemplateStartTime", TfToken::Immortal),
+    clipTemplateStride("clipTemplateStride", TfToken::Immortal),
+    clipTimes("clipTimes", TfToken::Immortal),
+    collection("collection", TfToken::Immortal),
+    exclude("exclude", TfToken::Immortal),
+    expandPrims("expandPrims", TfToken::Immortal),
+    expandPrimsAndProperties("expandPrimsAndProperties", TfToken::Immortal),
+    expansionRule("expansionRule", TfToken::Immortal),
+    explicitOnly("explicitOnly", TfToken::Immortal),
+    isPrivateApply("isPrivateApply", TfToken::Immortal),
+    multipleApply("multipleApply", TfToken::Immortal),
+    nonApplied("nonApplied", TfToken::Immortal),
+    singleApply("singleApply", TfToken::Immortal),
+    allTokens({
+        apiSchemas,
+        apiSchemaType,
+        clipActive,
+        clipAssetPaths,
+        clipManifestAssetPath,
+        clipPrimPath,
+        clips,
+        clipSets,
+        clipTemplateAssetPath,
+        clipTemplateEndTime,
+        clipTemplateStartTime,
+        clipTemplateStride,
+        clipTimes,
+        collection,
+        exclude,
+        expandPrims,
+        expandPrimsAndProperties,
+        expansionRule,
+        explicitOnly,
+        isPrivateApply,
+        multipleApply,
+        nonApplied,
+        singleApply
+    })
+{
+}
+
+TfStaticData<UsdTokensType> UsdTokens;
 
 PXR_NAMESPACE_CLOSE_SCOPE

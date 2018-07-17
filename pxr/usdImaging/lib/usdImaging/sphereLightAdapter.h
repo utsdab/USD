@@ -24,6 +24,8 @@
 #ifndef USDIMAGING_SPHERE_LIGHT_ADAPTER_H
 #define USDIMAGING_SPHERE_LIGHT_ADAPTER_H
 
+/// \file usdImaging/sphereLightAdapter.h
+
 #include "pxr/pxr.h"
 #include "pxr/usdImaging/usdImaging/api.h"
 #include "pxr/usdImaging/usdImaging/lightAdapter.h"
@@ -54,7 +56,12 @@ public:
                      UsdImagingInstancerContext const* instancerContext = NULL);
 
     USDIMAGING_API
-    virtual bool IsSupported(HdRenderIndex* renderIndex);
+    virtual bool IsSupported(UsdImagingIndexProxy const* index) const;
+
+protected:
+    virtual void _RemovePrim(SdfPath const& cachePath,
+                             UsdImagingIndexProxy* index) final;
+
 };
 
 

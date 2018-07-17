@@ -24,6 +24,7 @@
 #include "pxr/usd/usdShade/connectableAPI.h"
 #include "pxr/usd/usd/schemaRegistry.h"
 #include "pxr/usd/usd/typed.h"
+#include "pxr/usd/usd/tokens.h"
 
 #include "pxr/usd/sdf/types.h"
 #include "pxr/usd/sdf/assetPath.h"
@@ -34,9 +35,14 @@ PXR_NAMESPACE_OPEN_SCOPE
 TF_REGISTRY_FUNCTION(TfType)
 {
     TfType::Define<UsdShadeConnectableAPI,
-        TfType::Bases< UsdSchemaBase > >();
+        TfType::Bases< UsdAPISchemaBase > >();
     
 }
+
+TF_DEFINE_PRIVATE_TOKENS(
+    _schemaTokens,
+    (ConnectableAPI)
+);
 
 /* virtual */
 UsdShadeConnectableAPI::~UsdShadeConnectableAPI()
@@ -84,7 +90,7 @@ UsdShadeConnectableAPI::GetSchemaAttributeNames(bool includeInherited)
 {
     static TfTokenVector localNames;
     static TfTokenVector allNames =
-        UsdSchemaBase::GetSchemaAttributeNames(true);
+        UsdAPISchemaBase::GetSchemaAttributeNames(true);
 
     if (includeInherited)
         return allNames;
@@ -158,8 +164,13 @@ UsdShadeConnectableAPI::IsNodeGraph() const
 
 /* virtual */
 bool 
-UsdShadeConnectableAPI::_IsCompatible(const UsdPrim &prim) const
+UsdShadeConnectableAPI::_IsCompatible() const
 {
+    if (!UsdAPISchemaBase::_IsCompatible() )
+        return false;
+
+    // Shaders and node-graphs are compatible with this API schema. 
+    // XXX: What if the typeName isn't known (eg, pure over)?
     return IsShader() || IsNodeGraph();
 }
 
@@ -595,12 +606,12 @@ UsdShadeConnectableAPI::GetConnectedSource(
             // If this is a terminal-style output, then allow connection 
             // to a prim.
             if (shadingProp.Is<UsdRelationship>()) {
-                return *source;
+                return static_cast<bool>(*source);
             }
         }
     }
 
-    return *source;
+    return static_cast<bool>(*source);
 }
 
 /* static  */
@@ -874,7 +885,7 @@ UsdShadeConnectableAPI::GetOutputs() const
 
 UsdShadeInput 
 UsdShadeConnectableAPI::CreateInput(const TfToken& name,
-                                     const SdfValueTypeName& typeName) const
+                                    const SdfValueTypeName& typeName) const
 {
     return UsdShadeInput(GetPrim(), name, typeName);
 }

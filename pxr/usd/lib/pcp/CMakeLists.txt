@@ -4,7 +4,7 @@ set(PXR_PACKAGE pcp)
 pxr_library(pcp
     LIBRARIES
         tf
-        tracelite
+        trace
         vt
         sdf
         work
@@ -40,11 +40,13 @@ pxr_library(pcp
         payloadDecorator
         primIndex
         propertyIndex
-        pyUtils
         site
         strengthOrdering
         targetIndex
         types
+
+    PYTHON_PUBLIC_CLASSES
+        pyUtils
 
     PRIVATE_CLASSES
         debugCodes
@@ -58,7 +60,7 @@ pxr_library(pcp
         statistics
         utils
 
-    CPPFILES
+    PYTHON_CPPFILES
         moduleDeps.cpp
 
     PYMODULE_CPPFILES
@@ -81,7 +83,7 @@ pxr_library(pcp
         wrapTestChangeProcessor.cpp
         wrapTypes.cpp
 
-    PYTHON_FILES
+    PYMODULE_FILES
         __init__.py
 )
 
@@ -300,8 +302,8 @@ pxr_install_test_dir(
 )
 
 pxr_install_test_dir(
-    SRC testenv/testPcpMuseum_BasicClassOverride.testenv
-    DEST testPcpMuseum_BasicClassOverride
+    SRC testenv/testPcpMuseum_BasicInherits.testenv
+    DEST testPcpMuseum_BasicInherits
 )
 
 pxr_install_test_dir(
@@ -377,6 +379,31 @@ pxr_install_test_dir(
 pxr_install_test_dir(
     SRC testenv/testPcpMuseum_BasicSpecializesAndVariants.testenv
     DEST testPcpMuseum_BasicSpecializesAndVariants
+)
+
+pxr_install_test_dir(
+    SRC testenv/testPcpMuseum_PayloadsAndAncestralArcs.testenv
+    DEST testPcpMuseum_PayloadsAndAncestralArcs
+)
+
+pxr_install_test_dir(
+    SRC testenv/testPcpMuseum_RelativePathReferences.testenv
+    DEST testPcpMuseum_RelativePathReferences
+)
+
+pxr_install_test_dir(
+    SRC testenv/testPcpMuseum_RelocatePrimsWithSameName.testenv
+    DEST testPcpMuseum_RelocatePrimsWithSameName
+)
+
+pxr_install_test_dir(
+    SRC testenv/testPcpMuseum_SubrootReferenceAndClasses.testenv
+    DEST testPcpMuseum_SubrootReferenceAndClasses
+)
+
+pxr_install_test_dir(
+    SRC testenv/testPcpMuseum_SubrootReferenceAndVariants.testenv
+    DEST testPcpMuseum_SubrootReferenceAndVariants
 )
 
 pxr_install_test_dir(
@@ -763,11 +790,11 @@ pxr_register_test(testPcpMuseum_BasicRelocateToAnimInterface
     DIFF_COMPARE compositionResults_BasicRelocateToAnimInterface.txt 
 )
 
-pxr_register_test(testPcpMuseum_BasicClassOverride
+pxr_register_test(testPcpMuseum_BasicInherits
     PYTHON
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testPcpCompositionResults BasicClassOverride/root.sdf" 
-    STDOUT_REDIRECT compositionResults_BasicClassOverride.txt
-    DIFF_COMPARE compositionResults_BasicClassOverride.txt 
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testPcpCompositionResults BasicInherits/root.sdf" 
+    STDOUT_REDIRECT compositionResults_BasicInherits.txt
+    DIFF_COMPARE compositionResults_BasicInherits.txt 
 )
 
 pxr_register_test(testPcpMuseum_BasicLocalAndGlobalClassCombination
@@ -873,6 +900,41 @@ pxr_register_test(testPcpMuseum_BasicSpecializesAndVariants
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testPcpCompositionResults BasicSpecializesAndVariants/root.sdf" 
     STDOUT_REDIRECT compositionResults_BasicSpecializesAndVariants.txt
     DIFF_COMPARE compositionResults_BasicSpecializesAndVariants.txt 
+)
+
+pxr_register_test(testPcpMuseum_PayloadsAndAncestralArcs
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testPcpCompositionResults --payloads ^(?!/Root/UnloadedInheritedPayload) PayloadsAndAncestralArcs/root.sdf" 
+    STDOUT_REDIRECT compositionResults_PayloadsAndAncestralArcs.txt
+    DIFF_COMPARE compositionResults_PayloadsAndAncestralArcs.txt 
+)
+
+pxr_register_test(testPcpMuseum_RelativePathReferences
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testPcpCompositionResults RelativePathReferences/root.sdf" 
+    STDOUT_REDIRECT compositionResults_RelativePathReferences.txt
+    DIFF_COMPARE compositionResults_RelativePathReferences.txt 
+)
+
+pxr_register_test(testPcpMuseum_RelocatePrimsWithSameName
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testPcpCompositionResults RelocatePrimsWithSameName/root.sdf" 
+    STDOUT_REDIRECT compositionResults_RelocatePrimsWithSameName.txt
+    DIFF_COMPARE compositionResults_RelocatePrimsWithSameName.txt 
+)
+
+pxr_register_test(testPcpMuseum_SubrootReferenceAndClasses
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testPcpCompositionResults SubrootReferenceAndClasses/root.sdf" 
+    STDOUT_REDIRECT compositionResults_SubrootReferenceAndClasses.txt
+    DIFF_COMPARE compositionResults_SubrootReferenceAndClasses.txt 
+)
+
+pxr_register_test(testPcpMuseum_SubrootReferenceAndVariants
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testPcpCompositionResults SubrootReferenceAndVariants/root.sdf" 
+    STDOUT_REDIRECT compositionResults_SubrootReferenceAndVariants.txt
+    DIFF_COMPARE compositionResults_SubrootReferenceAndVariants.txt 
 )
 
 pxr_register_test(testPcpMuseum_TypicalReferenceToRiggedModel

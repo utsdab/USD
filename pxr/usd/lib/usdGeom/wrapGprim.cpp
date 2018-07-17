@@ -94,6 +94,13 @@ void wrapUsdGeomGprim()
         .def("Get", &This::Get, (arg("stage"), arg("path")))
         .staticmethod("Get")
 
+        .def("IsConcrete",
+            static_cast<bool (*)(void)>( [](){ return This::IsConcrete; }))
+        .staticmethod("IsConcrete")
+
+        .def("IsTyped",
+            static_cast<bool (*)(void)>( [](){ return This::IsTyped; } ))
+        .staticmethod("IsTyped")
 
         .def("GetSchemaAttributeNames",
              &This::GetSchemaAttributeNames,
@@ -165,8 +172,14 @@ namespace {
 WRAP_CUSTOM {
     _class
         .def("GetDisplayColorPrimvar", &UsdGeomGprim::GetDisplayColorPrimvar)
+        .def("CreateDisplayColorPrimvar", 
+             &UsdGeomGprim::CreateDisplayColorPrimvar,
+             (arg("interpolation")=TfToken(), arg("elementSize")=-1))
         .def("GetDisplayOpacityPrimvar",
              &UsdGeomGprim::GetDisplayOpacityPrimvar)
+        .def("CreateDisplayOpacityPrimvar", 
+             &UsdGeomGprim::CreateDisplayOpacityPrimvar,
+             (arg("interpolation")=TfToken(), arg("elementSize")=-1))
         ;
 }
 

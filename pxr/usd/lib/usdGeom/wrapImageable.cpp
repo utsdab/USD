@@ -80,6 +80,13 @@ void wrapUsdGeomImageable()
         .def("Get", &This::Get, (arg("stage"), arg("path")))
         .staticmethod("Get")
 
+        .def("IsConcrete",
+            static_cast<bool (*)(void)>( [](){ return This::IsConcrete; }))
+        .staticmethod("IsConcrete")
+
+        .def("IsTyped",
+            static_cast<bool (*)(void)>( [](){ return This::IsTyped; } ))
+        .staticmethod("IsTyped")
 
         .def("GetSchemaAttributeNames",
              &This::GetSchemaAttributeNames,
@@ -160,13 +167,19 @@ WRAP_CUSTOM {
     _class
         .def("CreatePrimvar", &UsdGeomImageable::CreatePrimvar,
              (arg("attrName"), arg("typeName"), arg("interpolation")=TfToken(),
-              arg("elementSize")=-1, arg("custom")=false))
+              arg("elementSize")=-1))
         .def("GetPrimvar", &UsdGeomImageable::GetPrimvar, arg("name"))
         .def("GetPrimvars", &UsdGeomImageable::GetPrimvars,
              return_value_policy<TfPySequenceToList>())
         .def("GetAuthoredPrimvars", &UsdGeomImageable::GetAuthoredPrimvars,
              return_value_policy<TfPySequenceToList>())
+        .def("FindInheritedPrimvars", &UsdGeomImageable::FindInheritedPrimvars,
+             return_value_policy<TfPySequenceToList>())
+        .def("FindInheritedPrimvar", &UsdGeomImageable::FindInheritedPrimvar,
+             arg("name"))
         .def("HasPrimvar", &UsdGeomImageable::HasPrimvar, arg("name"))
+        .def("HasInheritedPrimvar", &UsdGeomImageable::HasInheritedPrimvar,
+             arg("name"))
         .def("GetOrderedPurposeTokens",
              &UsdGeomImageable::GetOrderedPurposeTokens,
              return_value_policy<TfPySequenceToList>())

@@ -127,6 +127,16 @@ UsdImagingAdapterRegistry::UsdImagingAdapterRegistry() {
     }
 }
 
+USDIMAGING_API
+bool
+UsdImagingAdapterRegistry::HasAdapter(TfToken const& adapterKey)
+{
+    // Check if the key refers to any special built-in adapter types.
+    if (adapterKey == UsdImagingAdapterKeyTokens->instanceAdapterKey) {
+        return true;
+    }
+    return _typeMap.find(adapterKey) != _typeMap.end();
+}
 
 UsdImagingPrimAdapterSharedPtr
 UsdImagingAdapterRegistry::ConstructAdapter(TfToken const& adapterKey)

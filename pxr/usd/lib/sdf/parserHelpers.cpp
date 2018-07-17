@@ -45,16 +45,16 @@
 #include "pxr/base/gf/vec4h.h"
 #include "pxr/base/gf/vec4i.h"
 #include "pxr/base/tf/instantiateSingleton.h"
+#include "pxr/base/tf/iterator.h"
 #include "pxr/base/tf/staticData.h"
 #include "pxr/base/plug/registry.h"
 #include "pxr/base/vt/array.h"
 #include "pxr/base/vt/value.h"
 
-#include <boost/utility/enable_if.hpp>
-#include <boost/type_traits/is_integral.hpp>
-#include <boost/bind.hpp>
 #include <boost/mpl/for_each.hpp>
 
+#include <functional>
+#include <type_traits>
 #include <utility>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -352,6 +352,8 @@ struct _MakeFactoryMap {
     template <class CppType>
     void add(const SdfValueTypeName& scalar, const char* alias = NULL)
     {
+        namespace ph = std::placeholders;
+
         static const bool isShaped = true;
 
         const SdfValueTypeName array = scalar.GetArrayType();
@@ -364,12 +366,12 @@ struct _MakeFactoryMap {
         _ValueFactoryMap &f = *_factories;
         f[scalarName] =
             ValueFactory(scalarName, scalar.GetDimensions(), !isShaped,
-                         boost::bind(MakeScalarValueTemplate<CppType>,
-                                     _1, _2, _3, _4));
+                         std::bind(MakeScalarValueTemplate<CppType>,
+                                   ph::_1, ph::_2, ph::_3, ph::_4));
         f[arrayName] =
             ValueFactory(arrayName, array.GetDimensions(), isShaped,
-                         boost::bind(MakeShapedValueTemplate<CppType>,
-                                     _1, _2, _3, _4));
+                         std::bind(MakeShapedValueTemplate<CppType>,
+                                   ph::_1, ph::_2, ph::_3, ph::_4));
     }
     
     _ValueFactoryMap *_factories;
@@ -437,6 +439,12 @@ TF_MAKE_STATIC_DATA(_ValueFactoryMap, _valueFactories) {
     builder.add<GfMatrix3d>(SdfValueTypeNames->Matrix3d);
     builder.add<GfMatrix4d>(SdfValueTypeNames->Matrix4d);
     builder.add<GfMatrix4d>(SdfValueTypeNames->Frame4d);
+    builder.add<GfVec2f>(SdfValueTypeNames->TexCoord2f);
+    builder.add<GfVec2d>(SdfValueTypeNames->TexCoord2d);
+    builder.add<GfVec2h>(SdfValueTypeNames->TexCoord2h);
+    builder.add<GfVec3f>(SdfValueTypeNames->TexCoord3f);
+    builder.add<GfVec3d>(SdfValueTypeNames->TexCoord3d);
+    builder.add<GfVec3h>(SdfValueTypeNames->TexCoord3h);
 
     // XXX: Backwards compatibility.  These should be removed when
     //      all assets are updated.  At the time of this writing

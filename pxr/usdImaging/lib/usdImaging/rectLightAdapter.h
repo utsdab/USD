@@ -24,6 +24,8 @@
 #ifndef USDIMAGING_RECT_LIGHT_ADAPTER_H
 #define USDIMAGING_RECT_LIGHT_ADAPTER_H
 
+/// \file usdImaging/rectLightAdapter.h
+
 #include "pxr/pxr.h"
 #include "pxr/usdImaging/usdImaging/api.h"
 #include "pxr/usdImaging/usdImaging/lightAdapter.h"
@@ -54,8 +56,11 @@ public:
                      UsdImagingInstancerContext const* instancerContext = NULL);
 
     USDIMAGING_API
-    virtual bool IsSupported(HdRenderIndex* renderIndex);
+    virtual bool IsSupported(UsdImagingIndexProxy const* index) const;
     
+protected:
+    virtual void _RemovePrim(SdfPath const& cachePath,
+                             UsdImagingIndexProxy* index) final;
 };
 
 

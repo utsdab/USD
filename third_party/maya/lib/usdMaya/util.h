@@ -31,11 +31,14 @@
 #include "pxr/base/gf/vec2f.h"
 #include "pxr/base/gf/vec3f.h"
 #include "pxr/base/gf/vec4f.h"
+#include "pxr/base/tf/declarePtrs.h"
+#include "pxr/base/tf/refPtr.h"
 #include "pxr/usd/sdf/path.h"
 #include "pxr/usd/usd/attribute.h"
 #include "pxr/usd/usd/timeCode.h"
 
 #include <maya/MDagPath.h>
+#include <maya/MDataHandle.h>
 #include <maya/MFnDagNode.h>
 #include <maya/MFnDependencyNode.h>
 #include <maya/MFnMesh.h>
@@ -49,6 +52,8 @@
 #include <map>
 #include <set>
 #include <string>
+
+PXR_NAMESPACE_OPEN_SCOPE
 
 namespace PxrUsdMayaUtil
 {
@@ -67,6 +72,21 @@ template <typename V>
 struct MDagPathMap
 {
     typedef std::map<MDagPath, V, cmpDag> Type;
+};
+
+/// RAII-style helper for destructing an MDataHandle obtained from a plug
+/// once it goes out of scope.
+class MDataHandleHolder : public TfRefBase {
+    MPlug _plug;
+    MDataHandle _dataHandle;
+
+public:
+    static TfRefPtr<MDataHandleHolder> New(const MPlug& plug);
+    MDataHandle GetDataHandle() { return _dataHandle; }
+
+private:
+    MDataHandleHolder(const MPlug& plug, MDataHandle dataHandle);
+    ~MDataHandleHolder();
 };
 
 inline MStatus isFloat(MString str, const MString & usage)
@@ -126,6 +146,24 @@ ConvertInchesToMM(double inches) {
     return inches * MillimetersPerInch;
 }
 
+const double MillimetersPerCentimeter = 10.0;
+
+/// Converts the given value \p mm in millimeters to the equivalent value
+/// in centimeters.
+inline
+double
+ConvertMMToCM(double mm) {
+    return mm / MillimetersPerCentimeter;
+}
+
+/// Converts the given value \p cm in centimeters to the equivalent value
+/// in millimeters.
+inline
+double
+ConvertCMToMM(double cm) {
+    return cm * MillimetersPerCentimeter;
+}
+
 // seconds per frame
 PXRUSDMAYA_API
 double spf();
@@ -137,6 +175,12 @@ MStatus GetMObjectByName(const std::string& nodeName, MObject& mObj);
 /// Gets the Maya MDagPath for the node named \p nodeName.
 PXRUSDMAYA_API
 MStatus GetDagPathByName(const std::string& nodeName, MDagPath& dagPath);
+
+/// Gets the Maya MPlug for the given \p attrPath.
+/// The attribute path should be specified as "nodeName.attrName" (the format
+/// used by MEL).
+PXRUSDMAYA_API
+MStatus GetPlugByName(const std::string& attrPath, MPlug& plug);
 
 /// Get the MPlug for the output time attribute of Maya's global time object
 ///
@@ -176,6 +220,10 @@ bool getRotOrder(MTransformationMatrix::RotationOrder iOrder,
 // copy from mayapit code (MayaPit.h .cpp)
 PXRUSDMAYA_API
 bool isAnimated(MObject & object, bool checkParent = false);
+
+// Determine if a specific Maya plug is animated or not.
+PXRUSDMAYA_API
+bool isPlugAnimated(const MPlug& plug);
 
 // determine if a Maya Object is intermediate
 PXRUSDMAYA_API
@@ -297,6 +345,18 @@ bool AddUnassignedColorAndAlphaIfNeeded(
         const PXR_NS::GfVec3f& defaultRGB,
         const float defaultAlpha);
 
+/// Get whether \p plug is authored in the Maya scene.
+///
+/// A plug is considered authored if its value has been changed from the
+/// default (or since being brought in from a reference for plugs on nodes from
+/// referenced files), or if the plug has a connection. Otherwise, it is
+/// considered unauthored.
+///
+/// Note that MPlug::getSetAttrCmds() is currently not declared const, so
+/// IsAuthored() here must take a non-const MPlug.
+PXRUSDMAYA_API
+bool IsAuthored(MPlug& plug);
+
 PXRUSDMAYA_API
 MPlug GetConnected(const MPlug& plug);
 
@@ -305,6 +365,10 @@ void Connect(
         const MPlug& srcPlug,
         const MPlug& dstPlug,
         bool clearDstPlug);
+
+/// Get a named child plug of \p plug by name.
+PXRUSDMAYA_API
+MPlug FindChildPlugByName(const MPlug& plug, const MString& name);
 
 /// For \p dagPath, returns a UsdPath corresponding to it.  
 /// If \p mergeTransformAndShape and the dagPath is a shapeNode, it will return
@@ -316,7 +380,7 @@ void Connect(
 PXRUSDMAYA_API
 PXR_NS::SdfPath MDagPathToUsdPath(const MDagPath& dagPath, bool mergeTransformAndShape);
 
-/// Conveniency function to retreive custom data
+/// Convenience function to retrieve custom data
 PXRUSDMAYA_API
 bool GetBoolCustomData(PXR_NS::UsdAttribute obj, PXR_NS::TfToken key, bool defaultValue);
 
@@ -340,6 +404,28 @@ bool getPlugValue(MFnDependencyNode const &depNode,
 
     return false;
 }
+
+/// Convert a Gf matrix to an MMatrix.
+PXRUSDMAYA_API
+MMatrix GfMatrixToMMatrix(const GfMatrix4d& mx);
+
+// Like getPlugValue, but gets the matrix stored inside the MFnMatrixData on a
+// plug.
+// Returns true upon success, placing the matrix in the outVal parameter.
+PXRUSDMAYA_API
+bool getPlugMatrix(const MFnDependencyNode& depNode,
+                   const MString& attr,
+                   MMatrix* outVal);
+
+/// Set a matrix value on plug name \p attr, of \p depNode.
+/// Returns true if the value was set on the plug successfully, false otherwise.
+PXRUSDMAYA_API
+bool setPlugMatrix(const MFnDependencyNode& depNode,
+                   const MString& attr,
+                   const GfMatrix4d& mx);
+
+PXRUSDMAYA_API
+bool setPlugMatrix(const GfMatrix4d& mx, MPlug& plug);
 
 /// Given an \p usdAttr , extract the value at the default timecode and write
 /// it on \p attrPlug.
@@ -377,6 +463,13 @@ bool setPlugValue(MFnDependencyNode const &depNode,
     return false;
 }
 
+/// Obtains an RAII helper object for accessing the MDataHandle stored on the
+/// plug. When the helper object goes out of scope, the data handle will be
+/// destructed.
+/// If the plug's data handle could not be obtained, returns nullptr.
+PXRUSDMAYA_API
+TfRefPtr<MDataHandleHolder> GetPlugDataHandle(const MPlug& plug);
+
 PXRUSDMAYA_API
 bool createStringAttribute(
         MFnDependencyNode& depNode,
@@ -389,5 +482,7 @@ bool createNumericAttribute(
         MFnNumericData::Type type);
 
 } // namespace PxrUsdMayaUtil
+
+PXR_NAMESPACE_CLOSE_SCOPE
 
 #endif // PXRUSDMAYA_UTIL_H

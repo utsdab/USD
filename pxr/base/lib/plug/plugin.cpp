@@ -25,6 +25,7 @@
 #include "pxr/pxr.h"
 #include "pxr/base/plug/plugin.h"
 #include "pxr/base/plug/debugCodes.h"
+#include "pxr/base/plug/info.h"
 
 #include "pxr/base/arch/threads.h"
 #include "pxr/base/arch/library.h"
@@ -33,17 +34,20 @@
 #include "pxr/base/tf/dl.h"
 #include "pxr/base/tf/fileUtils.h"
 #include "pxr/base/tf/hash.h"
-#include "pxr/base/tf/hashmap.h"
 #include "pxr/base/tf/hashset.h"
+#include "pxr/base/tf/mallocTag.h"
 #include "pxr/base/tf/pathUtils.h"
-#include "pxr/base/tf/pyInterpreter.h"
 #include "pxr/base/tf/pyLock.h"
 #include "pxr/base/tf/scopeDescription.h"
 #include "pxr/base/tf/staticData.h"
 #include "pxr/base/tf/stl.h"
 #include "pxr/base/tf/stringUtils.h"
 #include "pxr/base/tf/type.h"
-#include "pxr/base/tracelite/trace.h"
+#include "pxr/base/trace/trace.h"
+
+#ifdef PXR_PYTHON_SUPPORT_ENABLED
+#include "pxr/base/tf/pyInterpreter.h"
+#endif // PXR_PYTHON_SUPPORT_ENABLED
 
 #include <mutex>
 #include <string>
@@ -61,7 +65,6 @@ typedef TfHashMap< std::string, PlugPluginPtr, TfHash > _WeakPluginMap;
 typedef TfHashMap< TfType, PlugPluginPtr, TfHash > _ClassMap;
 
 static TfStaticData<_PluginMap> _allPlugins;
-static TfStaticData<_WeakPluginMap> _libraryPluginsByDsoPath;
 // XXX -- Use _WeakPluginMap
 static TfStaticData<_PluginMap> _allPluginsByDynamicLibraryName;
 static TfStaticData<_PluginMap> _allPluginsByModuleName;
@@ -71,138 +74,93 @@ static std::mutex _allPluginsMutex;
 static TfStaticData<_ClassMap> _classMap;
 static std::mutex _classMapMutex;
 
-pair<PlugPluginPtr, bool>
-PlugPlugin::_NewDynamicLibraryPlugin(const std::string & path,
-                                     const std::string & name,
-                                     const std::string & dsoPath,
-                                     const std::string & resourcePath,
-                                     const JsObject & plugInfo)
+constexpr char const *
+PlugPlugin::_GetPluginTypeDisplayName(_Type type)
 {
-    {
-        // Already registered?
-        std::lock_guard<std::mutex> lock(_allPluginsMutex);
-        _PluginMap::const_iterator it = _allPlugins->find(path);
-        if (it != _allPlugins->end())
-            return std::make_pair(it->second, false);
-
-        // Already registered with the same name but a different path?  Give
-        // priority to the path we've registered already and ignore this one.
-        it = _allPluginsByDynamicLibraryName->find(name);
-        if (it != _allPluginsByDynamicLibraryName->end())
-            return std::make_pair(it->second, false);
-    }
-
-    // Go ahead and create a plugin. 
-    TF_DEBUG(PLUG_REGISTRATION).Msg("Registering dso plugin '%s' at '%s'.\n",
-                                    name.c_str(), dsoPath.c_str());
-    PlugPluginRefPtr plugin =
-        TfCreateRefPtr(new PlugPlugin(dsoPath, name, resourcePath,
-                                      plugInfo, LibraryType));
-
-    pair<PlugPluginPtr, bool> result;
-    {
-        std::lock_guard<std::mutex> lock(_allPluginsMutex);
-        pair<_PluginMap::iterator, bool> iresult =
-            _allPlugins->insert(make_pair(path, plugin));
-        result.first = iresult.first->second;
-        result.second = iresult.second;
-
-        // If successfully inserted, add to _allPluginsByDynamicLibraryName too.
-        if (iresult.second) {
-            (*_allPluginsByDynamicLibraryName)[name]   = plugin;
-            (*_libraryPluginsByDsoPath)[dsoPath] = plugin;
-        }
-    }
-
-    return result;
+    return
+        type == LibraryType ? "shared library" :
+#ifdef PXR_PYTHON_SUPPORT_ENABLED        
+        type == PythonType ? "python module" :
+#endif // PXR_PYTHON_SUPPORT_ENABLED
+        type == ResourceType ? "resource" :
+        "<invalid enum value>";
 }
 
+template <class PluginMap>
 pair<PlugPluginPtr, bool>
-PlugPlugin::_NewPythonModulePlugin(const std::string & modulePath,
-                                   const std::string & moduleName,
-                                   const std::string & resourcePath,
-                                   const JsObject & plugInfo)
+PlugPlugin::_NewPlugin(const Plug_RegistrationMetadata &metadata,
+                       _Type pluginType,
+                       const std::string& pluginCreationPath,
+                       PluginMap *allPluginsByNamePtr)
 {
-    {
-        // Already registered?
-        std::lock_guard<std::mutex> lock(_allPluginsMutex);
+    PluginMap &allPluginsByName = *allPluginsByNamePtr;
+    
+    std::lock_guard<std::mutex> lock(_allPluginsMutex);
 
-        _PluginMap::const_iterator it = _allPlugins->find(modulePath);
-        if (it != _allPlugins->end())
-            return std::make_pair(it->second, false);
-
-        // Already registered with the same moduleName but a different path?
-        // Give priority to the path we've registered already and ignore this
-        // one.
-        it = _allPluginsByModuleName->find(moduleName);
-        if (it != _allPluginsByModuleName->end())
-            return std::make_pair(it->second, false);
+    // Already registered?
+    auto iresult = _allPlugins->insert(
+        std::make_pair(metadata.pluginPath, TfNullPtr));
+    if (!iresult.second) {
+        auto it = iresult.first;
+        TF_VERIFY(it->second);
+        return std::make_pair(it->second, false);
+    }
+    
+    // Already registered with the same name but a different path?  Give
+    // priority to the path we've registered already and ignore this one.
+    auto it = allPluginsByName.find(metadata.pluginName);
+    if (it != allPluginsByName.end()) {
+        TF_VERIFY(it->second);
+        TF_DEBUG(PLUG_REGISTRATION).Msg(
+            "Already registered %s plugin '%s' - not registering '%s'.\n",
+            _GetPluginTypeDisplayName(pluginType),
+            metadata.pluginName.c_str(), pluginCreationPath.c_str());
+        // Remove the null entry we added in _allPlugins for the alt path.
+        _allPlugins->erase(iresult.first);
+        return std::make_pair(it->second, false);
     }
 
     // Go ahead and create a plugin.
-    TF_DEBUG(PLUG_REGISTRATION).Msg("Registering python plugin '%s' at '%s'.\n",
-                                    moduleName.c_str(), modulePath.c_str());
-    PlugPluginRefPtr plugin =
-        TfCreateRefPtr(new PlugPlugin(modulePath, moduleName, resourcePath,
-                                      plugInfo, PythonType));
-    pair<PlugPluginPtr, bool> result;
-    {
-        std::lock_guard<std::mutex> lock(_allPluginsMutex);
-        pair<_PluginMap::iterator, bool> iresult =
-            _allPlugins->insert(make_pair(modulePath, plugin));
-        result.first = iresult.first->second;
-        result.second = iresult.second;
+    TF_DEBUG(PLUG_REGISTRATION).Msg("Registering %s plugin '%s' at '%s'.\n",
+                                    _GetPluginTypeDisplayName(pluginType),
+                                    metadata.pluginName.c_str(),
+                                    pluginCreationPath.c_str());
+    
+    PlugPluginRefPtr plugin = TfCreateRefPtr(
+        new PlugPlugin(pluginCreationPath, metadata.pluginName,
+                       metadata.resourcePath, metadata.plugInfo, pluginType));
 
-        // If successfully inserted, add to _allPluginsByModuleName too.
-        if (iresult.second)
-            (*_allPluginsByModuleName)[plugin->GetName()] = plugin;
-    }
+    // Add to _allPlugins.
+    iresult.first->second = plugin;
 
-    return result;
+    // Add to allPluginsByName too.
+    allPluginsByName[metadata.pluginName] = plugin;
+
+    return pair<PlugPluginPtr, bool>(plugin, true);
 }
+
+
+pair<PlugPluginPtr, bool>
+PlugPlugin::_NewDynamicLibraryPlugin(const Plug_RegistrationMetadata& metadata)
+{
+    return _NewPlugin(metadata, LibraryType, metadata.libraryPath,
+                      _allPluginsByDynamicLibraryName.Get());
+}
+
+#ifdef PXR_PYTHON_SUPPORT_ENABLED
+pair<PlugPluginPtr, bool>
+PlugPlugin::_NewPythonModulePlugin(const Plug_RegistrationMetadata& metadata)
+{
+    return _NewPlugin(metadata, PythonType, metadata.pluginPath,
+                      _allPluginsByModuleName.Get());
+}
+#endif // PXR_PYTHON_SUPPORT_ENABLED
 
 std::pair<PlugPluginPtr, bool> 
-PlugPlugin::_NewResourcePlugin(const std::string & path,
-                               const std::string & name,
-                               const std::string & resourcePath,
-                               const JsObject & plugInfo)
+PlugPlugin::_NewResourcePlugin(const Plug_RegistrationMetadata& metadata)
 {
-    {
-        // Already registered?
-        std::lock_guard<std::mutex> lock(_allPluginsMutex);
-
-        _PluginMap::const_iterator it = _allPlugins->find(path);
-        if (it != _allPlugins->end())
-            return std::make_pair(it->second, false);
-
-        // Already registered with the same name but a different path?
-        // Give priority to the path we've registered already and ignore
-        // this one.
-        it = _allPluginsByResourceName->find(name);
-        if (it != _allPluginsByResourceName->end())
-            return std::make_pair(it->second, false);
-    }
-
-    // Go ahead and create a plugin.
-    TF_DEBUG(PLUG_REGISTRATION).Msg("Registering resource plugin '%s' at '%s'.\n",
-                                    name.c_str(), path.c_str());
-    PlugPluginRefPtr plugin =
-        TfCreateRefPtr(new PlugPlugin(path, name, resourcePath,
-                                      plugInfo, ResourceType));
-    pair<PlugPluginPtr, bool> result;
-    {
-        std::lock_guard<std::mutex> lock(_allPluginsMutex);
-        pair<_PluginMap::iterator, bool> iresult =
-            _allPlugins->insert(make_pair(path, plugin));
-        result.first = iresult.first->second;
-        result.second = iresult.second;
-
-        // If successfully inserted, add to _allPluginsByResourceName too.
-        if (iresult.second)
-            (*_allPluginsByResourceName)[plugin->GetName()] = plugin;
-    }
-
-    return result;
+    return _NewPlugin(metadata, ResourceType, metadata.pluginPath,
+                      _allPluginsByResourceName.Get());
 }
 
 PlugPlugin::PlugPlugin(const std::string & path,
@@ -248,18 +206,29 @@ PlugPlugin::GetDependencies()
 bool
 PlugPlugin::_Load()
 {
-    TRACE_FUNCTION();
-    TF_DESCRIBE_SCOPE("Loading plugin '%s'", TfGetBaseName(_name).c_str());
+    TfAutoMallocTag2 tag("PlugPlugin::_Load", 
+                         TfStringPrintf("Load %s", _name.c_str()));
+    
+    const std::string pluginBaseName = TfGetBaseName(_name);
+
+    TRACE_FUNCTION_DYNAMIC(pluginBaseName);
+    TF_DESCRIBE_SCOPE("Loading plugin '%s'", pluginBaseName.c_str());
     TF_DEBUG(PLUG_LOAD).Msg("Loading plugin '%s'.\n", _name.c_str());
 
     bool isLoaded = true;
+
+#ifdef PXR_PYTHON_SUPPORT_ENABLED
     if (IsPythonModule()) {
+        TRACE_FUNCTION_SCOPE("python import");
         string cmd = TfStringPrintf("import %s\n", _name.c_str());
         if (TfPyRunSimpleString(cmd) != 0) {
             TF_CODING_ERROR("Load of %s for %s failed",
                             _name.c_str(), _name.c_str());
             isLoaded = false;
         }
+#else
+    if (false) {
+#endif // PXR_PYTHON_SUPPORT_ENABLED
     } else if (!IsResource()) {
         // XXX -- This is a hack to handle a static/non-monolithic library
         // build.  In this case some "plugins" will be static libraries
@@ -267,7 +236,10 @@ PlugPlugin::_Load()
         // loaded.  Just skip these since they're already loaded.
         if (!TfStringEndsWith(_path, ARCH_STATIC_LIBRARY_SUFFIX)) {
             string dsoError;
-            _handle = TfDlopen(_path.c_str(), ARCH_LIBRARY_NOW, &dsoError);
+            {
+                TRACE_FUNCTION_SCOPE("dlopen");
+                _handle = TfDlopen(_path.c_str(), ARCH_LIBRARY_NOW, &dsoError);
+            }
             if (!_handle ) {
                 TF_CODING_ERROR("Load of '%s' for '%s' failed: %s",
                                 _path.c_str(), _name.c_str(), dsoError.c_str());
@@ -383,11 +355,13 @@ PlugPlugin::IsLoaded() const
     return _isLoaded;
 }
 
+#ifdef PXR_PYTHON_SUPPORT_ENABLED
 bool
 PlugPlugin::IsPythonModule() const
 {
     return _type == PythonType;
 }
+#endif // PXR_PYTHON_SUPPORT_ENABLED
 
 bool
 PlugPlugin::IsResource() const

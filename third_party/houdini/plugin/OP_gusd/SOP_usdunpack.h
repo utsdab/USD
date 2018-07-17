@@ -27,13 +27,17 @@
 #include <PRM/PRM_Template.h>
 #include <SOP/SOP_Node.h>
 
+#include "gusd/defaultArray.h"
+#include "gusd/purpose.h"
+#include "gusd/USD_Traverse.h"
+
 #include <pxr/pxr.h>
-#include "gusd/GU_USD.h"
+#include "pxr/usd/usd/prim.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 class GusdUSD_Traverse;
-class GusdUT_ErrorContext;
+
 
 class GusdSOP_usdunpack : public SOP_Node
 {
@@ -44,8 +48,6 @@ public:
 
     void                    UpdateTraversalParms();
     
-    GusdGU_USD::BindOptions GetBindOpts(OP_Context& ctx);
-
 protected:
     GusdSOP_usdunpack(OP_Network* net, const char* name, OP_Operator* op);
     
@@ -60,11 +62,10 @@ protected:
     bool _Traverse(const UT_String& traversal,
                    const fpreal time,
                    const UT_Array<UsdPrim>& prims,
-                   const GusdUSD_Utils::PrimTimeMap& timeMap,
-                   const UT_Array<GusdPurposeSet>& purposes,
+                   const GusdDefaultArray<UsdTimeCode>& times,
+                   const GusdDefaultArray<GusdPurposeSet>& purposes,
                    bool skipRoot,
-                   UT_Array<GusdUSD_Traverse::PrimIndexPair>& traversed,
-                   GusdUT_ErrorContext& err);
+                   UT_Array<GusdUSD_Traverse::PrimIndexPair>& traversed);
 
 
     /** Add micro nodes of all traversal parms as dependencies

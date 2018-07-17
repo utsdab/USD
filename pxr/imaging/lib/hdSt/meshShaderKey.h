@@ -27,7 +27,7 @@
 #include "pxr/pxr.h"
 #include "pxr/imaging/hd/version.h"
 #include "pxr/imaging/hd/enums.h"
-#include "pxr/imaging/hd/geometricShader.h"
+#include "pxr/imaging/hdSt/geometricShader.h"
 #include "pxr/base/tf/token.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -35,14 +35,16 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 struct HdSt_MeshShaderKey
 {
-    HdSt_MeshShaderKey(Hd_GeometricShader::PrimitiveType primType,
-                       bool lit,
+    HdSt_MeshShaderKey(HdSt_GeometricShader::PrimitiveType primType,
+                       TfToken shadingTerminal,
+                       bool useCustomDisplacement,
                        bool smoothNormals,
                        bool doubleSided,
                        bool faceVarying,
                        bool blendWireframeColor,
                        HdCullStyle cullStyle,
-                       HdMeshGeomStyle geomStyle);
+                       HdMeshGeomStyle geomStyle,
+                       float lineWidth);
 
     // Note: it looks like gcc 4.8 has a problem issuing
     // a wrong warning as "array subscript is above array bounds"
@@ -60,19 +62,23 @@ struct HdSt_MeshShaderKey
     bool IsCullingPass() const { return false; }
     HdCullStyle GetCullStyle() const { return cullStyle; }
     HdPolygonMode GetPolygonMode() const { return polygonMode; }
-    Hd_GeometricShader::PrimitiveType GetPrimitiveType() const {
+    float GetLineWidth() const { return lineWidth; }
+    HdSt_GeometricShader::PrimitiveType GetPrimitiveType() const {
         return primType; 
     }
+    bool IsFaceVarying() const {return isFaceVarying;}
 
-    Hd_GeometricShader::PrimitiveType primType;
+    HdSt_GeometricShader::PrimitiveType primType;
     HdCullStyle cullStyle;
     HdPolygonMode polygonMode;
+    float lineWidth;
+    bool isFaceVarying;
     TfToken glslfx;
-    TfToken VS[4];
+    TfToken VS[5];
     TfToken TCS[3];
     TfToken TES[3];
-    TfToken GS[5];
-    TfToken FS[7];
+    TfToken GS[7];
+    TfToken FS[10];
 };
 
 
